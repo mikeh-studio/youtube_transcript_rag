@@ -2,7 +2,12 @@
 
 Local-first YouTube transcript retrieval and evaluation platform.
 
-This project lets you ingest YouTube transcripts, run semantic retrieval (`hybrid` / `dense` / `lexical`), and evaluate ranking quality with a dedicated local Evaluation workspace.
+This project lets you ingest YouTube transcripts, run semantic retrieval (`hybrid` / `dense` / `lexical`), and evaluate ranking quality with a dedicated local Evaluation workspace. It currently supports English (EN-US) and Japanese (JP) only, with a built-in UI Language switch for EN/JP.
+
+## Language Support
+
+- Current support is **English (EN-US)** and **Japanese (JP)** only.
+- The UI includes a **Language** selector to switch between **EN** and **JP**.
 
 ## What's New (v2 Local Eval Release)
 
@@ -68,7 +73,7 @@ Open:
 
 ![Run Comparison](docs/media/03-run-comparison.png)
 
-### Japanese UI (Optional)
+### UI Language Toggle (EN/JP)
 
 ![Main Console (JP)](docs/media/01-main-console-jp.png)
 
