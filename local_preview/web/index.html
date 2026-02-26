@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YouTube Transcript RAG | Local Preview</title>
+    <link rel="icon" type="image/svg+xml" href="./icons/favicon-ytrag.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="appbar">
+      <div class="brand">
+        <img src="./icons/icon-play.svg" alt="" aria-hidden="true" />
+        <div>
+          <p id="eyebrowText" class="eyebrow">YouTube Transcript RAG</p>
+          <p class="brand-sub">Local Studio</p>
+        </div>
+      </div>
+      <div class="appbar-actions">
+        <a id="evaluationNavLink" class="app-nav-link" href="./evaluation.html">Evaluation</a>
+        <a id="reviewsNavLink" class="app-nav-link" href="./reviews.html">Reviews</a>
+        <label class="locale-switch">
+          <span id="localeLabel">Language</span>
+          <select id="localeSelect">
+            <option value="en-US">English (US)</option>
+            <option value="ja-JP">日本語</option>
+          </select>
+        </label>
+      </div>
+    </header>
+
+    <main class="shell">
+      <header class="hero">
+        <h1 id="heroTitle">Local Preview Console</h1>
+        <p id="heroSubtitle" class="subtitle">No Cloudflare setup needed. This runs on localhost only.</p>
+      </header>
+
+      <section class="panel">
+        <h2 class="section-title">
+          <img src="./icons/icon-upload.svg" alt="" aria-hidden="true" />
+          <span id="ingestHeading">Ingest</span>
+        </h2>
+        <p id="ingestDesc" class="section-desc">
+          Add single videos or playlists to build your searchable transcript library.
+        </p>
+        <form id="ingestForm" class="grid ingest-grid">
+          <label>
+            <span id="ingestUrlLabel">YouTube URL</span>
+            <input id="ingestUrl" required placeholder="Video or playlist URL" />
+          </label>
+          <label>
+            <span id="ingestModeLabel">Mode</span>
+            <select id="ingestMode">
+              <option value="single">single</option>
+              <option value="playlist">playlist</option>
+            </select>
+          </label>
+          <label>
+            <span id="ingestLanguageLabel">Language</span>
+            <select id="ingestLanguage">
+              <option value="ja">ja</option>
+              <option value="en">en</option>
+            </select>
+          </label>
+          <label id="ingestForceLabel" class="checkbox">
+            <input id="ingestForce" type="checkbox" />
+            <span id="ingestForceText">Force reingest</span>
+          </label>
+          <button id="ingestSubmitBtn" class="btn" type="submit">Run Ingestion</button>
+        </form>
+        <pre id="ingestResult" class="output"></pre>
+      </section>
+
+      <section class="panel split">
+        <div>
+          <div class="section-head">
+            <h2 class="section-title">
+              <img src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+              <span id="jobsHeading">Jobs</span>
+            </h2>
+            <button id="refreshJobs" class="btn secondary">Refresh</button>
+          </div>
+          <p id="jobsDesc" class="section-desc">
+            Track ingestion status, failures, and retry outcomes for each queued video.
+          </p>
+          <div id="jobsTable" class="table-wrap"></div>
+        </div>
+        <div>
+          <div class="section-head">
+            <h2 class="section-title">
+              <img src="./icons/icon-library.svg" alt="" aria-hidden="true" />
+              <span id="videosHeading">Videos</span>
+            </h2>
+            <button id="refreshVideos" class="btn secondary">Refresh</button>
+          </div>
+          <div id="videosTable" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h2 class="section-title">
+            <img src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+            <span id="logsHeading">Troubleshooting Logs</span>
+          </h2>
+          <button id="logsToggleBtn" class="btn secondary" type="button" aria-expanded="false">Show Troubleshooting Logs</button>
+        </div>
+        <div id="logsPanel" class="logs-panel" hidden>
+          <p id="logsDesc" class="section-desc">
+            Inspect ingest and jobs logs with quick filters for failures and retries.
+          </p>
+          <form class="grid">
+            <div class="grid reviews-filter-grid">
+              <label>
+                <span id="logsLevelLabel">Level</span>
+                <select id="logsLevel">
+                  <option value="">all</option>
+                  <option value="error">error</option>
+                  <option value="info">info</option>
+                  <option value="debug">debug</option>
+                </select>
+              </label>
+              <label>
+                <span id="logsJobIdLabel">Job ID</span>
+                <input id="logsJobId" placeholder="job_xxx" />
+              </label>
+              <label>
+                <span id="logsVideoIdLabel">Video ID</span>
+                <input id="logsVideoId" placeholder="YouTube video id" />
+              </label>
+            </div>
+            <button id="logsRefreshBtn" class="btn secondary" type="button">Refresh Logs</button>
+          </form>
+          <pre id="logsResult" class="output"></pre>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 class="section-title">
+          <img src="./icons/icon-play.svg" alt="" aria-hidden="true" />
+          <span id="playerHeading">Player</span>
+        </h2>
+        <p id="playerDesc" class="section-desc">
+          Play a result directly in the page. Timestamp actions update this player.
+        </p>
+        <div id="playerShell" class="player-shell">
+          <div id="playerPlaceholder" class="player-placeholder">Run search and open a timestamp to load video.</div>
+          <div
+            id="youtubePlayerFrame"
+            class="player-frame"
+            aria-label="YouTube player"
+          ></div>
+        </div>
+        <div class="player-foot">
+          <p id="playerNowPlaying" class="player-now-playing"></p>
+          <button id="playerMuteToggle" class="btn secondary player-mute-btn" type="button" disabled>Mute</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 class="section-title">
+          <img src="./icons/icon-search.svg" alt="" aria-hidden="true" />
+          <span id="searchHeading">Search</span>
+        </h2>
+        <p id="searchDesc" class="section-desc">
+          Retrieve ranked transcript chunks using hybrid, dense, or lexical retrieval.
+        </p>
+        <form id="searchForm" class="grid">
+          <label>
+            <span id="searchQueryLabel">Query</span>
+            <input id="searchQuery" required placeholder="Search indexed chunks" />
+          </label>
+          <label>
+            <span id="searchKLabel">Top K</span>
+            <input id="searchK" type="number" min="1" max="12" value="5" />
+          </label>
+          <label>
+            <span id="searchModeLabel">Retrieval Mode</span>
+            <select id="searchMode">
+              <option value="hybrid">hybrid</option>
+              <option value="dense">dense</option>
+              <option value="lexical">lexical</option>
+            </select>
+          </label>
+          <button id="searchSubmitBtn" class="btn" type="submit">Run Search</button>
+        </form>
+        <div id="searchSummary" class="search-summary">Run a query to see ranked chunks.</div>
+        <div id="searchCards" class="search-cards"></div>
+        <details class="raw-json">
+          <summary id="searchRawJsonSummary">Raw JSON</summary>
+          <pre id="searchResult" class="output"></pre>
+        </details>
+      </section>
+
+      <section class="panel">
+        <h2 class="section-title">
+          <img src="./icons/icon-chat.svg" alt="" aria-hidden="true" />
+          <span id="askHeading">Ask</span>
+        </h2>
+        <p id="askDesc" class="section-desc">
+          Generate a grounded answer from retrieved chunks with source citations.
+        </p>
+        <form id="askForm" class="grid">
+          <label>
+            <span id="askQuestionLabel">Question</span>
+            <input id="askQuestion" required placeholder="Ask with citations" />
+          </label>
+          <label>
+            <span id="askKLabel">Top K</span>
+            <input id="askK" type="number" min="1" max="12" value="5" />
+          </label>
+          <label>
+            <span id="askModeLabel">Retrieval Mode</span>
+            <select id="askMode">
+              <option value="hybrid">hybrid</option>
+              <option value="dense">dense</option>
+              <option value="lexical">lexical</option>
+            </select>
+          </label>
+          <label>
+            <span id="askProviderLabel">Provider</span>
+            <select id="askProvider">
+              <option value="chatgpt">ChatGPT</option>
+              <option value="claude">Claude</option>
+            </select>
+          </label>
+          <button id="askSubmitBtn" class="btn" type="submit">Generate Answer</button>
+        </form>
+        <pre id="askResult" class="output"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

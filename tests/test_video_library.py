@@ -1,0 +1,271 @@
+"""Tests for the VideoLibrary class."""
+
+import os
+import json
+import tempfile
+import numpy as np
+import pytest
+from unittest.mock import patch, MagicMock
+
+import faiss
+
+
+class FakeProcessor:
+    """Minimal fake processor for testing without loading real models."""
+
+    def __init__(self):
+        self.embed_dim = 768
+
+    def extract_video_id(self, url):
+        import re
+        patterns = [
+            r'(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]+)',
+            r'(?:youtu\.be\/)([a-zA-Z0-9_-]+)',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        if re.match(r'^[a-zA-Z0-9_-]{11}$', url):
+            return url
+        return None
+
+    def process_transcript(self, transcript):
+        lines = []
+        for seg in transcript:
+            text = seg.get("text", "") if isinstance(seg, dict) else getattr(seg, "text", "")
+            start = float(seg.get("start", 0.0) if isinstance(seg, dict) else getattr(seg, "start", 0.0))
+            duration = float(seg.get("duration", 0.0) if isinstance(seg, dict) else getattr(seg, "duration", 0.0))
+            if text.strip():
+                lines.append({
+                    "start": start,
+                    "duration": duration,
+                    "raw_text": text.strip(),
+                    "embed_text": text.strip(),
+                })
+        return lines
+
+    def chunk_by_time_with_overlap(self, lines, window=45, overlap=15):
+        # Simple chunking: one chunk per line for testing
+        chunks = []
+        for line in lines:
+            chunks.append({
+                "start": line["start"],
+                "end": line["start"] + line["duration"],
+                "raw_text": line["raw_text"],
+                "embed_text": line["embed_text"],
+            })
+        return chunks
+
+    def generate_embeddings(self, chunks):
+        n = len(chunks)
+        # Deterministic fake embeddings based on chunk index
+        rng = np.random.RandomState(42)
+        emb = rng.randn(n, self.embed_dim).astype("float32")
+        # Normalize for cosine similarity
+        norms = np.linalg.norm(emb, axis=1, keepdims=True)
+        return emb / norms
+
+    def encode_query(self, query):
+        rng = np.random.RandomState(hash(query) % 2**31)
+        emb = rng.randn(1, self.embed_dim).astype("float32")
+        norms = np.linalg.norm(emb, axis=1, keepdims=True)
+        return emb / norms
+
+
+def _make_transcript(n_segments=5, start_offset=0.0):
+    """Create a fake transcript with n segments."""
+    segments = []
+    for i in range(n_segments):
+        segments.append({
+            "text": f"テスト文{i + 1}",
+            "start": start_offset + i * 10.0,
+            "duration": 8.0,
+        })
+    return segments
+
+
+@pytest.fixture
+def tmp_data_dir():
+    with tempfile.TemporaryDirectory() as d:
+        yield d
+
+
+@pytest.fixture
+def library(tmp_data_dir):
+    from video_library import VideoLibrary
+    return VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+
+
+class TestVideoLibraryBasics:
+    """Test basic library operations."""
+
+    def test_empty_library(self, library):
+        assert library.list_videos() == []
+        assert library.total_chunks == 0
+        assert library.index is None
+
+    @patch("video_library.YouTubeTranscriptApi")
+    def test_add_video(self, mock_api_cls, library):
+        mock_api = MagicMock()
+        mock_api.fetch.return_value = _make_transcript(5)
+        mock_api_cls.return_value = mock_api
+
+        vid = library.add_video("https://www.youtube.com/watch?v=abc12345678")
+        assert vid == "abc12345678"
+        assert len(library.videos) == 1
+        assert library.total_chunks == 5
+        assert library.index is not None
+        assert library.index.ntotal == 5
+
+    @patch("video_library.YouTubeTranscriptApi")
+    def test_add_duplicate_video(self, mock_api_cls, library):
+        mock_api = MagicMock()
+        mock_api.fetch.return_value = _make_transcript(3)
+        mock_api_cls.return_value = mock_api
+
+        library.add_video("https://www.youtube.com/watch?v=abc12345678")
+        library.add_video("https://www.youtube.com/watch?v=abc12345678")
+        assert len(library.videos) == 1  # No duplicate
+
+    @patch("video_library.YouTubeTranscriptApi")
+    def test_add_multiple_videos(self, mock_api_cls, library):
+        mock_api = MagicMock()
+        mock_api.fetch.side_effect = [_make_transcript(3), _make_transcript(4)]
+        mock_api_cls.return_value = mock_api
+
+        library.add_video("https://www.youtube.com/watch?v=abc12345678")
+        library.add_video("https://www.youtube.com/watch?v=xyz98765432")
+        assert len(library.videos) == 2
+        assert library.total_chunks == 7
+        assert library.index.ntotal == 7
+
+    @patch("video_library.YouTubeTranscriptApi")
+    def test_remove_video(self, mock_api_cls, library):
+        mock_api = MagicMock()
+        mock_api.fetch.return_value = _make_transcript(3)
+        mock_api_cls.return_value = mock_api
+
+        library.add_video("https://www.youtube.com/watch?v=abc12345678")
+        library.remove_video("abc12345678")
+        assert len(library.videos) == 0
+        assert library.total_chunks == 0
+        assert library.index is None
+
+    def test_remove_nonexistent_video(self, library):
+        with pytest.raises(KeyError):
+            library.remove_video("nonexistent_id")
+
+    def test_invalid_url(self, library):
+        with pytest.raises(ValueError):
+            library.add_video("not-a-url")
+
+    @patch("video_library.YouTubeTranscriptApi")
+    def test_list_videos(self, mock_api_cls, library):
+        mock_api = MagicMock()
+        mock_api.fetch.return_value = _make_transcript(3)
+        mock_api_cls.return_value = mock_api
+
+        library.add_video("https://www.youtube.com/watch?v=abc12345678")
+        videos = library.list_videos()
+        assert len(videos) == 1
+        assert videos[0]["video_id"] == "abc12345678"
+        assert videos[0]["num_chunks"] == 3
+
+
+class TestVideoLibrarySearch:
+    """Test search functionality."""
+
+    @patch("video_library.YouTubeTranscriptApi")
+    def test_search_returns_results(self, mock_api_cls, library):
+        mock_api = MagicMock()
+        mock_api.fetch.return_value = _make_transcript(5)
+        mock_api_cls.return_value = mock_api
+
+        library.add_video("https://www.youtube.com/watch?v=abc12345678")
+        results = library.search("テスト", k=3)
+        assert len(results) == 3
+        assert all("video_id" in r for r in results)
+        assert all("video_title" in r for r in results)
+        assert all("text" in r for r in results)
+        assert all("url" in r for r in results)
+
+    def test_search_empty_library(self, library):
+        results = library.search("テスト", k=3)
+        assert results == []
+
+    @patch("video_library.YouTubeTranscriptApi")
+    def test_search_k_capped(self, mock_api_cls, library):
+        mock_api = MagicMock()
+        mock_api.fetch.return_value = _make_transcript(2)
+        mock_api_cls.return_value = mock_api
+
+        library.add_video("https://www.youtube.com/watch?v=abc12345678")
+        results = library.search("テスト", k=100)
+        assert len(results) <= 2
+
+    @patch("video_library.YouTubeTranscriptApi")
+    def test_search_cross_video(self, mock_api_cls, library):
+        mock_api = MagicMock()
+        mock_api.fetch.side_effect = [_make_transcript(3), _make_transcript(3)]
+        mock_api_cls.return_value = mock_api
+
+        library.add_video("https://www.youtube.com/watch?v=abc12345678")
+        library.add_video("https://www.youtube.com/watch?v=xyz98765432")
+        results = library.search("テスト", k=6)
+        # Results can come from either video
+        video_ids = {r["video_id"] for r in results}
+        assert len(video_ids) >= 1  # At least one video represented
+
+
+class TestVideoLibraryPersistence:
+    """Test save/load functionality."""
+
+    @patch("video_library.YouTubeTranscriptApi")
+    def test_save_and_load(self, mock_api_cls, tmp_data_dir):
+        from video_library import VideoLibrary
+
+        mock_api = MagicMock()
+        mock_api.fetch.return_value = _make_transcript(5)
+        mock_api_cls.return_value = mock_api
+
+        # Create and save
+        lib1 = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        lib1.add_video("https://www.youtube.com/watch?v=abc12345678")
+        lib1.save()
+
+        # Load into new instance
+        lib2 = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        # Auto-load happens in __init__
+        assert len(lib2.videos) == 1
+        assert lib2.index is not None
+        assert lib2.index.ntotal == 5
+        assert len(lib2.chunk_map) == 5
+
+    @patch("video_library.YouTubeTranscriptApi")
+    def test_save_creates_files(self, mock_api_cls, tmp_data_dir):
+        from video_library import VideoLibrary
+
+        mock_api = MagicMock()
+        mock_api.fetch.return_value = _make_transcript(3)
+        mock_api_cls.return_value = mock_api
+
+        lib = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        lib.add_video("https://www.youtube.com/watch?v=abc12345678")
+        lib.save()
+
+        assert os.path.exists(os.path.join(tmp_data_dir, "library_meta.json"))
+        assert os.path.exists(os.path.join(tmp_data_dir, "library.faiss"))
+
+    def test_load_nonexistent(self, tmp_data_dir):
+        from video_library import VideoLibrary
+        lib = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        # No auto-load should happen for empty dir
+        assert len(lib.videos) == 0
+
+    @patch("video_library.YouTubeTranscriptApi")
+    def test_save_empty_library(self, mock_api_cls, tmp_data_dir):
+        from video_library import VideoLibrary
+        lib = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        lib.save()
+        assert os.path.exists(os.path.join(tmp_data_dir, "library_meta.json"))

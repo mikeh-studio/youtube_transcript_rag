@@ -1,0 +1,8 @@
+youtube-transcript-api
+fugashi
+unidic-lite
+faiss-cpu
+sentence-transformers
+numpy
+anthropic
+openai

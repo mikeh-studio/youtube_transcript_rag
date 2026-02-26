@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YouTube Transcript RAG | Evaluation</title>
+    <link rel="icon" type="image/svg+xml" href="./icons/favicon-ytrag.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="appbar">
+      <div class="brand">
+        <img src="./icons/icon-play.svg" alt="" aria-hidden="true" />
+        <div>
+          <p id="eyebrowText" class="eyebrow">YouTube Transcript RAG</p>
+          <p class="brand-sub">Evaluation Workspace</p>
+        </div>
+      </div>
+      <div class="appbar-actions">
+        <a id="backSearchNavLink" class="app-nav-link" href="./index.html">Back to Search</a>
+        <a id="reviewsNavLink" class="app-nav-link" href="./reviews.html">Reviews</a>
+        <label class="locale-switch">
+          <span id="localeLabel">Language</span>
+          <select id="localeSelect">
+            <option value="en-US">English (US)</option>
+            <option value="ja-JP">日本語</option>
+          </select>
+        </label>
+      </div>
+    </header>
+
+    <main class="shell">
+      <header class="hero">
+        <h1 id="heroTitle">Semantic Retrieval Evaluation</h1>
+        <p id="heroSubtitle" class="subtitle">Create query sets, run ranked retrieval snapshots, label results locally, and compare metrics across runs.</p>
+      </header>
+
+      <section class="panel">
+        <h2 class="section-title">
+          <img src="./icons/icon-search.svg" alt="" aria-hidden="true" />
+          <span id="guidelinesHeading">Relevance Guidelines</span>
+        </h2>
+        <ul id="guidelinesList" class="eval-guidelines"></ul>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h2 class="section-title">
+            <img src="./icons/icon-library.svg" alt="" aria-hidden="true" />
+            <span id="querySetsHeading">Query Sets</span>
+          </h2>
+          <div class="eval-toolbar">
+            <button id="newQuerySetBtn" class="btn secondary" type="button">New Set</button>
+            <button id="saveQuerySetBtn" class="btn secondary" type="button">Save Set</button>
+            <button id="deleteQuerySetBtn" class="btn secondary danger" type="button">Delete Set</button>
+            <button id="exportQuerySetBtn" class="btn secondary" type="button">Export Set</button>
+            <button id="importQuerySetBtn" class="btn secondary" type="button">Import Set</button>
+            <input id="importQuerySetFile" type="file" accept=".json" hidden />
+          </div>
+        </div>
+        <form class="grid eval-grid-two" onsubmit="return false;">
+          <label>
+            <span id="querySetSelectLabel">Query Set</span>
+            <select id="querySetSelect"></select>
+          </label>
+          <label>
+            <span id="querySetNameLabel">Set Name</span>
+            <input id="querySetName" placeholder="Core retrieval checks" />
+          </label>
+          <label>
+            <span id="querySetLanguageLabel">Language</span>
+            <select id="querySetLanguage">
+              <option value="ja">ja</option>
+              <option value="en">en</option>
+              <option value="mixed">mixed</option>
+            </select>
+          </label>
+        </form>
+
+        <div class="table-wrap">
+          <table class="reviews-table eval-query-table">
+            <thead>
+              <tr>
+                <th id="thQueryText">query</th>
+                <th id="thQueryType">type</th>
+                <th id="thExpectedMin">expected_min_relevant</th>
+                <th id="thQueryNotes">notes</th>
+                <th id="thQueryActions">actions</th>
+              </tr>
+            </thead>
+            <tbody id="queryRowsBody"></tbody>
+          </table>
+        </div>
+        <div class="reviews-actions-bottom">
+          <button id="addQueryRowBtn" class="btn secondary" type="button">Add Query</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h2 class="section-title">
+            <img src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+            <span id="runsHeading">Runs</span>
+          </h2>
+          <div class="eval-toolbar">
+            <button id="runQuerySetBtn" class="btn" type="button">Run Query Set</button>
+            <button id="exportRunBtn" class="btn secondary" type="button">Export Run</button>
+            <button id="resetEvalDataBtn" class="btn secondary danger" type="button">Reset Local Eval Data</button>
+          </div>
+        </div>
+        <form class="grid eval-grid-three" onsubmit="return false;">
+          <label>
+            <span id="runModeLabel">Retrieval Mode</span>
+            <select id="runMode">
+              <option value="hybrid">hybrid</option>
+              <option value="dense">dense</option>
+              <option value="lexical">lexical</option>
+            </select>
+          </label>
+          <label>
+            <span id="runKLabel">Top K</span>
+            <input id="runK" type="number" min="1" max="12" value="5" />
+          </label>
+          <label>
+            <span id="runSelectLabel">Run Snapshot</span>
+            <select id="runSelect"></select>
+          </label>
+        </form>
+        <pre id="runStatus" class="output"></pre>
+      </section>
+
+      <section class="panel">
+        <h2 class="section-title">
+          <img src="./icons/icon-chat.svg" alt="" aria-hidden="true" />
+          <span id="metricsHeading">Metrics</span>
+        </h2>
+        <div class="split eval-metric-cards">
+          <article class="chart-panel">
+            <h3 class="chart-heading">Precision@K</h3>
+            <p id="metricPrecision" class="metric-value">-</p>
+          </article>
+          <article class="chart-panel">
+            <h3 class="chart-heading">Recall@K</h3>
+            <p id="metricRecall" class="metric-value">-</p>
+          </article>
+          <article class="chart-panel">
+            <h3 class="chart-heading">MRR</h3>
+            <p id="metricMRR" class="metric-value">-</p>
+          </article>
+          <article class="chart-panel">
+            <h3 class="chart-heading">nDCG@K</h3>
+            <p id="metricNDCG" class="metric-value">-</p>
+          </article>
+        </div>
+        <div class="table-wrap">
+          <table class="reviews-table">
+            <thead>
+              <tr>
+                <th id="thMetricQuery">query</th>
+                <th id="thMetricPAtK">P@K</th>
+                <th id="thMetricRecall">Recall@K</th>
+                <th id="thMetricMRR">MRR</th>
+                <th id="thMetricNDCG">nDCG@K</th>
+                <th id="thMetricLabeled">labeled</th>
+              </tr>
+            </thead>
+            <tbody id="metricsTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 class="section-title">
+          <img src="./icons/icon-search.svg" alt="" aria-hidden="true" />
+          <span id="reviewHeading">Review Run Results</span>
+        </h2>
+        <form class="grid eval-grid-two" onsubmit="return false;">
+          <label>
+            <span id="runQuerySelectLabel">Query</span>
+            <select id="runQuerySelect"></select>
+          </label>
+          <label>
+            <span id="resultReasonLabel">Reason Codes</span>
+            <input id="reasonLegend" disabled value="wrong_entity, too_broad, wrong_language, timestamp_mismatch, low_specificity, other" />
+          </label>
+        </form>
+        <div id="runResultCards" class="search-cards"></div>
+      </section>
+
+      <section class="panel">
+        <h2 class="section-title">
+          <img src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+          <span id="compareHeading">Run Comparison</span>
+        </h2>
+        <form class="grid eval-grid-three" onsubmit="return false;">
+          <label>
+            <span id="compareRunALabel">Run A</span>
+            <select id="compareRunA"></select>
+          </label>
+          <label>
+            <span id="compareRunBLabel">Run B</span>
+            <select id="compareRunB"></select>
+          </label>
+          <button id="compareRunsBtn" class="btn secondary" type="button">Compare</button>
+        </form>
+        <pre id="compareResult" class="output"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="./evaluation.js"></script>
+  </body>
+</html>

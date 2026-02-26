@@ -1,0 +1,1308 @@
+#!/usr/bin/env python3
+"""Local-first web preview API for Japanese YouTube RAG v2.
+
+Runs a local HTTP server that serves both:
+- Static web UI (`/`)
+- JSON API routes (`/v1/*`)
+
+This is intentionally local-only and does not require Cloudflare bindings.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import re
+import sys
+import threading
+import time
+import traceback
+import uuid
+from collections import Counter
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html import unescape
+from pathlib import Path
+from typing import Dict, List, Optional
+from urllib.parse import parse_qs, quote, urlparse, unquote
+from urllib.request import Request, urlopen
+
+try:
+    from openai import OpenAI
+except Exception:  # pragma: no cover
+    OpenAI = None
+
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from multilingual.rag_engine import (  # noqa: E402
+    CONTEXT_LABELS,
+    SYSTEM_PROMPTS,
+    RAGEngine,
+    _detect_dominant_language,
+    _format_context,
+)
+from multilingual.text_processing import LANGUAGE_CONFIG  # noqa: E402
+
+
+VIDEO_ID_RE = re.compile(r"[a-zA-Z0-9_-]{11}")
+PLAYLIST_VIDEO_RE = re.compile(r'"videoId":"([a-zA-Z0-9_-]{11})"')
+TOKEN_RE = re.compile(r"[a-zA-Z0-9_]+")
+JP_CHAR_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
+RETRIEVAL_MODES = {"hybrid", "dense", "lexical"}
+REVIEW_LABELS = {"relevant", "not_relevant"}
+TITLE_PLACEHOLDER_RE = re.compile(r"^Video [a-zA-Z0-9_-]{11}$")
+ASK_PROVIDERS = {"chatgpt", "claude"}
+DEFAULT_ASK_PROVIDER = "chatgpt"
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_language(value: Optional[str], fallback: str = "ja") -> str:
+    language = (value or fallback).strip().lower()
+    return language if language in LANGUAGE_CONFIG else fallback
+
+
+def extract_video_id(value: str) -> Optional[str]:
+    raw = (value or "").strip()
+
+    patterns = [
+        r"(?:youtube\.com/watch\?[^\s]*v=)([a-zA-Z0-9_-]{11})",
+        r"(?:youtu\.be/)([a-zA-Z0-9_-]{11})",
+        r"(?:youtube\.com/embed/)([a-zA-Z0-9_-]{11})",
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, raw)
+        if m:
+            return m.group(1)
+
+    if VIDEO_ID_RE.fullmatch(raw):
+        return raw
+    return None
+
+
+def expand_playlist_ids(url: str) -> List[str]:
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    playlist_id = (params.get("list") or [None])[0]
+    if not playlist_id:
+        raise ValueError("Playlist URL must include list=<id>")
+
+    req = Request(
+        f"https://www.youtube.com/playlist?list={playlist_id}",
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+
+    with urlopen(req, timeout=25) as response:
+        html = response.read().decode("utf-8", errors="ignore")
+
+    ids = list(dict.fromkeys(PLAYLIST_VIDEO_RE.findall(html)))
+    if not ids:
+        raise ValueError("Could not parse video IDs from playlist page")
+    return ids
+
+
+def fetch_video_title(video_id: str) -> Optional[str]:
+    watch_url = f"https://www.youtube.com/watch?v={video_id}"
+    user_agent = {"User-Agent": "Mozilla/5.0"}
+
+    # First try oEmbed (lightweight and usually reliable without API keys).
+    oembed_url = (
+        "https://www.youtube.com/oembed"
+        f"?url={quote(watch_url, safe='')}"
+        "&format=json"
+    )
+    try:
+        with urlopen(Request(oembed_url, headers=user_agent), timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+            title = str(payload.get("title", "")).strip()
+            if title:
+                return title
+    except Exception:
+        pass
+
+    # Fallback to watch page OpenGraph title.
+    try:
+        with urlopen(Request(watch_url, headers=user_agent), timeout=12) as response:
+            html = response.read().decode("utf-8", errors="ignore")
+        m = re.search(r'<meta property="og:title" content="([^"]+)"', html)
+        if m:
+            title = unescape(m.group(1)).strip()
+            if title:
+                return title
+    except Exception:
+        pass
+
+    return None
+
+
+@dataclass
+class IngestJob:
+    job_id: str
+    video_id: str
+    url: str
+    language: str
+    mode: str
+    status: str
+    attempts: int
+    error_code: Optional[str]
+    error_message: Optional[str]
+    created_at: str
+    updated_at: str
+
+
+class LocalRAGService:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.engine = RAGEngine()
+        self.openai_model = str(os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip() or "gpt-4o-mini"
+        self._openai_client = None
+        self.jobs: Dict[str, IngestJob] = {}
+        self.title_cache: Dict[str, str] = {}
+        self.feedback_lock = threading.Lock()
+        self.feedback_path = Path(__file__).resolve().parent / "data" / "search_feedback.json"
+        self.feedback: Dict[str, dict] = {}
+        self.log_lock = threading.Lock()
+        self.ingest_log_path = Path(__file__).resolve().parent / "data" / "ingest_jobs.log"
+        self._load_feedback()
+
+    @property
+    def openai_client(self):
+        if OpenAI is None:
+            raise ValueError(
+                "openai package is not installed. Install dependencies to use provider='chatgpt'."
+            )
+
+        if self._openai_client is None:
+            api_key = str(os.environ.get("OPENAI_API_KEY") or "").strip()
+            if not api_key:
+                raise ValueError(
+                    "OPENAI_API_KEY environment variable is not set. "
+                    "Set it to use provider='chatgpt'."
+                )
+            self._openai_client = OpenAI(api_key=api_key)
+        return self._openai_client
+
+    def list_jobs(self) -> List[IngestJob]:
+        with self.lock:
+            return sorted(self.jobs.values(), key=lambda j: j.created_at, reverse=True)
+
+    def get_job(self, job_id: str) -> Optional[IngestJob]:
+        with self.lock:
+            return self.jobs.get(job_id)
+
+    def _store_job(self, job: IngestJob) -> None:
+        with self.lock:
+            self.jobs[job.job_id] = job
+
+    def _update_job(self, job_id: str, **updates) -> None:
+        with self.lock:
+            job = self.jobs[job_id]
+            for key, value in updates.items():
+                setattr(job, key, value)
+            job.updated_at = now_iso()
+
+    @staticmethod
+    def _is_placeholder_title(video_id: str, title: Optional[str]) -> bool:
+        value = str(title or "").strip()
+        return (not value) or (value == f"Video {video_id}") or bool(TITLE_PLACEHOLDER_RE.fullmatch(value))
+
+    def _resolve_video_title(self, video_id: str, fallback: str) -> str:
+        if video_id in self.title_cache:
+            return self.title_cache[video_id]
+        resolved = fetch_video_title(video_id) or fallback
+        self.title_cache[video_id] = resolved
+        return resolved
+
+    def _hydrate_video_title(self, video_id: str) -> None:
+        video = self.engine.library.videos.get(video_id)
+        if not video:
+            return
+        current = str(video.get("title") or "").strip() or f"Video {video_id}"
+        if not self._is_placeholder_title(video_id, current):
+            return
+        resolved = self._resolve_video_title(video_id, current)
+        video["title"] = resolved
+
+    def list_videos(self):
+        results = []
+        for video_id, data in self.engine.library.videos.items():
+            self._hydrate_video_title(video_id)
+            refreshed = self.engine.library.videos.get(video_id, data)
+            results.append({
+                "video_id": video_id,
+                "title": refreshed.get("title", f"Video {video_id}"),
+                "url": refreshed.get("url", f"https://www.youtube.com/watch?v={video_id}"),
+                "language": refreshed.get("language", "ja"),
+                "num_chunks": len(refreshed.get("chunks", [])),
+            })
+        return results
+
+    def delete_video(self, video_id: str):
+        self.engine.library.remove_video(video_id)
+
+    def _load_feedback(self) -> None:
+        self.feedback_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.feedback_path.exists():
+            return
+        try:
+            raw = json.loads(self.feedback_path.read_text(encoding="utf-8"))
+            normalized: Dict[str, dict] = {}
+
+            if isinstance(raw, dict):
+                iterable = raw.values()
+            elif isinstance(raw, list):
+                iterable = raw
+            else:
+                iterable = []
+
+            for row in iterable:
+                record = self._normalize_feedback_record(row)
+                if not record:
+                    continue
+                normalized[record["key"]] = record
+
+            self.feedback = normalized
+        except Exception:
+            self.feedback = {}
+
+    def _persist_feedback(self) -> None:
+        self.feedback_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.feedback_path.with_suffix(".tmp")
+        temp_path.write_text(
+            json.dumps(self.feedback, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temp_path.replace(self.feedback_path)
+
+    @staticmethod
+    def _coerce_optional_float(value):
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _coerce_optional_int(value):
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _feedback_key(video_id: str, chunk_index: Optional[int], start: float, end: float) -> str:
+        if chunk_index is not None:
+            return f"{video_id}:{chunk_index}"
+        start_ms = int(max(0.0, float(start)) * 1000)
+        end_ms = int(max(0.0, float(end)) * 1000)
+        return f"{video_id}:{start_ms}:{end_ms}"
+
+    def _normalize_feedback_record(self, row: dict) -> Optional[dict]:
+        if not isinstance(row, dict):
+            return None
+
+        video_id = str(row.get("video_id") or "").strip()
+        if not video_id:
+            return None
+
+        label = str(row.get("label") or "").strip().lower()
+        if label not in REVIEW_LABELS:
+            return None
+
+        try:
+            chunk_index = self._coerce_optional_int(row.get("chunk_index"))
+            start = float(row.get("start", 0.0))
+            end = float(row.get("end", start))
+        except Exception:
+            return None
+
+        key = str(row.get("key") or "").strip() or self._feedback_key(video_id, chunk_index, start, end)
+        created_at = str(row.get("created_at") or now_iso())
+        updated_at = str(row.get("updated_at") or created_at)
+
+        return {
+            "id": str(row.get("id") or f"fb_{uuid.uuid4().hex[:12]}"),
+            "key": key,
+            "query": str(row.get("query") or ""),
+            "retrieval_mode": str(row.get("retrieval_mode") or "hybrid"),
+            "model": str(row.get("model") or row.get("retrieval_mode") or "hybrid"),
+            "label": label,
+            "video_id": video_id,
+            "chunk_index": chunk_index,
+            "start": start,
+            "end": end,
+            "url": str(row.get("url") or f"https://www.youtube.com/watch?v={video_id}&t={int(start)}s"),
+            "video_title": str(row.get("video_title") or f"Video {video_id}"),
+            "language": normalize_language(row.get("language"), fallback="ja"),
+            "score": self._coerce_optional_float(row.get("score")),
+            "dense_score": self._coerce_optional_float(row.get("dense_score")),
+            "lexical_score": self._coerce_optional_float(row.get("lexical_score")),
+            "hybrid_score": self._coerce_optional_float(row.get("hybrid_score")),
+            "rank": self._coerce_optional_int(row.get("rank")),
+            "created_at": created_at,
+            "updated_at": updated_at,
+        }
+
+    def _append_ingest_log(self, *, level: str, event: str, message: str, **context) -> None:
+        record = {
+            "ts": now_iso(),
+            "level": str(level or "info").lower(),
+            "event": event,
+            "message": message,
+            **context,
+        }
+        self.ingest_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.log_lock:
+            with self.ingest_log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False))
+                fh.write("\n")
+
+    def list_ingest_logs(
+        self,
+        *,
+        limit: int = 200,
+        level: Optional[str] = None,
+        job_id: Optional[str] = None,
+        video_id: Optional[str] = None,
+        since: Optional[str] = None,
+    ) -> List[dict]:
+        safe_limit = max(1, min(int(limit), 5000))
+        scoped_level = str(level or "").strip().lower()
+        scoped_job = str(job_id or "").strip()
+        scoped_video = str(video_id or "").strip()
+        scoped_since = str(since or "").strip()
+
+        if not self.ingest_log_path.exists():
+            return []
+
+        rows: List[dict] = []
+        with self.log_lock:
+            for line in self.ingest_log_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                if scoped_level and str(row.get("level") or "").lower() != scoped_level:
+                    continue
+                if scoped_job and str(row.get("job_id") or "") != scoped_job:
+                    continue
+                if scoped_video and str(row.get("video_id") or "") != scoped_video:
+                    continue
+                if scoped_since and str(row.get("ts") or "") < scoped_since:
+                    continue
+
+                rows.append(row)
+
+        rows.sort(key=lambda row: str(row.get("ts") or ""), reverse=True)
+        return rows[:safe_limit]
+
+    def save_search_feedback(self, payload: dict) -> dict:
+        query = str(payload.get("query") or "").strip()
+        retrieval_mode = str(payload.get("retrieval_mode") or "").strip().lower()
+        model = str(payload.get("model") or "").strip().lower()
+        label = str(payload.get("label") or "").strip().lower()
+        video_id = str(payload.get("video_id") or "").strip()
+
+        if not query:
+            raise ValueError("query is required")
+        if retrieval_mode not in RETRIEVAL_MODES:
+            raise ValueError("retrieval_mode must be one of: dense, hybrid, lexical")
+        if label not in REVIEW_LABELS:
+            raise ValueError("label must be one of: relevant, not_relevant")
+        if not video_id:
+            raise ValueError("video_id is required")
+
+        chunk_index = self._coerce_optional_int(payload.get("chunk_index"))
+        start = float(payload.get("start", 0.0))
+        end = float(payload.get("end", start))
+        rank = self._coerce_optional_int(payload.get("rank"))
+        identity = self._feedback_key(video_id, chunk_index, start, end)
+        now = now_iso()
+
+        with self.feedback_lock:
+            existing = self.feedback.get(identity)
+            resolved_model = model or (
+                str(existing.get("model") or "").strip().lower()
+                if isinstance(existing, dict) else ""
+            ) or retrieval_mode
+            record = {
+                "id": existing.get("id") if isinstance(existing, dict) else f"fb_{uuid.uuid4().hex[:12]}",
+                "key": identity,
+                "query": query,
+                "retrieval_mode": retrieval_mode,
+                "model": resolved_model,
+                "label": label,
+                "video_id": video_id,
+                "chunk_index": chunk_index,
+                "start": start,
+                "end": end,
+                "url": str(payload.get("url") or f"https://www.youtube.com/watch?v={video_id}&t={int(start)}s"),
+                "video_title": str(payload.get("video_title") or f"Video {video_id}"),
+                "language": normalize_language(payload.get("language"), fallback="ja"),
+                "score": self._coerce_optional_float(payload.get("score")),
+                "dense_score": self._coerce_optional_float(payload.get("dense_score")),
+                "lexical_score": self._coerce_optional_float(payload.get("lexical_score")),
+                "hybrid_score": self._coerce_optional_float(payload.get("hybrid_score")),
+                "rank": rank,
+                "created_at": existing.get("created_at") if isinstance(existing, dict) else now,
+                "updated_at": now,
+            }
+            self.feedback[identity] = record
+            self._persist_feedback()
+            return record
+
+    def list_search_feedback(
+        self,
+        *,
+        video_id: Optional[str] = None,
+        label: Optional[str] = None,
+        limit: int = 500,
+    ) -> List[dict]:
+        scoped_video = str(video_id or "").strip()
+        scoped_label = str(label or "").strip().lower()
+        safe_limit = max(1, min(int(limit), 5000))
+
+        with self.feedback_lock:
+            rows = list(self.feedback.values())
+
+        if scoped_video:
+            rows = [row for row in rows if str(row.get("video_id") or "") == scoped_video]
+        if scoped_label in REVIEW_LABELS:
+            rows = [row for row in rows if str(row.get("label") or "").lower() == scoped_label]
+
+        rows.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
+        return rows[:safe_limit]
+
+    def delete_search_feedback(
+        self,
+        *,
+        video_id: Optional[str] = None,
+        label: Optional[str] = None,
+    ) -> int:
+        scoped_video = str(video_id or "").strip()
+        scoped_label = str(label or "").strip().lower()
+
+        if scoped_label and scoped_label not in REVIEW_LABELS:
+            raise ValueError("label must be one of: relevant, not_relevant")
+        if not scoped_video and not scoped_label:
+            raise ValueError("at least one filter is required: video_id or label")
+
+        with self.feedback_lock:
+            keys = [
+                key
+                for key, row in self.feedback.items()
+                if (not scoped_video or str(row.get("video_id") or "") == scoped_video)
+                and (not scoped_label or str(row.get("label") or "").lower() == scoped_label)
+            ]
+            if not keys:
+                return 0
+            for key in keys:
+                self.feedback.pop(key, None)
+            self._persist_feedback()
+            return len(keys)
+
+    def list_feedback_videos(self) -> List[dict]:
+        with self.feedback_lock:
+            rows = list(self.feedback.values())
+
+        by_video: Dict[str, dict] = {}
+        for row in rows:
+            video_id = str(row.get("video_id") or "").strip()
+            if not video_id:
+                continue
+
+            entry = by_video.setdefault(video_id, {
+                "video_id": video_id,
+                "title": str(row.get("video_title") or f"Video {video_id}"),
+                "video_title": str(row.get("video_title") or f"Video {video_id}"),
+                "review_count": 0,
+                "relevant_count": 0,
+                "not_relevant_count": 0,
+            })
+            entry["review_count"] += 1
+            if row.get("label") == "relevant":
+                entry["relevant_count"] += 1
+            elif row.get("label") == "not_relevant":
+                entry["not_relevant_count"] += 1
+
+        for video_id, video_data in self.engine.library.videos.items():
+            if video_id not in by_video:
+                continue
+            title = str(video_data.get("title") or "").strip()
+            if title:
+                by_video[video_id]["title"] = title
+                by_video[video_id]["video_title"] = title
+
+        results = list(by_video.values())
+        results.sort(key=lambda row: (-row["review_count"], row["video_id"]))
+        return results
+
+    @staticmethod
+    def _chunk_identity(row: dict) -> str:
+        video_id = row.get("video_id", "")
+        chunk_index = row.get("chunk_index")
+        if chunk_index is not None:
+            return f"{video_id}:{chunk_index}"
+        start_ms = int(float(row.get("start", 0.0)) * 1000)
+        end_ms = int(float(row.get("end", 0.0)) * 1000)
+        return f"{video_id}:{start_ms}:{end_ms}"
+
+    @staticmethod
+    def _infer_query_language(query: str) -> str:
+        return "ja" if JP_CHAR_RE.search(query or "") else "en"
+
+    @staticmethod
+    def _tokenize_for_lexical(text: str, language: Optional[str] = None) -> List[str]:
+        cleaned = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+        if not cleaned:
+            return []
+
+        inferred = language or ("ja" if JP_CHAR_RE.search(cleaned) else "en")
+        lang = normalize_language(inferred, fallback="ja" if inferred == "ja" else "en")
+
+        tokens: List[str] = []
+        if lang == "ja" or JP_CHAR_RE.search(cleaned):
+            compact = cleaned.replace(" ", "")
+            if len(compact) == 1:
+                tokens.append(compact)
+            else:
+                tokens.extend(compact[i:i + 2] for i in range(len(compact) - 1))
+            tokens.extend([part for part in cleaned.split(" ") if part])
+        else:
+            tokens.extend(TOKEN_RE.findall(cleaned))
+
+        return [tok for tok in tokens if tok]
+
+    def _all_chunks(self) -> List[dict]:
+        rows: List[dict] = []
+        for video_id, video_data in self.engine.library.videos.items():
+            title = video_data.get("title", f"Video {video_id}")
+            video_url = video_data.get("url", f"https://www.youtube.com/watch?v={video_id}")
+            language = video_data.get("language", "ja")
+            chunks = video_data.get("chunks", [])
+            for chunk_idx, chunk in enumerate(chunks):
+                start = float(chunk.get("start", 0.0))
+                rows.append({
+                    "video_id": video_id,
+                    "video_title": title,
+                    "video_url": video_url,
+                    "language": language,
+                    "chunk_index": chunk_idx,
+                    "text": chunk.get("raw_text", ""),
+                    "start": start,
+                    "end": float(chunk.get("end", start)),
+                    "url": f"https://www.youtube.com/watch?v={video_id}&t={int(start)}s",
+                })
+        return rows
+
+    def _dense_search(self, query: str, k: int, language: Optional[str]) -> List[dict]:
+        try:
+            dense_rows = self.engine.search(query, k=k, language=language)
+        except Exception:
+            return []
+        results: List[dict] = []
+        for rank, row in enumerate(dense_rows, start=1):
+            item = dict(row)
+            item["rank"] = rank
+            item["dense_score"] = float(row.get("score", 0.0))
+            item["score"] = float(row.get("score", 0.0))
+            results.append(item)
+        return results
+
+    def _lexical_bm25_search(self, query: str, k: int, language: Optional[str]) -> List[dict]:
+        candidates = self._all_chunks()
+        if not candidates:
+            return []
+
+        query_language = normalize_language(language, fallback=self._infer_query_language(query))
+        query_tokens = self._tokenize_for_lexical(query, language=query_language)
+        if not query_tokens:
+            return []
+
+        doc_tokens: List[List[str]] = []
+        doc_lens: List[int] = []
+        doc_freq: Counter = Counter()
+        for candidate in candidates:
+            tokens = self._tokenize_for_lexical(candidate["text"], language=candidate.get("language"))
+            doc_tokens.append(tokens)
+            doc_len = len(tokens)
+            doc_lens.append(doc_len)
+            for token in set(tokens):
+                doc_freq[token] += 1
+
+        total_docs = len(candidates)
+        avg_doc_len = (sum(doc_lens) / total_docs) if total_docs else 1.0
+        query_tf = Counter(query_tokens)
+
+        k1 = 1.5
+        b = 0.75
+        scored = []
+
+        for idx, candidate in enumerate(candidates):
+            tokens = doc_tokens[idx]
+            if not tokens:
+                continue
+            tf = Counter(tokens)
+            score = 0.0
+            doc_len = max(1, doc_lens[idx])
+
+            for term, q_weight in query_tf.items():
+                if term not in tf:
+                    continue
+                n_qi = doc_freq.get(term, 0)
+                idf = math.log(1.0 + (total_docs - n_qi + 0.5) / (n_qi + 0.5))
+                freq = tf[term]
+                denom = freq + k1 * (1.0 - b + b * (doc_len / max(avg_doc_len, 1e-9)))
+                score += idf * ((freq * (k1 + 1.0)) / denom) * (1.0 + 0.2 * (q_weight - 1))
+
+            if score <= 0.0:
+                continue
+
+            item = dict(candidate)
+            item["lexical_score"] = float(score)
+            item["score"] = float(score)
+            scored.append(item)
+
+        scored.sort(key=lambda row: row["lexical_score"], reverse=True)
+        for rank, row in enumerate(scored, start=1):
+            row["rank"] = rank
+        return scored[:k]
+
+    def _rrf_fuse(self, dense_results: List[dict], lexical_results: List[dict], k: int, rrf_k: int = 60) -> List[dict]:
+        merged: Dict[str, dict] = {}
+
+        for dense_rank, row in enumerate(dense_results, start=1):
+            key = self._chunk_identity(row)
+            entry = merged.setdefault(key, dict(row))
+            entry["dense_rank"] = min(dense_rank, entry.get("dense_rank", dense_rank))
+            entry["dense_score"] = float(row.get("dense_score", row.get("score", 0.0)))
+            entry["hybrid_score"] = float(entry.get("hybrid_score", 0.0)) + (1.0 / (rrf_k + dense_rank))
+
+        for lexical_rank, row in enumerate(lexical_results, start=1):
+            key = self._chunk_identity(row)
+            entry = merged.setdefault(key, dict(row))
+            entry["lexical_rank"] = min(lexical_rank, entry.get("lexical_rank", lexical_rank))
+            entry["lexical_score"] = float(row.get("lexical_score", row.get("score", 0.0)))
+            entry["hybrid_score"] = float(entry.get("hybrid_score", 0.0)) + (1.0 / (rrf_k + lexical_rank))
+
+        fused = list(merged.values())
+        fused.sort(
+            key=lambda row: (
+                float(row.get("hybrid_score", 0.0)),
+                float(row.get("dense_score", 0.0)),
+                float(row.get("lexical_score", 0.0)),
+            ),
+            reverse=True,
+        )
+
+        for rank, row in enumerate(fused, start=1):
+            row["rank"] = rank
+            row["score"] = float(row.get("hybrid_score", 0.0))
+
+        return fused[:k]
+
+    def retrieve(
+        self,
+        query: str,
+        k: int = 5,
+        language: Optional[str] = None,
+        retrieval_mode: str = "hybrid",
+    ) -> dict:
+        mode = (retrieval_mode or "hybrid").strip().lower()
+        if mode not in RETRIEVAL_MODES:
+            raise ValueError(f"retrieval_mode must be one of: {', '.join(sorted(RETRIEVAL_MODES))}")
+
+        top_k = max(1, min(int(k), 12))
+        candidate_k = max(20, top_k * 4)
+
+        dense_results: List[dict] = []
+        lexical_results: List[dict] = []
+        results: List[dict] = []
+
+        if mode in {"dense", "hybrid"}:
+            dense_results = self._dense_search(query, k=candidate_k, language=language)
+        if mode in {"lexical", "hybrid"}:
+            lexical_results = self._lexical_bm25_search(query, k=candidate_k, language=language)
+
+        if mode == "dense":
+            results = dense_results[:top_k]
+        elif mode == "lexical":
+            results = lexical_results[:top_k]
+        else:
+            if dense_results and lexical_results:
+                results = self._rrf_fuse(dense_results, lexical_results, k=top_k)
+            elif dense_results:
+                results = dense_results[:top_k]
+            else:
+                results = lexical_results[:top_k]
+
+        details = {
+            "fusion": "rrf" if mode == "hybrid" else "none",
+            "dense_candidates": len(dense_results),
+            "lexical_candidates": len(lexical_results),
+            "candidate_k": candidate_k,
+            "fallback": (
+                "dense_only"
+                if mode == "hybrid" and dense_results and not lexical_results
+                else "lexical_only"
+                if mode == "hybrid" and lexical_results and not dense_results
+                else None
+            ),
+        }
+
+        return {
+            "retrieval_mode": mode,
+            "details": details,
+            "results": results,
+        }
+
+    def ask_with_sources(self, question: str, sources: List[dict], provider: str = DEFAULT_ASK_PROVIDER) -> dict:
+        scoped_provider = str(provider or DEFAULT_ASK_PROVIDER).strip().lower()
+        if scoped_provider not in ASK_PROVIDERS:
+            raise ValueError("provider must be one of: chatgpt, claude")
+
+        selected_model = self.openai_model if scoped_provider == "chatgpt" else self.engine.model
+        if not sources:
+            return {
+                "answer": "No videos in the library. Please add videos first.",
+                "sources": [],
+                "provider": scoped_provider,
+                "model": selected_model,
+            }
+
+        dominant_language = _detect_dominant_language(sources)
+        system_prompt = SYSTEM_PROMPTS.get(dominant_language, SYSTEM_PROMPTS["en"])
+        labels = CONTEXT_LABELS.get(dominant_language, CONTEXT_LABELS["en"])
+        context = _format_context(sources)
+        user_message = f"{labels['context']}:\n\n{context}\n\n{labels['question']}: {question}"
+
+        if scoped_provider == "claude":
+            response = self.engine.client.messages.create(
+                model=self.engine.model,
+                max_tokens=1024,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+                temperature=0.3,
+            )
+            answer = response.content[0].text if response.content else ""
+        else:
+            response = self.openai_client.chat.completions.create(
+                model=self.openai_model,
+                max_tokens=1024,
+                temperature=0.3,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+            )
+            answer = ""
+            if response.choices:
+                answer = str(response.choices[0].message.content or "")
+            if not answer.strip():
+                raise ValueError("OpenAI response missing content.")
+
+        return {
+            "answer": answer,
+            "sources": sources,
+            "provider": scoped_provider,
+            "model": selected_model,
+        }
+
+    def ingest(self, *, url: str, mode: str, language: str, force: bool):
+        started_at = time.time()
+        mode = (mode or "single").strip().lower()
+        language = normalize_language(language)
+
+        if mode not in {"single", "playlist"}:
+            raise ValueError("mode must be single or playlist")
+
+        targets: List[str]
+        if mode == "playlist":
+            targets = expand_playlist_ids(url)
+        else:
+            video_id = extract_video_id(url)
+            if not video_id:
+                raise ValueError("Invalid YouTube URL or video ID")
+            targets = [video_id]
+
+        self._append_ingest_log(
+            level="info",
+            event="ingest.request",
+            message="ingest request accepted",
+            mode=mode,
+            language=language,
+            target_count=len(targets),
+            force=bool(force),
+        )
+
+        created = []
+        skipped = []
+
+        for idx, video_id in enumerate(targets):
+            if (not force) and (video_id in self.engine.library.videos):
+                skipped.append({
+                    "video_id": video_id,
+                    "reason": "already_indexed",
+                })
+                self._append_ingest_log(
+                    level="info",
+                    event="job.skipped",
+                    message="video already indexed; skipped",
+                    video_id=video_id,
+                    mode=mode,
+                    language=language,
+                )
+                continue
+
+            job_id = f"job_{uuid.uuid4()}"
+            job_started = time.time()
+            job = IngestJob(
+                job_id=job_id,
+                video_id=video_id,
+                url=f"https://www.youtube.com/watch?v={video_id}",
+                language=language,
+                mode=mode,
+                status="running",
+                attempts=1,
+                error_code=None,
+                error_message=None,
+                created_at=now_iso(),
+                updated_at=now_iso(),
+            )
+            self._store_job(job)
+            self._append_ingest_log(
+                level="info",
+                event="job.created",
+                message="ingestion job created",
+                job_id=job_id,
+                video_id=video_id,
+                mode=mode,
+                language=language,
+                attempts=1,
+                status="running",
+            )
+
+            try:
+                self.engine.library.add_video(video_id, language=language)
+                self._hydrate_video_title(video_id)
+                self._update_job(job_id, status="completed")
+                self._append_ingest_log(
+                    level="info",
+                    event="job.completed",
+                    message="ingestion job completed",
+                    job_id=job_id,
+                    video_id=video_id,
+                    mode=mode,
+                    language=language,
+                    attempts=1,
+                    status="completed",
+                    duration_ms=int((time.time() - job_started) * 1000),
+                )
+                created.append({
+                    "job_id": job_id,
+                    "video_id": video_id,
+                    "language": language,
+                    "status": "completed",
+                    "title": self.engine.library.videos.get(video_id, {}).get("title", f"Video {video_id}"),
+                })
+            except Exception as exc:
+                self._update_job(
+                    job_id,
+                    status="failed",
+                    error_code="INGESTION_FAILED",
+                    error_message=str(exc)[:500],
+                )
+                self._append_ingest_log(
+                    level="error",
+                    event="job.failed",
+                    message="ingestion job failed",
+                    job_id=job_id,
+                    video_id=video_id,
+                    mode=mode,
+                    language=language,
+                    attempts=1,
+                    status="failed",
+                    error_code="INGESTION_FAILED",
+                    error_message=str(exc)[:500],
+                    duration_ms=int((time.time() - job_started) * 1000),
+                )
+                created.append({
+                    "job_id": job_id,
+                    "video_id": video_id,
+                    "language": language,
+                    "status": "failed",
+                    "error": str(exc)[:200],
+                })
+
+            # Gentle pacing helps avoid YouTube 429 throttling on playlist ingestion.
+            if mode == "playlist" and idx < len(targets) - 1:
+                self._append_ingest_log(
+                    level="debug",
+                    event="playlist.pacing",
+                    message="playlist pacing delay before next video",
+                    video_id=video_id,
+                    delay_ms=1200,
+                )
+                time.sleep(1.2)
+
+        response = {
+            "mode": mode,
+            "queued_count": len(created),
+            "skipped_count": len(skipped),
+            "jobs": created,
+            "skipped": skipped,
+        }
+        self._append_ingest_log(
+            level="info",
+            event="ingest.complete",
+            message="ingest request finished",
+            mode=mode,
+            language=language,
+            queued_count=len(created),
+            skipped_count=len(skipped),
+            duration_ms=int((time.time() - started_at) * 1000),
+        )
+        return response
+
+
+SERVICE = LocalRAGService()
+WEB_DIR = Path(__file__).resolve().parent / "web"
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "YouTubeRAGLocal/0.1"
+
+    def _set_headers(self, status=200, content_type="application/json; charset=utf-8"):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        self.end_headers()
+
+    def _json(self, payload, status=200):
+        self._set_headers(status)
+        self.wfile.write(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
+
+    def _read_json_body(self):
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(length) if length > 0 else b"{}"
+        return json.loads(raw.decode("utf-8"))
+
+    def _serve_static(self, path: str):
+        rel = "index.html" if path in {"/", ""} else path.lstrip("/")
+        file_path = (WEB_DIR / rel).resolve()
+
+        if WEB_DIR not in file_path.parents and file_path != WEB_DIR:
+            self._json({"ok": False, "error": {"code": "NOT_FOUND", "message": "Not found"}}, 404)
+            return
+
+        if not file_path.exists() or not file_path.is_file():
+            self._json({"ok": False, "error": {"code": "NOT_FOUND", "message": "Not found"}}, 404)
+            return
+
+        suffix = file_path.suffix.lower()
+        content_type = {
+            ".html": "text/html; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".js": "application/javascript; charset=utf-8",
+            ".json": "application/json; charset=utf-8",
+            ".svg": "image/svg+xml",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+            ".ico": "image/x-icon",
+        }.get(suffix, "application/octet-stream")
+
+        self._set_headers(200, content_type)
+        self.wfile.write(file_path.read_bytes())
+
+    def do_OPTIONS(self):
+        self._set_headers(204)
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        try:
+            if path == "/v1/health":
+                self._json({
+                    "ok": True,
+                    "mode": "local_preview",
+                    "services": {
+                        "rag_engine": "ok",
+                        "storage": "local_filesystem",
+                    },
+                })
+                return
+
+            if path == "/v1/ingest/jobs":
+                jobs = [asdict(j) for j in SERVICE.list_jobs()[:100]]
+                SERVICE._append_ingest_log(
+                    level="info",
+                    event="jobs.list",
+                    message="jobs list requested",
+                    count=len(jobs),
+                )
+                self._json({"ok": True, "jobs": jobs})
+                return
+
+            if path.startswith("/v1/ingest/jobs/"):
+                job_id = unquote(path.rsplit("/", 1)[-1])
+                job = SERVICE.get_job(job_id)
+                if not job:
+                    self._json({"ok": False, "error": {"code": "JOB_NOT_FOUND", "message": "Job not found"}}, 404)
+                    return
+                self._json({"ok": True, "job": asdict(job)})
+                return
+
+            if path == "/v1/videos":
+                videos = SERVICE.list_videos()
+                SERVICE._append_ingest_log(
+                    level="debug",
+                    event="videos.list",
+                    message="videos list requested",
+                    count=len(videos),
+                )
+                self._json({"ok": True, "videos": videos})
+                return
+
+            if path == "/v1/logs/ingest-jobs":
+                params = parse_qs(parsed.query or "")
+                limit_raw = (params.get("limit") or [200])[0]
+                level = (params.get("level") or [None])[0]
+                job_id = (params.get("job_id") or [None])[0]
+                video_id = (params.get("video_id") or [None])[0]
+                since = (params.get("since") or [None])[0]
+                try:
+                    limit = int(limit_raw)
+                except (TypeError, ValueError):
+                    self._json({
+                        "ok": False,
+                        "error": {"code": "INVALID_INPUT", "message": "limit must be an integer"},
+                    }, 400)
+                    return
+
+                rows = SERVICE.list_ingest_logs(
+                    limit=limit,
+                    level=level,
+                    job_id=job_id,
+                    video_id=video_id,
+                    since=since,
+                )
+                self._json({"ok": True, "count": len(rows), "logs": rows})
+                return
+
+            if path == "/v1/feedback/search-review":
+                params = parse_qs(parsed.query or "")
+                video_id = (params.get("video_id") or [None])[0]
+                label = (params.get("label") or [None])[0]
+                limit_raw = (params.get("limit") or [500])[0]
+                try:
+                    limit = int(limit_raw)
+                except (TypeError, ValueError):
+                    self._json({
+                        "ok": False,
+                        "error": {"code": "INVALID_INPUT", "message": "limit must be an integer"},
+                    }, 400)
+                    return
+                reviews = SERVICE.list_search_feedback(
+                    video_id=video_id,
+                    label=label,
+                    limit=limit,
+                )
+                self._json({"ok": True, "count": len(reviews), "reviews": reviews})
+                return
+
+            if path == "/v1/feedback/videos":
+                videos = SERVICE.list_feedback_videos()
+                self._json({"ok": True, "count": len(videos), "videos": videos})
+                return
+
+            if path.startswith("/v1/"):
+                self._json({"ok": False, "error": {"code": "NOT_FOUND", "message": "Route not found"}}, 404)
+                return
+
+            self._serve_static(path)
+        except Exception as exc:
+            traceback.print_exc()
+            self._json({"ok": False, "error": {"code": "INTERNAL_ERROR", "message": str(exc)}}, 500)
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        try:
+            if path == "/v1/feedback/search-review":
+                params = parse_qs(parsed.query or "")
+                video_id = (params.get("video_id") or [None])[0]
+                label = (params.get("label") or [None])[0]
+                deleted_count = SERVICE.delete_search_feedback(
+                    video_id=video_id,
+                    label=label,
+                )
+                self._json({"ok": True, "deleted_count": deleted_count})
+                return
+
+            if path.startswith("/v1/videos/"):
+                video_id = unquote(path.rsplit("/", 1)[-1])
+                SERVICE.delete_video(video_id)
+                self._json({"ok": True, "deleted": {"video_id": video_id}})
+                return
+
+            self._json({"ok": False, "error": {"code": "NOT_FOUND", "message": "Route not found"}}, 404)
+        except ValueError as exc:
+            self._json({"ok": False, "error": {"code": "INVALID_INPUT", "message": str(exc)}}, 400)
+        except KeyError as exc:
+            self._json({"ok": False, "error": {"code": "VIDEO_NOT_FOUND", "message": str(exc)}}, 404)
+        except Exception as exc:
+            traceback.print_exc()
+            self._json({"ok": False, "error": {"code": "INTERNAL_ERROR", "message": str(exc)}}, 500)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        try:
+            body = self._read_json_body()
+
+            if path == "/v1/ingest/videos":
+                result = SERVICE.ingest(
+                    url=(body.get("url") or "").strip(),
+                    mode=(body.get("mode") or "single"),
+                    language=(body.get("language") or "ja"),
+                    force=bool(body.get("force", False)),
+                )
+                self._json({"ok": True, **result})
+                return
+
+            if path == "/v1/feedback/search-review":
+                feedback = SERVICE.save_search_feedback(body)
+                self._json({"ok": True, "feedback": feedback})
+                return
+
+            if path == "/v1/search":
+                query = (body.get("query") or "").strip()
+                if not query:
+                    self._json({"ok": False, "error": {"code": "INVALID_QUERY", "message": "query is required"}}, 400)
+                    return
+                k = max(1, min(int(body.get("k", 5)), 12))
+                language = body.get("language")
+                retrieval_mode = str(body.get("retrieval_mode") or "hybrid").strip().lower()
+                if retrieval_mode not in RETRIEVAL_MODES:
+                    self._json({
+                        "ok": False,
+                        "error": {
+                            "code": "INVALID_INPUT",
+                            "message": "retrieval_mode must be one of: dense, hybrid, lexical",
+                        },
+                    }, 400)
+                    return
+                retrieval = SERVICE.retrieve(
+                    query,
+                    k=k,
+                    language=normalize_language(language) if language else None,
+                    retrieval_mode=retrieval_mode,
+                )
+                self._json({
+                    "ok": True,
+                    "query": query,
+                    "k": k,
+                    "retrieval_mode": retrieval["retrieval_mode"],
+                    "retrieval_details": retrieval["details"],
+                    "result_count": len(retrieval["results"]),
+                    "results": retrieval["results"],
+                })
+                return
+
+            if path == "/v1/ask":
+                question = (body.get("question") or "").strip()
+                if not question:
+                    self._json({"ok": False, "error": {"code": "INVALID_QUESTION", "message": "question is required"}}, 400)
+                    return
+                k = max(1, min(int(body.get("k", 5)), 12))
+                language = body.get("language")
+                retrieval_mode = str(body.get("retrieval_mode") or "hybrid").strip().lower()
+                provider = str(body.get("provider") or DEFAULT_ASK_PROVIDER).strip().lower()
+                if retrieval_mode not in RETRIEVAL_MODES:
+                    self._json({
+                        "ok": False,
+                        "error": {
+                            "code": "INVALID_INPUT",
+                            "message": "retrieval_mode must be one of: dense, hybrid, lexical",
+                        },
+                    }, 400)
+                    return
+
+                if provider not in ASK_PROVIDERS:
+                    self._json({
+                        "ok": False,
+                        "error": {
+                            "code": "INVALID_INPUT",
+                            "message": "provider must be one of: chatgpt, claude",
+                        },
+                    }, 400)
+                    return
+
+                retrieval = SERVICE.retrieve(
+                    question,
+                    k=k,
+                    language=normalize_language(language) if language else None,
+                    retrieval_mode=retrieval_mode,
+                )
+                result = SERVICE.ask_with_sources(question, retrieval["results"], provider=provider)
+                self._json({
+                    "ok": True,
+                    "retrieval_mode": retrieval["retrieval_mode"],
+                    "retrieval_details": retrieval["details"],
+                    **result,
+                })
+                return
+
+            self._json({"ok": False, "error": {"code": "NOT_FOUND", "message": "Route not found"}}, 404)
+        except ValueError as exc:
+            self._json({"ok": False, "error": {"code": "INVALID_INPUT", "message": str(exc)}}, 400)
+        except Exception as exc:
+            traceback.print_exc()
+            self._json({"ok": False, "error": {"code": "INTERNAL_ERROR", "message": str(exc)}}, 500)
+
+
+def main(argv: List[str]) -> int:
+    host = "127.0.0.1"
+    port = 8000
+    if len(argv) >= 2:
+        port = int(argv[1])
+
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"Local preview server running at http://{host}:{port}")
+    print("Press Ctrl+C to stop")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
