@@ -12,14 +12,15 @@
   </head>
   <body>
     <header class="appbar">
-      <div class="brand">
+      <a id="homeBrandLink" class="brand brand-link" href="./index.html" aria-label="Home">
         <img src="./icons/icon-play.svg" alt="" aria-hidden="true" />
         <div>
           <p id="eyebrowText" class="eyebrow">YouTube Transcript RAG</p>
           <p class="brand-sub">Local Studio</p>
         </div>
-      </div>
+      </a>
       <div class="appbar-actions">
+        <a id="homeNavLink" class="app-nav-link" href="./index.html">Home</a>
         <a id="evaluationNavLink" class="app-nav-link" href="./evaluation.html">Evaluation</a>
         <a id="reviewsNavLink" class="app-nav-link" href="./reviews.html">Reviews</a>
         <label class="locale-switch">
@@ -98,6 +99,20 @@
           </div>
           <div id="videosTable" class="table-wrap"></div>
         </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h2 class="section-title">
+            <img src="./icons/icon-library.svg" alt="" aria-hidden="true" />
+            <span id="posterHeading">Poster Gallery</span>
+          </h2>
+          <button id="refreshPosters" class="btn secondary" type="button">Refresh</button>
+        </div>
+        <p id="posterDesc" class="section-desc">
+          Open video detail pages by clicking a poster card.
+        </p>
+        <div id="posterGrid" class="poster-grid"></div>
       </section>
 
       <section class="panel">
@@ -229,7 +244,13 @@
           </label>
           <button id="askSubmitBtn" class="btn" type="submit">Generate Answer</button>
         </form>
-        <pre id="askResult" class="output"></pre>
+        <div id="askSummary" class="search-summary">Run a question to generate an answer with sources.</div>
+        <article id="askAnswer" class="ask-answer"></article>
+        <div id="askSources" class="search-cards"></div>
+        <details class="raw-json">
+          <summary id="askRawJsonSummary">Raw JSON</summary>
+          <pre id="askResult" class="output"></pre>
+        </details>
       </section>
     </main>
 

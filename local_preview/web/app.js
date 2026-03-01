@@ -1,7 +1,9 @@
 const els = {
   localeSelect: document.getElementById("localeSelect"),
   localeLabel: document.getElementById("localeLabel"),
+  homeBrandLink: document.getElementById("homeBrandLink"),
   eyebrowText: document.getElementById("eyebrowText"),
+  homeNavLink: document.getElementById("homeNavLink"),
   evaluationNavLink: document.getElementById("evaluationNavLink"),
   reviewsNavLink: document.getElementById("reviewsNavLink"),
   heroTitle: document.getElementById("heroTitle"),
@@ -27,6 +29,10 @@ const els = {
   videosTable: document.getElementById("videosTable"),
   refreshJobs: document.getElementById("refreshJobs"),
   refreshVideos: document.getElementById("refreshVideos"),
+  posterHeading: document.getElementById("posterHeading"),
+  posterDesc: document.getElementById("posterDesc"),
+  refreshPosters: document.getElementById("refreshPosters"),
+  posterGrid: document.getElementById("posterGrid"),
   logsHeading: document.getElementById("logsHeading"),
   logsToggleBtn: document.getElementById("logsToggleBtn"),
   logsPanel: document.getElementById("logsPanel"),
@@ -72,6 +78,10 @@ const els = {
   askK: document.getElementById("askK"),
   askMode: document.getElementById("askMode"),
   askProvider: document.getElementById("askProvider"),
+  askSummary: document.getElementById("askSummary"),
+  askAnswer: document.getElementById("askAnswer"),
+  askSources: document.getElementById("askSources"),
+  askRawJsonSummary: document.getElementById("askRawJsonSummary"),
   askResult: document.getElementById("askResult"),
 };
 
@@ -85,6 +95,7 @@ const I18N = {
   "en-US": {
     pageTitle: "YouTube Transcript RAG | Local Preview",
     localeLabel: "Language",
+    navHome: "Home",
     eyebrowText: "YouTube Transcript RAG",
     navEvaluation: "Evaluation",
     navReviews: "Reviews",
@@ -101,6 +112,10 @@ const I18N = {
     jobsHeading: "Jobs",
     jobsDesc: "Track ingestion status, failures, and retry outcomes for each queued video.",
     videosHeading: "Videos",
+    posterHeading: "Poster Gallery",
+    posterDesc: "Open video detail pages by clicking a poster card.",
+    posterOpen: "Open details",
+    postersEmpty: "No videos available yet.",
     refresh: "Refresh",
     logsHeading: "Troubleshooting Logs",
     logsShowBtn: "Show Troubleshooting Logs",
@@ -160,6 +175,13 @@ const I18N = {
     askProviderClaude: "Claude",
     askSubmitBtn: "Generate Answer",
     askGenerating: "Generating answer...",
+    askSummaryDefault: "Run a question to generate an answer with sources.",
+    askSummaryCount: "{count} source chunk(s) for {question}",
+    askModeChip: "mode: {value}",
+    askProviderChip: "provider: {value}",
+    askModelChip: "model: {value}",
+    askNoSources: "No sources found for this answer.",
+    askRawJsonSummary: "Raw JSON",
     jobsEmpty: "No data.",
     videosEmpty: "No data.",
     apiConnectionError: "API connection error: {message}",
@@ -185,6 +207,7 @@ const I18N = {
   "ja-JP": {
     pageTitle: "YouTube Transcript RAG | ローカルプレビュー",
     localeLabel: "言語",
+    navHome: "ホーム",
     eyebrowText: "YouTube Transcript RAG",
     navEvaluation: "評価",
     navReviews: "レビュー",
@@ -201,6 +224,10 @@ const I18N = {
     jobsHeading: "ジョブ",
     jobsDesc: "動画ごとの取り込み状態、失敗、再試行結果を確認できます。",
     videosHeading: "動画",
+    posterHeading: "ポスターギャラリー",
+    posterDesc: "ポスターカードをクリックして詳細ページを開きます。",
+    posterOpen: "詳細を見る",
+    postersEmpty: "まだ動画がありません。",
     refresh: "更新",
     logsHeading: "トラブルシュートログ",
     logsShowBtn: "トラブルシュートログを表示",
@@ -260,6 +287,13 @@ const I18N = {
     askProviderClaude: "Claude",
     askSubmitBtn: "回答生成",
     askGenerating: "回答を生成中...",
+    askSummaryDefault: "質問を実行すると、出典付き回答を表示します。",
+    askSummaryCount: "{question} の出典チャンク: {count} 件",
+    askModeChip: "モード: {value}",
+    askProviderChip: "プロバイダー: {value}",
+    askModelChip: "モデル: {value}",
+    askNoSources: "この回答に対応する出典が見つかりませんでした。",
+    askRawJsonSummary: "Raw JSON",
     jobsEmpty: "データがありません。",
     videosEmpty: "データがありません。",
     apiConnectionError: "API接続エラー: {message}",
@@ -291,6 +325,11 @@ if (!I18N[currentLocale]) {
 
 let latestSearchResponse = null;
 let latestSearchContext = {
+  query: "",
+  retrieval_mode: "hybrid",
+};
+let latestAskResponse = null;
+let latestAskContext = {
   query: "",
   retrieval_mode: "hybrid",
 };
@@ -626,6 +665,81 @@ function renderSearchResults(response) {
   }).join("");
 }
 
+function renderAskResponse(response) {
+  const details = response?.retrieval_details || {};
+  const chips = [
+    t("askModeChip", { value: response?.retrieval_mode || "-" }),
+    t("askProviderChip", { value: response?.provider || "-" }),
+    t("askModelChip", { value: response?.model || "-" }),
+    t("searchDenseChip", { value: details.dense_candidates ?? 0 }),
+    t("searchLexicalChip", { value: details.lexical_candidates ?? 0 }),
+    details.fallback ? t("searchFallbackChip", { value: details.fallback }) : null,
+  ].filter(Boolean);
+
+  const question = latestAskContext.query || els.askQuestion.value.trim();
+  const sources = Array.isArray(response?.sources) ? response.sources : [];
+  els.askSummary.innerHTML = `
+    <div>${escapeHtml(t("askSummaryCount", { count: sources.length, question }))}</div>
+    <div class="chip-row">${chips.map((chip) => `<span class="chip">${escapeHtml(chip)}</span>`).join("")}</div>
+  `;
+
+  els.askAnswer.textContent = String(response?.answer || "").trim() || "-";
+
+  if (!sources.length) {
+    els.askSources.innerHTML = `<div class="search-empty">${escapeHtml(t("askNoSources"))}</div>`;
+    return;
+  }
+
+  els.askSources.innerHTML = sources.map((row, index) => {
+    const score = Number(row?.score ?? 0).toFixed(4);
+    const dense = row?.dense_score != null ? Number(row.dense_score).toFixed(4) : null;
+    const lexical = row?.lexical_score != null ? Number(row.lexical_score).toFixed(4) : null;
+    const hybrid = row?.hybrid_score != null ? Number(row.hybrid_score).toFixed(5) : null;
+    const scoreBits = [
+      `${t("score")} ${score}`,
+      dense ? `${t("dense")} ${dense}` : null,
+      lexical ? `${t("lexical")} ${lexical}` : null,
+      hybrid ? `${t("rrf")} ${hybrid}` : null,
+    ].filter(Boolean);
+
+    const key = resultIdentity(row);
+    const reviewState = key ? reviewStateByKey.get(key) : null;
+    const selectedLabel = reviewState?.label || null;
+    const pending = key ? reviewPendingKeys.has(key) : false;
+    const statusText = pending ? t("reviewSaving") : (reviewState?.message || "");
+    const statusClass = pending
+      ? "pending"
+      : reviewState?.tone === "error"
+      ? "error"
+      : reviewState?.tone === "ok"
+      ? "ok"
+      : "";
+
+    return `
+      <article class="search-card">
+        <div class="search-card-head">
+          <div class="search-rank">#${escapeHtml(row?.rank ?? (index + 1))}</div>
+          <div class="search-title">${escapeHtml(row?.video_title || t("untitledVideo"))}</div>
+          <div class="search-lang">${escapeHtml(row?.language || "-")}</div>
+        </div>
+        <div class="search-meta">
+          <span>${escapeHtml(formatSeconds(row?.start))} - ${escapeHtml(formatSeconds(row?.end))}</span>
+          <span>${escapeHtml(scoreBits.join(" · "))}</span>
+        </div>
+        <p class="search-snippet">${escapeHtml(truncate(row?.text, 340))}</p>
+        <div class="search-actions">
+          <button class="btn search-link-btn" type="button" data-action="ask-play" data-result-index="${index}">${escapeHtml(t("searchOpenTimestamp"))}</button>
+          <div class="review-group">
+            <button class="btn secondary review-btn ${selectedLabel === "relevant" ? "active relevant" : ""}" type="button" data-action="ask-review" data-review-label="relevant" data-result-index="${index}" ${pending ? "disabled" : ""}>${escapeHtml(t("reviewRelevant"))}</button>
+            <button class="btn secondary review-btn ${selectedLabel === "not_relevant" ? "active not-relevant" : ""}" type="button" data-action="ask-review" data-review-label="not_relevant" data-result-index="${index}" ${pending ? "disabled" : ""}>${escapeHtml(t("reviewNotRelevant"))}</button>
+          </div>
+          ${statusText ? `<span class="review-status ${statusClass}">${escapeHtml(statusText)}</span>` : ""}
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
 function renderTable(container, columns, rows, actions = null, emptyMessageKey = "jobsEmpty") {
   if (!rows.length) {
     container.innerHTML = `<p style="padding:0.7rem">${escapeHtml(t(emptyMessageKey))}</p>`;
@@ -648,6 +762,37 @@ function renderTable(container, columns, rows, actions = null, emptyMessageKey =
       <tbody>${body}</tbody>
     </table>
   `;
+}
+
+function posterThumbnailUrl(videoId) {
+  const safeVideoId = encodeURIComponent(String(videoId || "").trim());
+  return `https://i.ytimg.com/vi/${safeVideoId}/hqdefault.jpg`;
+}
+
+function renderPosterGallery(rows) {
+  if (!Array.isArray(rows) || !rows.length) {
+    els.posterGrid.innerHTML = `<div class="search-empty">${escapeHtml(t("postersEmpty"))}</div>`;
+    return;
+  }
+
+  els.posterGrid.innerHTML = rows.map((row) => {
+    const videoId = String(row?.video_id || "").trim();
+    if (!videoId) {
+      return "";
+    }
+    const title = String(row?.title || t("untitledVideo"));
+    const href = `./video_detail.html?video_id=${encodeURIComponent(videoId)}`;
+    return `
+      <a class="poster-card" href="${href}" data-testid="poster-card" data-video-id="${escapeHtml(videoId)}">
+        <img class="poster-image" src="${posterThumbnailUrl(videoId)}" alt="${escapeHtml(title)} poster" loading="lazy" />
+        <div class="poster-content">
+          <h3 class="poster-title" data-testid="poster-title">${escapeHtml(title)}</h3>
+          <p class="poster-meta">${escapeHtml(videoId)}</p>
+          <span class="poster-link">${escapeHtml(t("posterOpen"))}</span>
+        </div>
+      </a>
+    `;
+  }).join("");
 }
 
 function saveSearchState(response = latestSearchResponse) {
@@ -715,17 +860,17 @@ function markFeedbackRevision() {
   }
 }
 
-async function hydrateReviewStateFromServer() {
-  if (!latestSearchResponse || !Array.isArray(latestSearchResponse.results) || !latestSearchResponse.results.length) {
+async function hydrateReviewStateFromServer(rows) {
+  if (!Array.isArray(rows) || !rows.length) {
     return;
   }
 
   try {
     const payload = await apiRequest("/v1/feedback/search-review?limit=5000");
-    const rows = Array.isArray(payload?.reviews) ? payload.reviews : [];
+    const payloadRows = Array.isArray(payload?.reviews) ? payload.reviews : [];
 
     const allowedKeys = new Set();
-    latestSearchResponse.results.forEach((row) => {
+    rows.forEach((row) => {
       const key = resultIdentity(row);
       if (key) {
         allowedKeys.add(key);
@@ -805,6 +950,7 @@ async function refreshJobs() {
 
 async function refreshVideos() {
   const data = await apiRequest("/v1/videos");
+  const videos = data.videos || [];
   renderTable(
     els.videosTable,
     [
@@ -813,10 +959,11 @@ async function refreshVideos() {
       { key: "language", label: t("tableLang") },
       { key: "num_chunks", label: t("tableChunks") },
     ],
-    data.videos || [],
+    videos,
     (row) => `<button class="btn secondary delete-video" data-video-id="${escapeHtml(row.video_id)}">${escapeHtml(t("delete"))}</button>`,
     "videosEmpty",
   );
+  renderPosterGallery(videos);
 }
 
 async function runIngest(event) {
@@ -860,7 +1007,7 @@ async function runSearch(event) {
       query: response?.query || els.searchQuery.value.trim(),
       retrieval_mode: response?.retrieval_mode || els.searchMode.value,
     };
-    await hydrateReviewStateFromServer();
+    await hydrateReviewStateFromServer(response?.results || []);
     renderSearchResults(response);
     els.searchResult.textContent = JSON.stringify(response, null, 2);
     saveSearchState(response);
@@ -874,20 +1021,36 @@ async function runSearch(event) {
 
 async function runAsk(event) {
   event.preventDefault();
+  els.askSummary.textContent = t("askGenerating");
+  els.askAnswer.textContent = t("askGenerating");
+  els.askSources.innerHTML = "";
   els.askResult.textContent = t("askGenerating");
 
   try {
+    const question = els.askQuestion.value.trim();
+    const retrievalMode = els.askMode.value;
     const response = await apiRequest("/v1/ask", {
       method: "POST",
       body: {
-        question: els.askQuestion.value.trim(),
+        question,
         k: Number(els.askK.value || 5),
-        retrieval_mode: els.askMode.value,
+        retrieval_mode: retrievalMode,
         provider: els.askProvider.value,
       },
     });
+    latestAskResponse = response;
+    latestAskContext = {
+      query: question,
+      retrieval_mode: response?.retrieval_mode || retrievalMode,
+    };
+    await hydrateReviewStateFromServer(response?.sources || []);
+    renderAskResponse(response);
     els.askResult.textContent = JSON.stringify(response, null, 2);
   } catch (err) {
+    latestAskResponse = null;
+    els.askSummary.textContent = t("askSummaryDefault");
+    els.askAnswer.textContent = t("askError", { message: String(err.message || err) });
+    els.askSources.innerHTML = `<div class="search-empty">${escapeHtml(t("askNoSources"))}</div>`;
     els.askResult.textContent = t("askError", { message: String(err.message || err) });
   }
 }
@@ -916,12 +1079,7 @@ async function onVideosClick(event) {
   }
 }
 
-async function saveReviewForResult(resultIndex, label) {
-  const row = latestSearchResponse?.results?.[resultIndex];
-  if (!row) {
-    return;
-  }
-
+async function saveReviewForRow(row, label, context, rerender) {
   const videoId = extractVideoId(row?.video_id) || extractVideoId(row?.url) || extractVideoId(row?.video_url);
   if (!videoId) {
     return;
@@ -939,14 +1097,14 @@ async function saveReviewForResult(resultIndex, label) {
     message: t("reviewSaving"),
     tone: "pending",
   });
-  renderSearchResults(latestSearchResponse);
+  rerender();
 
   try {
     const response = await apiRequest("/v1/feedback/search-review", {
       method: "POST",
       body: {
-        query: latestSearchContext.query || els.searchQuery.value.trim() || "(unspecified)",
-        retrieval_mode: latestSearchContext.retrieval_mode,
+        query: context.query || "(unspecified)",
+        retrieval_mode: context.retrieval_mode || "hybrid",
         label,
         video_id: videoId,
         chunk_index: row.chunk_index ?? null,
@@ -960,7 +1118,7 @@ async function saveReviewForResult(resultIndex, label) {
         lexical_score: optionalNumber(row.lexical_score),
         hybrid_score: optionalNumber(row.hybrid_score),
         rank: row.rank ?? null,
-        model: latestSearchContext.retrieval_mode,
+        model: context.retrieval_mode || "hybrid",
       },
     });
 
@@ -979,9 +1137,7 @@ async function saveReviewForResult(resultIndex, label) {
     });
   } finally {
     reviewPendingKeys.delete(key);
-    if (latestSearchResponse) {
-      renderSearchResults(latestSearchResponse);
-    }
+    rerender();
   }
 }
 
@@ -1010,7 +1166,55 @@ function onSearchCardsClick(event) {
   if (action === "review") {
     const label = button.getAttribute("data-review-label");
     if (label === "relevant" || label === "not_relevant") {
-      saveReviewForResult(idx, label).catch(() => {});
+      saveReviewForRow(
+        row,
+        label,
+        latestSearchContext,
+        () => {
+          if (latestSearchResponse) {
+            renderSearchResults(latestSearchResponse);
+          }
+        },
+      ).catch(() => {});
+    }
+  }
+}
+
+function onAskSourcesClick(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button) {
+    return;
+  }
+
+  const idx = Number(button.getAttribute("data-result-index"));
+  if (!Number.isInteger(idx) || idx < 0) {
+    return;
+  }
+
+  const row = latestAskResponse?.sources?.[idx];
+  if (!row) {
+    return;
+  }
+
+  const action = button.getAttribute("data-action");
+  if (action === "ask-play") {
+    loadPlayerForResult(row, true).catch(() => {});
+    return;
+  }
+
+  if (action === "ask-review") {
+    const label = button.getAttribute("data-review-label");
+    if (label === "relevant" || label === "not_relevant") {
+      saveReviewForRow(
+        row,
+        label,
+        latestAskContext,
+        () => {
+          if (latestAskResponse) {
+            renderAskResponse(latestAskResponse);
+          }
+        },
+      ).catch(() => {});
     }
   }
 }
@@ -1041,7 +1245,9 @@ function applyLocale(locale, options = {}) {
 
   els.localeSelect.value = locale;
   els.localeLabel.textContent = t("localeLabel");
+  els.homeBrandLink?.setAttribute("aria-label", t("navHome"));
   els.eyebrowText.textContent = t("eyebrowText");
+  els.homeNavLink.textContent = t("navHome");
   els.evaluationNavLink.textContent = t("navEvaluation");
   els.reviewsNavLink.textContent = t("navReviews");
   els.heroTitle.textContent = t("heroTitle");
@@ -1059,8 +1265,14 @@ function applyLocale(locale, options = {}) {
   els.jobsHeading.textContent = t("jobsHeading");
   els.jobsDesc.textContent = t("jobsDesc");
   els.videosHeading.textContent = t("videosHeading");
+  els.posterHeading.textContent = t("posterHeading");
+  els.posterDesc.textContent = t("posterDesc");
   els.refreshJobs.textContent = t("refresh");
   els.refreshVideos.textContent = t("refresh");
+  els.refreshPosters.textContent = t("refresh");
+  if (!els.posterGrid.children.length) {
+    els.posterGrid.innerHTML = `<div class="search-empty">${escapeHtml(t("postersEmpty"))}</div>`;
+  }
   els.logsHeading.textContent = t("logsHeading");
   updateLogsToggleButton();
   els.logsDesc.textContent = t("logsDesc");
@@ -1113,12 +1325,22 @@ function applyLocale(locale, options = {}) {
     els.askProvider.value = selectedAskProvider;
   }
   els.askSubmitBtn.textContent = t("askSubmitBtn");
+  els.askRawJsonSummary.textContent = t("askRawJsonSummary");
+  if (latestAskResponse) {
+    renderAskResponse(latestAskResponse);
+    els.askResult.textContent = JSON.stringify(latestAskResponse, null, 2);
+  } else {
+    els.askSummary.textContent = t("askSummaryDefault");
+    els.askAnswer.textContent = "";
+    els.askSources.innerHTML = "";
+  }
 
   if (!options.skipRefresh) {
     Promise.all([refreshJobs(), refreshVideos()]).catch((err) => {
       const msg = t("apiConnectionError", { message: String(err.message || err) });
       els.jobsTable.innerHTML = `<p style="padding:0.7rem">${escapeHtml(msg)}</p>`;
       els.videosTable.innerHTML = `<p style="padding:0.7rem">${escapeHtml(msg)}</p>`;
+      els.posterGrid.innerHTML = `<div class="search-empty">${escapeHtml(msg)}</div>`;
     });
   }
 }
@@ -1153,6 +1375,17 @@ function wireEvents() {
     }
   });
 
+  els.refreshPosters.addEventListener("click", async () => {
+    els.refreshPosters.disabled = true;
+    try {
+      await refreshVideos();
+    } catch (err) {
+      els.posterGrid.innerHTML = `<div class="search-empty">${escapeHtml(String(err.message || err))}</div>`;
+    } finally {
+      els.refreshPosters.disabled = false;
+    }
+  });
+
   els.logsToggleBtn.addEventListener("click", async () => {
     const shouldOpen = !logsPanelExpanded;
     setLogsPanelExpanded(shouldOpen);
@@ -1180,6 +1413,7 @@ function wireEvents() {
   els.playerMuteToggle.addEventListener("click", onPlayerMuteToggle);
   els.videosTable.addEventListener("click", onVideosClick);
   els.searchCards.addEventListener("click", onSearchCardsClick);
+  els.askSources.addEventListener("click", onAskSourcesClick);
 }
 
 async function boot() {
@@ -1190,7 +1424,7 @@ async function boot() {
   loadYouTubeApi().catch(() => {});
 
   if (restoredSearch) {
-    await hydrateReviewStateFromServer();
+    await hydrateReviewStateFromServer(latestSearchResponse?.results || []);
     if (latestSearchResponse) {
       renderSearchResults(latestSearchResponse);
     }
@@ -1202,6 +1436,7 @@ async function boot() {
     const msg = t("apiConnectionError", { message: String(err.message || err) });
     els.jobsTable.innerHTML = `<p style="padding:0.7rem">${escapeHtml(msg)}</p>`;
     els.videosTable.innerHTML = `<p style="padding:0.7rem">${escapeHtml(msg)}</p>`;
+    els.posterGrid.innerHTML = `<div class="search-empty">${escapeHtml(msg)}</div>`;
     if (logsPanelExpanded) {
       els.logsResult.textContent = msg;
     }

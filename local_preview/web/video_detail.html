@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YouTube Transcript RAG | Video Detail</title>
+    <link rel="icon" type="image/svg+xml" href="./icons/favicon-ytrag.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="appbar">
+      <a class="brand brand-link" href="./index.html" aria-label="Home">
+        <img src="./icons/icon-play.svg" alt="" aria-hidden="true" />
+        <div>
+          <p class="eyebrow">YouTube Transcript RAG</p>
+          <p class="brand-sub">Video Detail</p>
+        </div>
+      </a>
+      <div class="appbar-actions">
+        <a class="app-nav-link" href="./index.html">Back to Home</a>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="panel detail-shell">
+        <img id="detailPoster" class="detail-poster" src="" alt="Video poster" />
+        <div>
+          <p id="detailVideoId" class="detail-video-id"></p>
+          <h1 id="detailTitle" data-testid="detail-title">Loading...</h1>
+          <p id="detailMeta" class="subtitle"></p>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./video_detail.js"></script>
+  </body>
+</html>
