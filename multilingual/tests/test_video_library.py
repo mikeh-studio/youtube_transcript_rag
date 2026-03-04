@@ -19,42 +19,59 @@ class FakeProcessor:
 
     def extract_video_id(self, url):
         import re
+
         patterns = [
-            r'(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]+)',
-            r'(?:youtu\.be\/)([a-zA-Z0-9_-]+)',
+            r"(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]+)",
+            r"(?:youtu\.be\/)([a-zA-Z0-9_-]+)",
         ]
         for pattern in patterns:
             match = re.search(pattern, url)
             if match:
                 return match.group(1)
-        if re.match(r'^[a-zA-Z0-9_-]{11}$', url):
+        if re.match(r"^[a-zA-Z0-9_-]{11}$", url):
             return url
         return None
 
     def process_transcript(self, transcript, language):
         lines = []
         for seg in transcript:
-            text = seg.get("text", "") if isinstance(seg, dict) else getattr(seg, "text", "")
-            start = float(seg.get("start", 0.0) if isinstance(seg, dict) else getattr(seg, "start", 0.0))
-            duration = float(seg.get("duration", 0.0) if isinstance(seg, dict) else getattr(seg, "duration", 0.0))
+            text = (
+                seg.get("text", "")
+                if isinstance(seg, dict)
+                else getattr(seg, "text", "")
+            )
+            start = float(
+                seg.get("start", 0.0)
+                if isinstance(seg, dict)
+                else getattr(seg, "start", 0.0)
+            )
+            duration = float(
+                seg.get("duration", 0.0)
+                if isinstance(seg, dict)
+                else getattr(seg, "duration", 0.0)
+            )
             if text.strip():
-                lines.append({
-                    "start": start,
-                    "duration": duration,
-                    "raw_text": text.strip(),
-                    "embed_text": text.strip(),
-                })
+                lines.append(
+                    {
+                        "start": start,
+                        "duration": duration,
+                        "raw_text": text.strip(),
+                        "embed_text": text.strip(),
+                    }
+                )
         return lines
 
     def chunk_by_time_with_overlap(self, lines, window=45, overlap=15):
         chunks = []
         for line in lines:
-            chunks.append({
-                "start": line["start"],
-                "end": line["start"] + line["duration"],
-                "raw_text": line["raw_text"],
-                "embed_text": line["embed_text"],
-            })
+            chunks.append(
+                {
+                    "start": line["start"],
+                    "end": line["start"] + line["duration"],
+                    "raw_text": line["raw_text"],
+                    "embed_text": line["embed_text"],
+                }
+            )
         return chunks
 
     def generate_embeddings(self, chunks):
@@ -80,11 +97,13 @@ def _make_transcript(n_segments=5, start_offset=0.0, language="ja"):
             text = f"テスト文{i + 1}"
         else:
             text = f"Test sentence {i + 1}"
-        segments.append({
-            "text": text,
-            "start": start_offset + i * 10.0,
-            "duration": 8.0,
-        })
+        segments.append(
+            {
+                "text": text,
+                "start": start_offset + i * 10.0,
+                "duration": 8.0,
+            }
+        )
     return segments
 
 
@@ -97,6 +116,7 @@ def tmp_data_dir():
 @pytest.fixture
 def library(tmp_data_dir):
     from multilingual.video_library import VideoLibrary
+
     return VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
 
 
@@ -122,6 +142,7 @@ class TestVideoLibraryBasics:
         assert library.index.ntotal == 5
         # Default language is "ja"
         assert library.videos["abc12345678"]["language"] == "ja"
+        assert library.videos["abc12345678"]["full_transcript"]["segment_count"] == 5
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_add_english_video(self, mock_api_cls, library):
@@ -129,7 +150,9 @@ class TestVideoLibraryBasics:
         mock_api.fetch.return_value = _make_transcript(4, language="en")
         mock_api_cls.return_value = mock_api
 
-        vid = library.add_video("https://www.youtube.com/watch?v=eng12345678", language="en")
+        vid = library.add_video(
+            "https://www.youtube.com/watch?v=eng12345678", language="en"
+        )
         assert vid == "eng12345678"
         assert library.videos["eng12345678"]["language"] == "en"
         assert library.total_chunks == 4
@@ -196,7 +219,9 @@ class TestVideoLibraryBasics:
 
     def test_unsupported_language(self, library):
         with pytest.raises(ValueError, match="Unsupported language"):
-            library.add_video("https://www.youtube.com/watch?v=abc12345678", language="xx")
+            library.add_video(
+                "https://www.youtube.com/watch?v=abc12345678", language="xx"
+            )
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_list_videos_shows_language(self, mock_api_cls, library):
@@ -295,6 +320,7 @@ class TestVideoLibraryPersistence:
         assert lib2.index is not None
         assert lib2.index.ntotal == 5
         assert len(lib2.chunk_map) == 5
+        assert lib2.videos["abc12345678"]["full_transcript"]["segment_count"] == 5
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_save_preserves_language(self, mock_api_cls, tmp_data_dir):
@@ -334,12 +360,14 @@ class TestVideoLibraryPersistence:
 
     def test_load_nonexistent(self, tmp_data_dir):
         from multilingual.video_library import VideoLibrary
+
         lib = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
         assert len(lib.videos) == 0
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_save_empty_library(self, mock_api_cls, tmp_data_dir):
         from multilingual.video_library import VideoLibrary
+
         lib = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
         lib.save()
         assert os.path.exists(os.path.join(tmp_data_dir, "library_meta.json"))

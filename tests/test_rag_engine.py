@@ -11,25 +11,27 @@ class FakeLibrary:
     def __init__(self, videos=None):
         self.videos = videos or {}
 
-    def search(self, query, k=5):
+    def search(self, query, k=5, language=None):
         if not self.videos:
             return []
         results = []
         rank = 1
         for vid, data in self.videos.items():
             for i, chunk in enumerate(data["chunks"][:k]):
-                results.append({
-                    "rank": rank,
-                    "score": 0.9 - rank * 0.1,
-                    "video_id": vid,
-                    "video_title": data["title"],
-                    "video_url": f"https://www.youtube.com/watch?v={vid}",
-                    "chunk_index": i,
-                    "text": chunk["raw_text"],
-                    "start": chunk["start"],
-                    "end": chunk["end"],
-                    "url": f"https://www.youtube.com/watch?v={vid}&t={int(chunk['start'])}s",
-                })
+                results.append(
+                    {
+                        "rank": rank,
+                        "score": 0.9 - rank * 0.1,
+                        "video_id": vid,
+                        "video_title": data["title"],
+                        "video_url": f"https://www.youtube.com/watch?v={vid}",
+                        "chunk_index": i,
+                        "text": chunk["raw_text"],
+                        "start": chunk["start"],
+                        "end": chunk["end"],
+                        "url": f"https://www.youtube.com/watch?v={vid}&t={int(chunk['start'])}s",
+                    }
+                )
                 rank += 1
                 if rank > k:
                     break
@@ -39,28 +41,31 @@ class FakeLibrary:
 
 
 def _fake_library_with_data():
-    return FakeLibrary(videos={
-        "vid1": {
-            "title": "テスト動画1",
-            "chunks": [
-                {"raw_text": "これはテストです", "start": 0.0, "end": 45.0},
-                {"raw_text": "二番目のチャンク", "start": 30.0, "end": 75.0},
-            ],
-        },
-        "vid2": {
-            "title": "テスト動画2",
-            "chunks": [
-                {"raw_text": "別の動画のテスト", "start": 0.0, "end": 45.0},
-            ],
-        },
-    })
+    return FakeLibrary(
+        videos={
+            "vid1": {
+                "title": "テスト動画1",
+                "chunks": [
+                    {"raw_text": "これはテストです", "start": 0.0, "end": 45.0},
+                    {"raw_text": "二番目のチャンク", "start": 30.0, "end": 75.0},
+                ],
+            },
+            "vid2": {
+                "title": "テスト動画2",
+                "chunks": [
+                    {"raw_text": "別の動画のテスト", "start": 0.0, "end": 45.0},
+                ],
+            },
+        }
+    )
 
 
 class TestRAGEngineSearch:
     """Test the search passthrough."""
 
     def test_search_delegates_to_library(self):
-        from rag_engine import RAGEngine
+        from multilingual.rag_engine import RAGEngine
+
         lib = _fake_library_with_data()
         engine = RAGEngine(library=lib)
         results = engine.search("テスト", k=3)
@@ -68,7 +73,8 @@ class TestRAGEngineSearch:
         assert results[0]["video_id"] == "vid1"
 
     def test_search_empty_library(self):
-        from rag_engine import RAGEngine
+        from multilingual.rag_engine import RAGEngine
+
         engine = RAGEngine(library=FakeLibrary())
         results = engine.search("テスト")
         assert results == []
@@ -78,9 +84,9 @@ class TestRAGEngineAsk:
     """Test the RAG ask pipeline."""
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
-    @patch("rag_engine.anthropic.Anthropic")
+    @patch("multilingual.rag_engine.anthropic.Anthropic")
     def test_ask_calls_claude(self, mock_anthropic_cls):
-        from rag_engine import RAGEngine
+        from multilingual.rag_engine import RAGEngine
 
         # Set up mock response
         mock_client = MagicMock()
@@ -107,14 +113,16 @@ class TestRAGEngineAsk:
         assert "質問" in messages[0]["content"]
 
     def test_ask_empty_library(self):
-        from rag_engine import RAGEngine
+        from multilingual.rag_engine import RAGEngine
+
         engine = RAGEngine(library=FakeLibrary())
         result = engine.ask("テスト質問")
-        assert "動画がありません" in result["answer"]
+        assert "No videos in the library" in result["answer"]
         assert result["sources"] == []
 
     def test_ask_no_api_key(self):
-        from rag_engine import RAGEngine
+        from multilingual.rag_engine import RAGEngine
+
         lib = _fake_library_with_data()
         engine = RAGEngine(library=lib)
 
@@ -130,7 +138,7 @@ class TestFormatContext:
     """Test context formatting."""
 
     def test_format_context(self):
-        from rag_engine import _format_context
+        from multilingual.rag_engine import _format_context
 
         results = [
             {
@@ -155,5 +163,6 @@ class TestFormatContext:
         assert "テスト文2" in context
 
     def test_format_context_empty(self):
-        from rag_engine import _format_context
+        from multilingual.rag_engine import _format_context
+
         assert _format_context([]) == ""

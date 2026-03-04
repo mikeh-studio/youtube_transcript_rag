@@ -18,43 +18,60 @@ class FakeProcessor:
 
     def extract_video_id(self, url):
         import re
+
         patterns = [
-            r'(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]+)',
-            r'(?:youtu\.be\/)([a-zA-Z0-9_-]+)',
+            r"(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]+)",
+            r"(?:youtu\.be\/)([a-zA-Z0-9_-]+)",
         ]
         for pattern in patterns:
             match = re.search(pattern, url)
             if match:
                 return match.group(1)
-        if re.match(r'^[a-zA-Z0-9_-]{11}$', url):
+        if re.match(r"^[a-zA-Z0-9_-]{11}$", url):
             return url
         return None
 
-    def process_transcript(self, transcript):
+    def process_transcript(self, transcript, language=None):
         lines = []
         for seg in transcript:
-            text = seg.get("text", "") if isinstance(seg, dict) else getattr(seg, "text", "")
-            start = float(seg.get("start", 0.0) if isinstance(seg, dict) else getattr(seg, "start", 0.0))
-            duration = float(seg.get("duration", 0.0) if isinstance(seg, dict) else getattr(seg, "duration", 0.0))
+            text = (
+                seg.get("text", "")
+                if isinstance(seg, dict)
+                else getattr(seg, "text", "")
+            )
+            start = float(
+                seg.get("start", 0.0)
+                if isinstance(seg, dict)
+                else getattr(seg, "start", 0.0)
+            )
+            duration = float(
+                seg.get("duration", 0.0)
+                if isinstance(seg, dict)
+                else getattr(seg, "duration", 0.0)
+            )
             if text.strip():
-                lines.append({
-                    "start": start,
-                    "duration": duration,
-                    "raw_text": text.strip(),
-                    "embed_text": text.strip(),
-                })
+                lines.append(
+                    {
+                        "start": start,
+                        "duration": duration,
+                        "raw_text": text.strip(),
+                        "embed_text": text.strip(),
+                    }
+                )
         return lines
 
     def chunk_by_time_with_overlap(self, lines, window=45, overlap=15):
         # Simple chunking: one chunk per line for testing
         chunks = []
         for line in lines:
-            chunks.append({
-                "start": line["start"],
-                "end": line["start"] + line["duration"],
-                "raw_text": line["raw_text"],
-                "embed_text": line["embed_text"],
-            })
+            chunks.append(
+                {
+                    "start": line["start"],
+                    "end": line["start"] + line["duration"],
+                    "raw_text": line["raw_text"],
+                    "embed_text": line["embed_text"],
+                }
+            )
         return chunks
 
     def generate_embeddings(self, chunks):
@@ -66,7 +83,7 @@ class FakeProcessor:
         norms = np.linalg.norm(emb, axis=1, keepdims=True)
         return emb / norms
 
-    def encode_query(self, query):
+    def encode_query(self, query, language=None):
         rng = np.random.RandomState(hash(query) % 2**31)
         emb = rng.randn(1, self.embed_dim).astype("float32")
         norms = np.linalg.norm(emb, axis=1, keepdims=True)
@@ -77,11 +94,13 @@ def _make_transcript(n_segments=5, start_offset=0.0):
     """Create a fake transcript with n segments."""
     segments = []
     for i in range(n_segments):
-        segments.append({
-            "text": f"テスト文{i + 1}",
-            "start": start_offset + i * 10.0,
-            "duration": 8.0,
-        })
+        segments.append(
+            {
+                "text": f"テスト文{i + 1}",
+                "start": start_offset + i * 10.0,
+                "duration": 8.0,
+            }
+        )
     return segments
 
 
@@ -93,7 +112,8 @@ def tmp_data_dir():
 
 @pytest.fixture
 def library(tmp_data_dir):
-    from video_library import VideoLibrary
+    from multilingual.video_library import VideoLibrary
+
     return VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
 
 
@@ -105,7 +125,7 @@ class TestVideoLibraryBasics:
         assert library.total_chunks == 0
         assert library.index is None
 
-    @patch("video_library.YouTubeTranscriptApi")
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_add_video(self, mock_api_cls, library):
         mock_api = MagicMock()
         mock_api.fetch.return_value = _make_transcript(5)
@@ -117,8 +137,10 @@ class TestVideoLibraryBasics:
         assert library.total_chunks == 5
         assert library.index is not None
         assert library.index.ntotal == 5
+        assert "full_transcript" in library.videos["abc12345678"]
+        assert library.videos["abc12345678"]["full_transcript"]["segment_count"] == 5
 
-    @patch("video_library.YouTubeTranscriptApi")
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_add_duplicate_video(self, mock_api_cls, library):
         mock_api = MagicMock()
         mock_api.fetch.return_value = _make_transcript(3)
@@ -128,7 +150,7 @@ class TestVideoLibraryBasics:
         library.add_video("https://www.youtube.com/watch?v=abc12345678")
         assert len(library.videos) == 1  # No duplicate
 
-    @patch("video_library.YouTubeTranscriptApi")
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_add_multiple_videos(self, mock_api_cls, library):
         mock_api = MagicMock()
         mock_api.fetch.side_effect = [_make_transcript(3), _make_transcript(4)]
@@ -140,7 +162,7 @@ class TestVideoLibraryBasics:
         assert library.total_chunks == 7
         assert library.index.ntotal == 7
 
-    @patch("video_library.YouTubeTranscriptApi")
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_remove_video(self, mock_api_cls, library):
         mock_api = MagicMock()
         mock_api.fetch.return_value = _make_transcript(3)
@@ -160,7 +182,7 @@ class TestVideoLibraryBasics:
         with pytest.raises(ValueError):
             library.add_video("not-a-url")
 
-    @patch("video_library.YouTubeTranscriptApi")
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_list_videos(self, mock_api_cls, library):
         mock_api = MagicMock()
         mock_api.fetch.return_value = _make_transcript(3)
@@ -176,7 +198,7 @@ class TestVideoLibraryBasics:
 class TestVideoLibrarySearch:
     """Test search functionality."""
 
-    @patch("video_library.YouTubeTranscriptApi")
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_search_returns_results(self, mock_api_cls, library):
         mock_api = MagicMock()
         mock_api.fetch.return_value = _make_transcript(5)
@@ -194,7 +216,7 @@ class TestVideoLibrarySearch:
         results = library.search("テスト", k=3)
         assert results == []
 
-    @patch("video_library.YouTubeTranscriptApi")
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_search_k_capped(self, mock_api_cls, library):
         mock_api = MagicMock()
         mock_api.fetch.return_value = _make_transcript(2)
@@ -204,7 +226,7 @@ class TestVideoLibrarySearch:
         results = library.search("テスト", k=100)
         assert len(results) <= 2
 
-    @patch("video_library.YouTubeTranscriptApi")
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_search_cross_video(self, mock_api_cls, library):
         mock_api = MagicMock()
         mock_api.fetch.side_effect = [_make_transcript(3), _make_transcript(3)]
@@ -221,9 +243,9 @@ class TestVideoLibrarySearch:
 class TestVideoLibraryPersistence:
     """Test save/load functionality."""
 
-    @patch("video_library.YouTubeTranscriptApi")
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_save_and_load(self, mock_api_cls, tmp_data_dir):
-        from video_library import VideoLibrary
+        from multilingual.video_library import VideoLibrary
 
         mock_api = MagicMock()
         mock_api.fetch.return_value = _make_transcript(5)
@@ -241,10 +263,11 @@ class TestVideoLibraryPersistence:
         assert lib2.index is not None
         assert lib2.index.ntotal == 5
         assert len(lib2.chunk_map) == 5
+        assert lib2.videos["abc12345678"]["full_transcript"]["segment_count"] == 5
 
-    @patch("video_library.YouTubeTranscriptApi")
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_save_creates_files(self, mock_api_cls, tmp_data_dir):
-        from video_library import VideoLibrary
+        from multilingual.video_library import VideoLibrary
 
         mock_api = MagicMock()
         mock_api.fetch.return_value = _make_transcript(3)
@@ -258,14 +281,16 @@ class TestVideoLibraryPersistence:
         assert os.path.exists(os.path.join(tmp_data_dir, "library.faiss"))
 
     def test_load_nonexistent(self, tmp_data_dir):
-        from video_library import VideoLibrary
+        from multilingual.video_library import VideoLibrary
+
         lib = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
         # No auto-load should happen for empty dir
         assert len(lib.videos) == 0
 
-    @patch("video_library.YouTubeTranscriptApi")
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_save_empty_library(self, mock_api_cls, tmp_data_dir):
-        from video_library import VideoLibrary
+        from multilingual.video_library import VideoLibrary
+
         lib = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
         lib.save()
         assert os.path.exists(os.path.join(tmp_data_dir, "library_meta.json"))
