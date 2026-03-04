@@ -1,3 +1,8 @@
+const INGEST_UNLOCK_KEY = "yt_rag_ingest_unlocked";
+if (localStorage.getItem(INGEST_UNLOCK_KEY) !== "1") {
+  window.location.replace("./index.html#/ingest");
+}
+
 const LOCALE_STORAGE_KEY = "youtube-rag-ui-locale";
 const FEEDBACK_REVISION_STORAGE_KEY = "youtube-rag-feedback-revision";
 const DEFAULT_LOCALE = "en-US";
@@ -5,7 +10,9 @@ const DEFAULT_LOCALE = "en-US";
 const els = {
   localeSelect: document.getElementById("localeSelect"),
   localeLabel: document.getElementById("localeLabel"),
+  homeBrandLink: document.getElementById("homeBrandLink"),
   eyebrowText: document.getElementById("eyebrowText"),
+  homeNavLink: document.getElementById("homeNavLink"),
   evalNavLink: document.getElementById("evalNavLink"),
   backNavLink: document.getElementById("backNavLink"),
   heroTitle: document.getElementById("heroTitle"),
@@ -45,6 +52,7 @@ const I18N = {
   "en-US": {
     pageTitle: "YouTube Transcript RAG | Reviews",
     localeLabel: "Language",
+    navIngest: "Ingest",
     eyebrowText: "YouTube Transcript RAG",
     evalNav: "Evaluation",
     backNav: "Back to Search",
@@ -84,6 +92,7 @@ const I18N = {
   "ja-JP": {
     pageTitle: "YouTube Transcript RAG | レビュー",
     localeLabel: "言語",
+    navIngest: "取り込み",
     eyebrowText: "YouTube Transcript RAG",
     evalNav: "評価",
     backNav: "検索へ戻る",
@@ -396,7 +405,9 @@ function applyLocale(locale) {
 
   els.localeSelect.value = locale;
   els.localeLabel.textContent = t("localeLabel");
+  els.homeBrandLink?.setAttribute("aria-label", t("navIngest"));
   els.eyebrowText.textContent = t("eyebrowText");
+  els.homeNavLink.textContent = t("navIngest");
   els.evalNavLink.textContent = t("evalNav");
   els.backNavLink.textContent = t("backNav");
   els.heroTitle.textContent = t("heroTitle");

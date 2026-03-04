@@ -35,7 +35,9 @@ class VideoLibrary:
         self.processor = processor or TextProcessor()
 
         # Video storage: video_id -> video metadata and chunks
-        self.videos = {}  # {video_id: {"url": str, "title": str, "language": str, "chunks": list}}
+        self.videos = (
+            {}
+        )  # {video_id: {"url": str, "title": str, "language": str, "chunks": list}}
 
         # Unified index state
         self.index = None  # FAISS index
@@ -89,6 +91,7 @@ class VideoLibrary:
         print("Creating time-based chunks...")
         chunks = self.processor.chunk_by_time_with_overlap(lines, window=45, overlap=15)
         print(f"Created {len(chunks)} chunks")
+        full_transcript = self._build_full_transcript(lines)
 
         # Fetch video title
         title = self._fetch_title(video_id)
@@ -99,6 +102,7 @@ class VideoLibrary:
             "title": title,
             "language": language,
             "chunks": chunks,
+            "full_transcript": full_transcript,
         }
 
         # Rebuild the unified index
@@ -106,6 +110,34 @@ class VideoLibrary:
 
         print(f"Added video: {title} ({video_id}) [{language}] - {len(chunks)} chunks")
         return video_id
+
+    @staticmethod
+    def _build_full_transcript(lines):
+        """Build a full-transcript payload from processed transcript lines."""
+        segments = []
+        for line in lines:
+            raw_text = str(line.get("raw_text", "")).strip()
+            if not raw_text:
+                continue
+            start = float(line.get("start", 0.0))
+            duration = float(line.get("duration", 0.0))
+            end = max(start, start + duration)
+            segments.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "text": raw_text,
+                }
+            )
+
+        full_text = "\n".join(seg["text"] for seg in segments)
+        return {
+            "version": 1,
+            "text": full_text,
+            "segments": segments,
+            "segment_count": len(segments),
+            "char_count": len(full_text),
+        }
 
     def _fetch_transcript(self, video_id, transcript_codes):
         """Fetch transcript using youtube-transcript-api, with watch-page fallback."""
@@ -120,8 +152,12 @@ class VideoLibrary:
         fallback_error = None
         for attempt in range(1, 4):
             try:
-                fallback = self._fetch_transcript_from_watch_page(video_id, transcript_codes)
-                print("youtube-transcript-api failed; used watch-page caption fallback.")
+                fallback = self._fetch_transcript_from_watch_page(
+                    video_id, transcript_codes
+                )
+                print(
+                    "youtube-transcript-api failed; used watch-page caption fallback."
+                )
                 return fallback
             except Exception as err:
                 fallback_error = err
@@ -172,11 +208,13 @@ class VideoLibrary:
             text = "".join(seg.get("utf8", "") for seg in segs).strip()
             if not text:
                 continue
-            transcript.append({
-                "text": unescape(text),
-                "start": float(event.get("tStartMs", 0.0)) / 1000.0,
-                "duration": float(event.get("dDurationMs", 0.0)) / 1000.0,
-            })
+            transcript.append(
+                {
+                    "text": unescape(text),
+                    "start": float(event.get("tStartMs", 0.0)) / 1000.0,
+                    "duration": float(event.get("dDurationMs", 0.0)) / 1000.0,
+                }
+            )
 
         if not transcript:
             raise ValueError("Caption track fetched but transcript was empty.")
@@ -219,7 +257,16 @@ class VideoLibrary:
         query = dict(parse_qsl(parsed.query, keep_blank_values=True))
         query["fmt"] = "json3"
         new_query = urlencode(query, doseq=True)
-        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+        return urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                new_query,
+                parsed.fragment,
+            )
+        )
 
     @staticmethod
     def _is_retryable_network_error(err):
@@ -228,7 +275,17 @@ class VideoLibrary:
         if isinstance(err, URLError):
             return True
         msg = str(err).lower()
-        return any(token in msg for token in ("too many requests", "timed out", "timeout", "temporarily", "503", "429"))
+        return any(
+            token in msg
+            for token in (
+                "too many requests",
+                "timed out",
+                "timeout",
+                "temporarily",
+                "503",
+                "429",
+            )
+        )
 
     def _open_with_retry(self, req, timeout=20, retries=3):
         """Open URL with small backoff on retryable network errors."""
@@ -269,13 +326,15 @@ class VideoLibrary:
         """
         result = []
         for vid, data in self.videos.items():
-            result.append({
-                "video_id": vid,
-                "title": data["title"],
-                "url": data["url"],
-                "language": data.get("language", "ja"),
-                "num_chunks": len(data["chunks"]),
-            })
+            result.append(
+                {
+                    "video_id": vid,
+                    "title": data["title"],
+                    "url": data["url"],
+                    "language": data.get("language", "ja"),
+                    "num_chunks": len(data["chunks"]),
+                }
+            )
         return result
 
     def _rebuild_index(self):
@@ -340,19 +399,21 @@ class VideoLibrary:
             video_data = self.videos[video_id]
             chunk = video_data["chunks"][chunk_idx]
 
-            results.append({
-                "rank": rank + 1,
-                "score": float(score),
-                "video_id": video_id,
-                "video_title": video_data["title"],
-                "video_url": video_data["url"],
-                "language": video_data.get("language", "ja"),
-                "chunk_index": chunk_idx,
-                "text": chunk["raw_text"],
-                "start": chunk["start"],
-                "end": chunk["end"],
-                "url": f"https://www.youtube.com/watch?v={video_id}&t={int(chunk['start'])}s",
-            })
+            results.append(
+                {
+                    "rank": rank + 1,
+                    "score": float(score),
+                    "video_id": video_id,
+                    "video_title": video_data["title"],
+                    "video_url": video_data["url"],
+                    "language": video_data.get("language", "ja"),
+                    "chunk_index": chunk_idx,
+                    "text": chunk["raw_text"],
+                    "start": chunk["start"],
+                    "end": chunk["end"],
+                    "url": f"https://www.youtube.com/watch?v={video_id}&t={int(chunk['start'])}s",
+                }
+            )
 
         return results
 
@@ -378,6 +439,7 @@ class VideoLibrary:
                 "title": data["title"],
                 "language": data.get("language", "ja"),
                 "chunks": data["chunks"],
+                "full_transcript": data.get("full_transcript"),
             }
 
         meta_path = os.path.join(self.data_dir, "library_meta.json")
@@ -397,12 +459,25 @@ class VideoLibrary:
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
 
-        self.videos = meta["videos"]
+        raw_videos = meta.get("videos", {})
+        self.videos = {}
+        for video_id, data in raw_videos.items():
+            normalized = {
+                "url": data.get("url", f"https://www.youtube.com/watch?v={video_id}"),
+                "title": data.get("title", f"Video {video_id}"),
+                "language": data.get("language", "ja"),
+                "chunks": data.get("chunks", []),
+            }
+            if isinstance(data.get("full_transcript"), dict):
+                normalized["full_transcript"] = data.get("full_transcript")
+            self.videos[video_id] = normalized
         self.chunk_map = [tuple(x) for x in meta["chunk_map"]]
 
         if os.path.exists(index_path):
             self.index = faiss.read_index(index_path)
-            print(f"Loaded library: {len(self.videos)} videos, {self.index.ntotal} vectors")
+            print(
+                f"Loaded library: {len(self.videos)} videos, {self.index.ntotal} vectors"
+            )
         else:
             self.index = None
             print(f"Loaded library: {len(self.videos)} videos (no index)")

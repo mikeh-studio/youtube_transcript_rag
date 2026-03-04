@@ -83,6 +83,18 @@ const els = {
   askSources: document.getElementById("askSources"),
   askRawJsonSummary: document.getElementById("askRawJsonSummary"),
   askResult: document.getElementById("askResult"),
+  summaryHeading: document.getElementById("summaryHeading"),
+  summaryDesc: document.getElementById("summaryDesc"),
+  summaryForm: document.getElementById("summaryForm"),
+  summaryVideoLabel: document.getElementById("summaryVideoLabel"),
+  summaryVideoId: document.getElementById("summaryVideoId"),
+  summaryLanguageLabel: document.getElementById("summaryLanguageLabel"),
+  summaryLanguage: document.getElementById("summaryLanguage"),
+  summarySubmitBtn: document.getElementById("summarySubmitBtn"),
+  summaryStatus: document.getElementById("summaryStatus"),
+  summaryCards: document.getElementById("summaryCards"),
+  summaryRawJsonSummary: document.getElementById("summaryRawJsonSummary"),
+  summaryResult: document.getElementById("summaryResult"),
 };
 
 const LOCALE_STORAGE_KEY = "youtube-rag-ui-locale";
@@ -182,6 +194,25 @@ const I18N = {
     askModelChip: "model: {value}",
     askNoSources: "No sources found for this answer.",
     askRawJsonSummary: "Raw JSON",
+    summaryHeading: "Transcript TLDR",
+    summaryDesc: "Generate five timestamped highlights from a full transcript.",
+    summaryVideoLabel: "Video",
+    summaryLanguageLabel: "Output Language",
+    summaryLangEnglish: "English",
+    summaryLangJapanese: "Japanese",
+    summarySelectVideo: "Select a video",
+    summarySubmitBtn: "Generate TLDR",
+    summaryGenerating: "Generating TLDR...",
+    summaryStatusDefault: "Choose a video and generate TLDR highlights.",
+    summaryStatusCount: "{count} TLDR point(s) for {video}",
+    summaryProviderChip: "provider: {value}",
+    summaryModelChip: "model: {value}",
+    summaryLanguageChip: "language: {value}",
+    summaryNoVideo: "No videos available. Ingest a video first.",
+    summaryNoData: "No TLDR generated yet.",
+    summaryPlayAtTimestamp: "Play at timestamp",
+    summaryRawJsonSummary: "Raw JSON",
+    summaryError: "Summary failed: {message}",
     jobsEmpty: "No data.",
     videosEmpty: "No data.",
     apiConnectionError: "API connection error: {message}",
@@ -294,6 +325,25 @@ const I18N = {
     askModelChip: "モデル: {value}",
     askNoSources: "この回答に対応する出典が見つかりませんでした。",
     askRawJsonSummary: "Raw JSON",
+    summaryHeading: "Transcript TLDR",
+    summaryDesc: "文字起こし全体からタイムスタンプ付きの要点5件を生成します。",
+    summaryVideoLabel: "動画",
+    summaryLanguageLabel: "出力言語",
+    summaryLangEnglish: "英語",
+    summaryLangJapanese: "日本語",
+    summarySelectVideo: "動画を選択",
+    summarySubmitBtn: "TLDR生成",
+    summaryGenerating: "TLDRを生成中...",
+    summaryStatusDefault: "動画を選択してTLDRを生成してください。",
+    summaryStatusCount: "{video} のTLDR: {count} 件",
+    summaryProviderChip: "プロバイダー: {value}",
+    summaryModelChip: "モデル: {value}",
+    summaryLanguageChip: "言語: {value}",
+    summaryNoVideo: "動画がありません。先に取り込みを実行してください。",
+    summaryNoData: "まだTLDRが生成されていません。",
+    summaryPlayAtTimestamp: "タイムスタンプ再生",
+    summaryRawJsonSummary: "Raw JSON",
+    summaryError: "サマリー生成エラー: {message}",
     jobsEmpty: "データがありません。",
     videosEmpty: "データがありません。",
     apiConnectionError: "API接続エラー: {message}",
@@ -333,6 +383,7 @@ let latestAskContext = {
   query: "",
   retrieval_mode: "hybrid",
 };
+let latestSummaryResponse = null;
 let activePlayerState = null;
 const reviewStateByKey = new Map();
 const reviewPendingKeys = new Set();
@@ -740,6 +791,81 @@ function renderAskResponse(response) {
   }).join("");
 }
 
+function renderSummaryVideoOptions(videos) {
+  const rows = Array.isArray(videos) ? videos : [];
+  const selected = els.summaryVideoId.value;
+
+  const options = [
+    `<option value="">${escapeHtml(t("summarySelectVideo"))}</option>`,
+    ...rows.map((row) => {
+      const videoId = String(row?.video_id || "").trim();
+      const title = String(row?.title || t("untitledVideo")).trim();
+      if (!videoId) {
+        return "";
+      }
+      return `<option value="${escapeHtml(videoId)}">${escapeHtml(`${title} (${videoId})`)}</option>`;
+    }),
+  ].join("");
+
+  els.summaryVideoId.innerHTML = options;
+  if (selected && rows.some((row) => String(row?.video_id || "").trim() === selected)) {
+    els.summaryVideoId.value = selected;
+  } else if (rows.length) {
+    els.summaryVideoId.value = String(rows[0]?.video_id || "");
+  } else {
+    els.summaryVideoId.value = "";
+    if (!latestSummaryResponse) {
+      els.summaryStatus.textContent = t("summaryNoVideo");
+      els.summaryCards.innerHTML = `<div class="search-empty">${escapeHtml(t("summaryNoVideo"))}</div>`;
+    }
+  }
+}
+
+function renderSummaryResponse(response) {
+  const rows = Array.isArray(response?.summary) ? response.summary : [];
+  const selectedOption = els.summaryVideoId.options[els.summaryVideoId.selectedIndex];
+  const selectedText = selectedOption?.textContent || response?.video_id || "-";
+
+  const chips = [
+    t("summaryLanguageChip", { value: response?.language || "-" }),
+    t("summaryProviderChip", { value: response?.provider || "-" }),
+    t("summaryModelChip", { value: response?.model || "-" }),
+  ];
+
+  els.summaryStatus.innerHTML = `
+    <div>${escapeHtml(t("summaryStatusCount", { count: rows.length, video: selectedText }))}</div>
+    <div class="chip-row">${chips.map((chip) => `<span class="chip">${escapeHtml(chip)}</span>`).join("")}</div>
+  `;
+
+  if (!rows.length) {
+    els.summaryCards.innerHTML = `<div class="search-empty">${escapeHtml(t("summaryNoData"))}</div>`;
+    return;
+  }
+
+  els.summaryCards.innerHTML = rows.map((row, index) => {
+    const title = String(row?.title || `${index + 1}`);
+    const tldrText = String(row?.tldr || "").trim();
+    return `
+      <article class="search-card summary-card">
+        <div class="search-card-head">
+          <div class="search-rank">#${escapeHtml(row?.rank ?? index + 1)}</div>
+          <div class="search-title">${escapeHtml(title)}</div>
+          <div class="search-lang">${escapeHtml(response?.language || "-")}</div>
+        </div>
+        <div class="search-meta">
+          <span>${escapeHtml(formatSeconds(row?.start))} - ${escapeHtml(formatSeconds(row?.end))}</span>
+        </div>
+        <p class="search-snippet">${escapeHtml(tldrText)}</p>
+        <div class="search-actions">
+          <button class="btn search-link-btn" type="button" data-action="summary-play" data-summary-index="${index}">
+            ${escapeHtml(t("summaryPlayAtTimestamp"))}
+          </button>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
 function renderTable(container, columns, rows, actions = null, emptyMessageKey = "jobsEmpty") {
   if (!rows.length) {
     container.innerHTML = `<p style="padding:0.7rem">${escapeHtml(t(emptyMessageKey))}</p>`;
@@ -964,6 +1090,7 @@ async function refreshVideos() {
     "videosEmpty",
   );
   renderPosterGallery(videos);
+  renderSummaryVideoOptions(videos);
 }
 
 async function runIngest(event) {
@@ -1052,6 +1179,43 @@ async function runAsk(event) {
     els.askAnswer.textContent = t("askError", { message: String(err.message || err) });
     els.askSources.innerHTML = `<div class="search-empty">${escapeHtml(t("askNoSources"))}</div>`;
     els.askResult.textContent = t("askError", { message: String(err.message || err) });
+  }
+}
+
+async function runSummary(event) {
+  event.preventDefault();
+  els.summaryStatus.textContent = t("summaryGenerating");
+  els.summaryCards.innerHTML = "";
+  els.summaryResult.textContent = t("summaryGenerating");
+
+  const videoId = String(els.summaryVideoId.value || "").trim();
+  if (!videoId) {
+    latestSummaryResponse = null;
+    els.summaryStatus.textContent = t("summaryNoVideo");
+    els.summaryCards.innerHTML = `<div class="search-empty">${escapeHtml(t("summaryNoVideo"))}</div>`;
+    els.summaryResult.textContent = t("summaryNoVideo");
+    return;
+  }
+
+  try {
+    const response = await apiRequest("/v1/summaries/transcript", {
+      method: "POST",
+      body: {
+        video_id: videoId,
+        language: els.summaryLanguage.value,
+        provider: els.askProvider.value,
+        max_points: 5,
+      },
+    });
+    latestSummaryResponse = response;
+    renderSummaryResponse(response);
+    els.summaryResult.textContent = JSON.stringify(response, null, 2);
+  } catch (err) {
+    latestSummaryResponse = null;
+    const message = t("summaryError", { message: String(err.message || err) });
+    els.summaryStatus.textContent = message;
+    els.summaryCards.innerHTML = `<div class="search-empty">${escapeHtml(message)}</div>`;
+    els.summaryResult.textContent = message;
   }
 }
 
@@ -1219,6 +1383,37 @@ function onAskSourcesClick(event) {
   }
 }
 
+function onSummaryCardsClick(event) {
+  const button = event.target.closest("button[data-action='summary-play']");
+  if (!button) {
+    return;
+  }
+
+  const idx = Number(button.getAttribute("data-summary-index"));
+  if (!Number.isInteger(idx) || idx < 0) {
+    return;
+  }
+
+  const row = latestSummaryResponse?.summary?.[idx];
+  if (!row) {
+    return;
+  }
+
+  const videoId = String(latestSummaryResponse?.video_id || els.summaryVideoId.value || "").trim();
+  if (!videoId) {
+    return;
+  }
+
+  const playbackRow = {
+    video_id: videoId,
+    video_title: els.summaryVideoId.options[els.summaryVideoId.selectedIndex]?.textContent || videoId,
+    start: Number(row?.start || 0),
+    end: Number(row?.end || row?.start || 0),
+    url: row?.url || "",
+  };
+  loadPlayerForResult(playbackRow, true).catch(() => {});
+}
+
 function onPlayerMuteToggle() {
   if (!ytPlayer || !ytPlayerReady) {
     return;
@@ -1335,12 +1530,37 @@ function applyLocale(locale, options = {}) {
     els.askSources.innerHTML = "";
   }
 
+  els.summaryHeading.textContent = t("summaryHeading");
+  els.summaryDesc.textContent = t("summaryDesc");
+  els.summaryVideoLabel.textContent = t("summaryVideoLabel");
+  els.summaryLanguageLabel.textContent = t("summaryLanguageLabel");
+  const selectedSummaryLanguage = els.summaryLanguage.value;
+  els.summaryLanguage.innerHTML = `
+    <option value="en">${escapeHtml(t("summaryLangEnglish"))}</option>
+    <option value="ja">${escapeHtml(t("summaryLangJapanese"))}</option>
+  `;
+  if (selectedSummaryLanguage === "en" || selectedSummaryLanguage === "ja") {
+    els.summaryLanguage.value = selectedSummaryLanguage;
+  }
+  els.summarySubmitBtn.textContent = t("summarySubmitBtn");
+  els.summaryRawJsonSummary.textContent = t("summaryRawJsonSummary");
+  if (latestSummaryResponse) {
+    renderSummaryResponse(latestSummaryResponse);
+    els.summaryResult.textContent = JSON.stringify(latestSummaryResponse, null, 2);
+  } else {
+    els.summaryStatus.textContent = t("summaryStatusDefault");
+    if (!els.summaryCards.innerHTML.trim()) {
+      els.summaryCards.innerHTML = `<div class="search-empty">${escapeHtml(t("summaryNoData"))}</div>`;
+    }
+  }
+
   if (!options.skipRefresh) {
     Promise.all([refreshJobs(), refreshVideos()]).catch((err) => {
       const msg = t("apiConnectionError", { message: String(err.message || err) });
       els.jobsTable.innerHTML = `<p style="padding:0.7rem">${escapeHtml(msg)}</p>`;
       els.videosTable.innerHTML = `<p style="padding:0.7rem">${escapeHtml(msg)}</p>`;
       els.posterGrid.innerHTML = `<div class="search-empty">${escapeHtml(msg)}</div>`;
+      els.summaryCards.innerHTML = `<div class="search-empty">${escapeHtml(msg)}</div>`;
     });
   }
 }
@@ -1349,6 +1569,7 @@ function wireEvents() {
   els.ingestForm.addEventListener("submit", runIngest);
   els.searchForm.addEventListener("submit", runSearch);
   els.askForm.addEventListener("submit", runAsk);
+  els.summaryForm.addEventListener("submit", runSummary);
   els.localeSelect.addEventListener("change", () => {
     applyLocale(els.localeSelect.value);
   });
@@ -1414,6 +1635,7 @@ function wireEvents() {
   els.videosTable.addEventListener("click", onVideosClick);
   els.searchCards.addEventListener("click", onSearchCardsClick);
   els.askSources.addEventListener("click", onAskSourcesClick);
+  els.summaryCards.addEventListener("click", onSummaryCardsClick);
 }
 
 async function boot() {

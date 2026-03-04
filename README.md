@@ -18,6 +18,14 @@ This project lets you ingest YouTube transcripts, run semantic retrieval (`hybri
 - Added run-to-run comparison with aggregate + per-query deltas
 - Added local-only evaluation storage (no shared label writes required)
 
+## What's New (Theme TLDR + Timestamp Quality Update)
+
+- TLDR generation now reads from a persisted **full transcript** artifact created at ingest time (with lazy backfill for older indexed videos).
+- Theme output is ranked by **importance to the full video**, not auto-sorted by timeline order.
+- Each TLDR point now uses a **paragraph-style summary** (4-5 sentences) for stronger contextual detail.
+- Theme timestamp mapping now resolves against transcript anchors with better disambiguation and reuse penalties to reduce incorrect duplicate timestamps.
+- Summary diagnostics now include source and timestamp-resolution details in `generation_details`.
+
 ## Quick Start
 
 From `youtube_rag_v2_portfolio`:
