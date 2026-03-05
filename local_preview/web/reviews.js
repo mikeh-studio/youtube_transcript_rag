@@ -13,8 +13,10 @@ const els = {
   homeBrandLink: document.getElementById("homeBrandLink"),
   eyebrowText: document.getElementById("eyebrowText"),
   homeNavLink: document.getElementById("homeNavLink"),
+  tldrNavLink: document.getElementById("tldrNavLink"),
+  qaNavLink: document.getElementById("qaNavLink"),
+  reviewsNavLink: document.getElementById("reviewsNavLink"),
   evalNavLink: document.getElementById("evalNavLink"),
-  backNavLink: document.getElementById("backNavLink"),
   heroTitle: document.getElementById("heroTitle"),
   heroSubtitle: document.getElementById("heroSubtitle"),
   filtersHeading: document.getElementById("filtersHeading"),
@@ -53,9 +55,11 @@ const I18N = {
     pageTitle: "YouTube Transcript RAG | Reviews",
     localeLabel: "Language",
     navIngest: "Ingest",
+    navTLDR: "TLDR Studio",
+    navQA: "Q&A Studio",
+    navReviews: "Reviews",
     eyebrowText: "YouTube Transcript RAG",
-    evalNav: "Evaluation",
-    backNav: "Back to Search",
+    navEvaluation: "Evaluation",
     heroTitle: "Review Analytics",
     heroSubtitle: "Inspect reviewed chunks, filter by video, and export data.",
     filtersHeading: "Filters",
@@ -93,9 +97,11 @@ const I18N = {
     pageTitle: "YouTube Transcript RAG | レビュー",
     localeLabel: "言語",
     navIngest: "取り込み",
+    navTLDR: "TLDR Studio",
+    navQA: "Q&A Studio",
+    navReviews: "レビュー",
     eyebrowText: "YouTube Transcript RAG",
-    evalNav: "評価",
-    backNav: "検索へ戻る",
+    navEvaluation: "評価",
     heroTitle: "レビュー分析",
     heroSubtitle: "レビュー済みチャンクを確認し、動画で絞り込み、CSVをエクスポートします。",
     filtersHeading: "フィルター",
@@ -135,6 +141,9 @@ let currentLocale = localStorage.getItem(LOCALE_STORAGE_KEY) || DEFAULT_LOCALE;
 if (!I18N[currentLocale]) {
   currentLocale = DEFAULT_LOCALE;
 }
+let initialVideoFilter = String(
+  new URLSearchParams(window.location.search || "").get("video_id") || "",
+).trim();
 
 let allReviews = [];
 let reviewedVideos = [];
@@ -408,8 +417,10 @@ function applyLocale(locale) {
   els.homeBrandLink?.setAttribute("aria-label", t("navIngest"));
   els.eyebrowText.textContent = t("eyebrowText");
   els.homeNavLink.textContent = t("navIngest");
-  els.evalNavLink.textContent = t("evalNav");
-  els.backNavLink.textContent = t("backNav");
+  els.tldrNavLink.textContent = t("navTLDR");
+  els.qaNavLink.textContent = t("navQA");
+  els.reviewsNavLink.textContent = t("navReviews");
+  els.evalNavLink.textContent = t("navEvaluation");
   els.heroTitle.textContent = t("heroTitle");
   els.heroSubtitle.textContent = t("heroSubtitle");
   els.filtersHeading.querySelector("span").textContent = t("filtersHeading");
@@ -484,8 +495,12 @@ async function loadData() {
   }
 
   populateFilters();
-  if ([...els.filterVideo.options].some((opt) => opt.value === selectedVideo)) {
-    els.filterVideo.value = selectedVideo;
+  const preferredVideo = selectedVideo || initialVideoFilter;
+  if (preferredVideo && [...els.filterVideo.options].some((opt) => opt.value === preferredVideo)) {
+    els.filterVideo.value = preferredVideo;
+    if (preferredVideo === initialVideoFilter) {
+      initialVideoFilter = "";
+    }
   }
   if ([...els.filterLabel.options].some((opt) => opt.value === selectedLabel)) {
     els.filterLabel.value = selectedLabel;

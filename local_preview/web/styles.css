@@ -230,6 +230,83 @@ body {
   min-height: 42px;
 }
 
+.ingest-library-panel {
+  width: min(980px, 100%);
+  margin: 0 auto;
+}
+
+.ingest-carousel-controls {
+  display: inline-flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 0.45rem;
+}
+
+.ingest-reload-btn {
+  padding: 0.4rem 0.65rem;
+  border-radius: 14px;
+  font-size: 0.78rem;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.ingest-scroll-btn {
+  min-width: 34px;
+  padding: 0.34rem 0.5rem;
+  border-radius: 14px;
+  font-size: 0.78rem;
+  line-height: 1.1;
+}
+
+.ingest-carousel {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(240px, 290px);
+  gap: 0.8rem;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  padding: 0.3rem 0.05rem 0.45rem;
+}
+
+.ingest-carousel::-webkit-scrollbar {
+  height: 8px;
+}
+
+.ingest-carousel::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 999px;
+}
+
+.ingest-video-card {
+  scroll-snap-align: start;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.82rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.ingest-video-title {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.3;
+}
+
+.ingest-video-meta {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.ingest-video-actions {
+  margin-top: 0.45rem;
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
 .split {
   display: grid;
   gap: 1rem;
@@ -990,6 +1067,10 @@ th {
 
   .ingest-advanced-grid {
     grid-template-columns: 1fr;
+  }
+
+  .ingest-carousel {
+    grid-auto-columns: minmax(220px, 85vw);
   }
 
   .detail-shell {

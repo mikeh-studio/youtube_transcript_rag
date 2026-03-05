@@ -37,7 +37,7 @@ class VideoLibrary:
         # Video storage: video_id -> video metadata and chunks
         self.videos = (
             {}
-        )  # {video_id: {"url": str, "title": str, "language": str, "chunks": list}}
+        )  # {video_id: {"url": str, "title": str, "language": str, "chunks": list, "summary_cache": dict}}
 
         # Unified index state
         self.index = None  # FAISS index
@@ -74,6 +74,8 @@ class VideoLibrary:
             raise ValueError(f"Invalid YouTube URL or video ID: {url}")
 
         if video_id in self.videos:
+            if isinstance(self.videos.get(video_id), dict):
+                self.videos[video_id].setdefault("summary_cache", {})
             print(f"Video {video_id} is already in the library.")
             return video_id
 
@@ -103,6 +105,7 @@ class VideoLibrary:
             "language": language,
             "chunks": chunks,
             "full_transcript": full_transcript,
+            "summary_cache": {},
         }
 
         # Rebuild the unified index
@@ -440,6 +443,7 @@ class VideoLibrary:
                 "language": data.get("language", "ja"),
                 "chunks": data["chunks"],
                 "full_transcript": data.get("full_transcript"),
+                "summary_cache": data.get("summary_cache", {}),
             }
 
         meta_path = os.path.join(self.data_dir, "library_meta.json")
@@ -467,6 +471,9 @@ class VideoLibrary:
                 "title": data.get("title", f"Video {video_id}"),
                 "language": data.get("language", "ja"),
                 "chunks": data.get("chunks", []),
+                "summary_cache": data.get("summary_cache", {})
+                if isinstance(data.get("summary_cache"), dict)
+                else {},
             }
             if isinstance(data.get("full_transcript"), dict):
                 normalized["full_transcript"] = data.get("full_transcript")

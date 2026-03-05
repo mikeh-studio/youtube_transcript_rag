@@ -143,6 +143,7 @@ class TestVideoLibraryBasics:
         # Default language is "ja"
         assert library.videos["abc12345678"]["language"] == "ja"
         assert library.videos["abc12345678"]["full_transcript"]["segment_count"] == 5
+        assert library.videos["abc12345678"]["summary_cache"] == {}
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_add_english_video(self, mock_api_cls, library):
@@ -313,6 +314,14 @@ class TestVideoLibraryPersistence:
 
         lib1 = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
         lib1.add_video("https://www.youtube.com/watch?v=abc12345678")
+        lib1.videos["abc12345678"]["summary_cache"] = {
+            "en:chatgpt:5": {
+                "version": 1,
+                "generated_at": "2026-01-01T00:00:00+00:00",
+                "source_fingerprint": "abc123",
+                "result": {"summary": []},
+            }
+        }
         lib1.save()
 
         lib2 = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
@@ -321,6 +330,7 @@ class TestVideoLibraryPersistence:
         assert lib2.index.ntotal == 5
         assert len(lib2.chunk_map) == 5
         assert lib2.videos["abc12345678"]["full_transcript"]["segment_count"] == 5
+        assert "en:chatgpt:5" in lib2.videos["abc12345678"]["summary_cache"]
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_save_preserves_language(self, mock_api_cls, tmp_data_dir):
@@ -357,6 +367,28 @@ class TestVideoLibraryPersistence:
 
         assert os.path.exists(os.path.join(tmp_data_dir, "library_meta.json"))
         assert os.path.exists(os.path.join(tmp_data_dir, "library.faiss"))
+
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
+    def test_load_backfills_missing_summary_cache(self, mock_api_cls, tmp_data_dir):
+        from multilingual.video_library import VideoLibrary
+
+        mock_api = MagicMock()
+        mock_api.fetch.return_value = _make_transcript(3)
+        mock_api_cls.return_value = mock_api
+
+        lib = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        lib.add_video("https://www.youtube.com/watch?v=abc12345678")
+        lib.save()
+
+        meta_path = os.path.join(tmp_data_dir, "library_meta.json")
+        with open(meta_path, "r", encoding="utf-8") as fh:
+            meta = json.load(fh)
+        meta["videos"]["abc12345678"].pop("summary_cache", None)
+        with open(meta_path, "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, ensure_ascii=False, indent=2)
+
+        loaded = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        assert loaded.videos["abc12345678"]["summary_cache"] == {}
 
     def test_load_nonexistent(self, tmp_data_dir):
         from multilingual.video_library import VideoLibrary

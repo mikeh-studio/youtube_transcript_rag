@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const LOCK_KEY = "yt_rag_ingest_unlocked";
 const LAST_VIDEO_KEY = "yt_rag_last_video_id";
 const FEEDBACK_REVISION_STORAGE_KEY = "youtube-rag-feedback-revision";
+const LOCALE_STORAGE_KEY = "youtube-rag-ui-locale";
 const ROUTES = {
   INGEST: "/ingest",
   TLDR: "/tldr",
@@ -87,6 +88,61 @@ function IngestPage({ onSuccess }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [status, setStatus] = useState("Enter a YouTube URL to unlock the workspace.");
   const [rawResponse, setRawResponse] = useState("");
+  const [ingestedVideos, setIngestedVideos] = useState([]);
+  const [isLoadingVideos, setIsLoadingVideos] = useState(true);
+  const [videosError, setVideosError] = useState("");
+  const [deletingVideoId, setDeletingVideoId] = useState("");
+  const carouselRef = useRef(null);
+
+  async function loadIngestedVideos({ silent = false } = {}) {
+    if (!silent) {
+      setIsLoadingVideos(true);
+      setVideosError("");
+    }
+    try {
+      const payload = await apiRequest("/v1/videos");
+      const rows = Array.isArray(payload?.videos) ? payload.videos : [];
+      const orderedRows = rows.slice().reverse();
+      setIngestedVideos(orderedRows);
+      return orderedRows;
+    } catch (error) {
+      if (!silent) {
+        setVideosError(String(error?.message || error));
+      }
+      return [];
+    } finally {
+      if (!silent) {
+        setIsLoadingVideos(false);
+      }
+    }
+  }
+
+  async function refreshIngestedVideosUntilVisible(expectedVideoIds, timeoutMs = 8000, intervalMs = 300) {
+    const required = Array.from(
+      new Set((expectedVideoIds || []).map((row) => String(row || "").trim()).filter(Boolean)),
+    );
+    if (!required.length) {
+      await loadIngestedVideos();
+      return true;
+    }
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt <= timeoutMs) {
+      const rows = await loadIngestedVideos({ silent: true });
+      const ids = new Set(rows.map((row) => String(row.video_id || "").trim()).filter(Boolean));
+      const allFound = required.every((id) => ids.has(id));
+      if (allFound) {
+        return true;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
+    }
+    await loadIngestedVideos();
+    return false;
+  }
+
+  useEffect(() => {
+    loadIngestedVideos().catch(() => {});
+  }, []);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -110,12 +166,49 @@ function IngestPage({ onSuccess }) {
       if (!payload?.ok || acceptedCount <= 0) {
         throw new Error("Ingest request was accepted but no jobs were created.");
       }
+      const completedJobs = (payload?.jobs || []).filter((job) => job?.status === "completed");
+      const completedVideoIds = completedJobs
+        .map((job) => String(job?.video_id || "").trim())
+        .filter(Boolean);
       const firstVideo =
         payload?.jobs?.[0]?.video_id
         || payload?.skipped?.[0]?.video_id
         || "";
-      setStatus("Ingest accepted. Preparing TLDR Studio...");
       setRawResponse(JSON.stringify(payload, null, 2));
+
+      if (completedJobs.length) {
+        setIngestedVideos((prev) => {
+          const byId = new Map();
+          prev.forEach((row) => {
+            const id = String(row?.video_id || "").trim();
+            if (id) {
+              byId.set(id, row);
+            }
+          });
+          completedJobs.forEach((job) => {
+            const id = String(job?.video_id || "").trim();
+            if (!id) {
+              return;
+            }
+            const existing = byId.get(id) || {};
+            byId.set(id, {
+              video_id: id,
+              title: String(job?.title || existing.title || `Video ${id}`),
+              language: String(job?.language || existing.language || language),
+              num_chunks: Number(existing.num_chunks || 0),
+            });
+          });
+          return Array.from(byId.values());
+        });
+      }
+
+      const refreshed = await refreshIngestedVideosUntilVisible(completedVideoIds);
+      if (refreshed) {
+        const label = completedVideoIds.length === 1 ? "video" : "videos";
+        setStatus(`Ingest successful. ${completedVideoIds.length} ${label} added and list refreshed.`);
+      } else {
+        setStatus("Ingest completed, but list refresh is still catching up. Use Reload list.");
+      }
       onSuccess(firstVideo);
     } catch (error) {
       setStatus(`Ingest failed: ${String(error?.message || error)}`);
@@ -123,6 +216,43 @@ function IngestPage({ onSuccess }) {
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  async function deleteVideo(videoId) {
+    const scopedVideoId = String(videoId || "").trim();
+    if (!scopedVideoId) {
+      return;
+    }
+    const confirmed = window.confirm(`Delete ${scopedVideoId} from the library?`);
+    if (!confirmed) {
+      return;
+    }
+    setDeletingVideoId(scopedVideoId);
+    try {
+      await apiRequest(`/v1/videos/${encodeURIComponent(scopedVideoId)}`, {
+        method: "DELETE",
+      });
+      if (localStorage.getItem(LAST_VIDEO_KEY) === scopedVideoId) {
+        localStorage.removeItem(LAST_VIDEO_KEY);
+      }
+      setStatus(`Deleted ${scopedVideoId} from the library.`);
+      await loadIngestedVideos();
+    } catch (error) {
+      setStatus(`Delete failed: ${String(error?.message || error)}`);
+    } finally {
+      setDeletingVideoId("");
+    }
+  }
+
+  function scrollCarousel(direction) {
+    if (!carouselRef.current) {
+      return;
+    }
+    const step = Math.max(carouselRef.current.clientWidth * 0.8, 280);
+    carouselRef.current.scrollBy({
+      left: direction * step,
+      behavior: "smooth",
+    });
   }
 
   return (
@@ -182,6 +312,81 @@ function IngestPage({ onSuccess }) {
           <summary>Raw JSON</summary>
           <pre className="output">{rawResponse}</pre>
         </details>
+      </section>
+
+      <section className="panel ingest-library-panel">
+        <div className="section-head">
+          <h2 className="section-title">
+            <img src="/icons/icon-library.svg" alt="" aria-hidden="true" />
+            <span>Ingested Videos</span>
+          </h2>
+          <div className="ingest-carousel-controls">
+            <button
+              className="btn secondary ingest-reload-btn"
+              type="button"
+              onClick={() => loadIngestedVideos().catch(() => {})}
+            >
+              Reload list
+            </button>
+            <button
+              className="btn secondary ingest-scroll-btn"
+              type="button"
+              onClick={() => scrollCarousel(-1)}
+              disabled={!ingestedVideos.length}
+              aria-label="Scroll videos left"
+            >
+              ◀
+            </button>
+            <button
+              className="btn secondary ingest-scroll-btn"
+              type="button"
+              onClick={() => scrollCarousel(1)}
+              disabled={!ingestedVideos.length}
+              aria-label="Scroll videos right"
+            >
+              ▶
+            </button>
+          </div>
+        </div>
+
+        {videosError ? <div className="search-summary">Failed to load ingested videos: {videosError}</div> : null}
+
+        {isLoadingVideos ? (
+          <div className="search-empty">Loading ingested videos...</div>
+        ) : null}
+
+        {!isLoadingVideos && !ingestedVideos.length ? (
+          <div className="search-empty">No ingested videos yet.</div>
+        ) : null}
+
+        {!isLoadingVideos && ingestedVideos.length ? (
+          <div className="ingest-carousel" ref={carouselRef}>
+            {ingestedVideos.map((video) => {
+              const videoId = String(video.video_id || "").trim();
+              const reviewHref = `/reviews.html?video_id=${encodeURIComponent(videoId)}`;
+              const isDeleting = deletingVideoId === videoId;
+              return (
+                <article className="ingest-video-card" key={videoId}>
+                  <h3 className="ingest-video-title">{video.title || videoId}</h3>
+                  <p className="ingest-video-meta">ID: {videoId}</p>
+                  <p className="ingest-video-meta">Language: {video.language || "-"}</p>
+                  <p className="ingest-video-meta">Chunks: {Number(video.num_chunks || 0)}</p>
+                  <div className="ingest-video-actions">
+                    <a className="btn secondary" href={reviewHref}>Review</a>
+                    <button
+                      className="btn secondary danger"
+                      type="button"
+                      disabled={isDeleting}
+                      onClick={() => deleteVideo(videoId).catch(() => {})}
+                    >
+                      {isDeleting ? "Deleting..." : "Delete"}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : null}
       </section>
     </section>
   );
@@ -408,8 +613,6 @@ function QAStudioPage() {
         <p className="subtitle">Run retrieval and grounded answer generation in one page.</p>
       </header>
 
-      <PlayerPanel videoId={playerState.videoId} startSeconds={playerState.start} title={playerState.title} />
-
       <section className="panel">
         <h2 className="section-title">
           <img src="/icons/icon-search.svg" alt="" aria-hidden="true" />
@@ -616,6 +819,8 @@ function QAStudioPage() {
           </>
         ) : null}
       </section>
+
+      <PlayerPanel videoId={playerState.videoId} startSeconds={playerState.start} title={playerState.title} />
     </>
   );
 }
@@ -627,6 +832,7 @@ function TLDRStudioPage() {
   const [selectedVideoId, setSelectedVideoId] = useState("");
   const [language, setLanguage] = useState("en");
   const [provider, setProvider] = useState("chatgpt");
+  const [themeCount, setThemeCount] = useState(5);
   const [summaryResponse, setSummaryResponse] = useState(null);
   const [summaryError, setSummaryError] = useState("");
   const [isSummarizing, setIsSummarizing] = useState(false);
@@ -695,7 +901,7 @@ function TLDRStudioPage() {
           video_id: scopedVideoId,
           language,
           provider,
-          max_points: 5,
+          max_points: Number(themeCount || 5),
         },
       });
       setSummaryResponse(payload);
@@ -733,7 +939,9 @@ function TLDRStudioPage() {
     <>
       <header className="hero">
         <h1>TLDR Studio</h1>
-        <p className="subtitle">Generate top 5 themes from the full transcript and jump to where each theme starts.</p>
+        <p className="subtitle">
+          Generate top {themeCount} themes from the full transcript and jump to where each theme starts.
+        </p>
       </header>
 
       <section className="panel">
@@ -775,6 +983,13 @@ function TLDRStudioPage() {
               <option value="claude">Claude</option>
             </select>
           </label>
+          <label>
+            <span>Themes</span>
+            <select value={themeCount} onChange={(event) => setThemeCount(Number(event.target.value) || 5)}>
+              <option value="5">5</option>
+              <option value="10">10</option>
+            </select>
+          </label>
           <button className="btn" type="submit" disabled={isSummarizing || !selectedVideoId}>
             {isSummarizing ? "Generating..." : "Generate TLDR"}
           </button>
@@ -783,12 +998,10 @@ function TLDRStudioPage() {
         {summaryError ? <div className="search-summary">TLDR failed: {summaryError}</div> : null}
       </section>
 
-      <PlayerPanel videoId={playerState.videoId} startSeconds={playerState.start} title={playerState.title} />
-
       <section className="panel">
-        <h3 className="chart-heading">Top 5 Themes</h3>
+        <h3 className="chart-heading">Top {themeCount} Themes</h3>
         {!summaryItems.length ? (
-          <div className="search-empty">Click Generate TLDR to create the top 5 themes.</div>
+          <div className="search-empty">Click Generate TLDR to create the top {themeCount} themes.</div>
         ) : (
           <div className="search-cards">
             {summaryItems.map((item, index) => (
@@ -815,6 +1028,8 @@ function TLDRStudioPage() {
           </div>
         )}
       </section>
+
+      <PlayerPanel videoId={playerState.videoId} startSeconds={playerState.start} title={playerState.title} />
     </>
   );
 }
@@ -822,6 +1037,10 @@ function TLDRStudioPage() {
 function App() {
   const [route, setRoute] = useState(readHashRoute());
   const [unlocked, setUnlocked] = useState(() => localStorage.getItem(LOCK_KEY) === "1");
+  const [locale, setLocale] = useState(() => {
+    const stored = String(localStorage.getItem(LOCALE_STORAGE_KEY) || "").trim();
+    return stored === "ja-JP" ? "ja-JP" : "en-US";
+  });
   const [routeAnimationKey, setRouteAnimationKey] = useState(0);
 
   useEffect(() => {
@@ -848,13 +1067,17 @@ function App() {
     setRouteAnimationKey((prev) => prev + 1);
   }, [route]);
 
+  useEffect(() => {
+    document.documentElement.lang = locale === "ja-JP" ? "ja" : "en";
+    localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+  }, [locale]);
+
   function handleIngestSuccess(videoId) {
     localStorage.setItem(LOCK_KEY, "1");
     if (videoId) {
       localStorage.setItem(LAST_VIDEO_KEY, videoId);
     }
     setUnlocked(true);
-    navigate(ROUTES.TLDR);
   }
 
   function NavButton({ target, label }) {
@@ -884,8 +1107,15 @@ function App() {
           <NavButton target={ROUTES.INGEST} label="Ingest" />
           {unlocked ? <NavButton target={ROUTES.TLDR} label="TLDR Studio" /> : null}
           {unlocked ? <NavButton target={ROUTES.QA} label="Q&A Studio" /> : null}
-          {unlocked ? <a className="app-nav-link" href="/evaluation.html">Evaluation</a> : null}
           {unlocked ? <a className="app-nav-link" href="/reviews.html">Reviews</a> : null}
+          {unlocked ? <a className="app-nav-link" href="/evaluation.html">Evaluation</a> : null}
+          <label className="locale-switch">
+            <span>Language</span>
+            <select value={locale} onChange={(event) => setLocale(event.target.value)}>
+              <option value="en-US">English (US)</option>
+              <option value="ja-JP">日本語</option>
+            </select>
+          </label>
         </div>
       </header>
 

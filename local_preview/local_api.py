@@ -20,8 +20,10 @@ import time
 import traceback
 import uuid
 from collections import Counter
+from copy import deepcopy
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html import unescape
 from pathlib import Path
@@ -68,6 +70,7 @@ FEEDBACK_MIN_SIMILARITY = 0.20
 FEEDBACK_RECENCY_HALFLIFE_DAYS = 30.0
 SUMMARY_LANGUAGES = {"en", "ja"}
 SUMMARY_MAX_POINTS = 5
+SUMMARY_ALLOWED_POINTS = {5, 10}
 SUMMARY_MAP_POINTS = 3
 SUMMARY_TEMPERATURE = 0.2
 SUMMARY_MAX_TOKENS = 1800
@@ -79,6 +82,7 @@ SUMMARY_MIN_SENTENCES = 4
 SUMMARY_MAX_SENTENCES = 5
 SUMMARY_ANCHOR_MIN_CHARS = 8
 SUMMARY_ANCHOR_TOKEN_MATCH_THRESHOLD = 0.55
+SUMMARY_CACHE_VERSION = 1
 
 ASK_STYLE_INSTRUCTION = (
     "Answer in the same language as the user question. "
@@ -2058,6 +2062,90 @@ class LocalRAGService:
                 pass
         return payload, True
 
+    @staticmethod
+    def _summary_cache_key(*, language: str, provider: str, max_points: int) -> str:
+        return f"{str(language).strip().lower()}:{str(provider).strip().lower()}:{int(max_points)}"
+
+    def _summary_source_fingerprint(self, *, full_transcript: dict) -> str:
+        segments = self._coerce_summary_segments(full_transcript.get("segments") or [])
+        normalized_segments = [
+            {
+                "start": round(float(seg.get("start", 0.0)), 3),
+                "end": round(float(seg.get("end", seg.get("start", 0.0))), 3),
+                "text": re.sub(r"\s+", " ", str(seg.get("text") or "")).strip(),
+            }
+            for seg in segments
+        ]
+        payload = {
+            "segments": normalized_segments,
+            "text": re.sub(r"\s+", " ", str(full_transcript.get("text") or "")).strip(),
+            "segment_count": int(full_transcript.get("segment_count") or 0),
+        }
+        serialized = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def _get_summary_cache(
+        self,
+        *,
+        video: dict,
+        cache_key: str,
+        source_fingerprint: str,
+    ) -> Optional[dict]:
+        cache_rows = video.get("summary_cache")
+        if not isinstance(cache_rows, dict):
+            return None
+
+        entry = cache_rows.get(cache_key)
+        if not isinstance(entry, dict):
+            return None
+
+        if int(entry.get("version") or 0) != SUMMARY_CACHE_VERSION:
+            return None
+        if str(entry.get("source_fingerprint") or "") != source_fingerprint:
+            return None
+
+        result = entry.get("result")
+        if not isinstance(result, dict):
+            return None
+
+        return {
+            "result": deepcopy(result),
+            "generated_at": str(entry.get("generated_at") or ""),
+        }
+
+    def _put_summary_cache(
+        self,
+        *,
+        video: dict,
+        cache_key: str,
+        source_fingerprint: str,
+        language: str,
+        provider: str,
+        max_points: int,
+        model: str,
+        response_payload: dict,
+    ) -> None:
+        cache_rows = video.get("summary_cache")
+        if not isinstance(cache_rows, dict):
+            cache_rows = {}
+            video["summary_cache"] = cache_rows
+
+        cache_rows[cache_key] = {
+            "version": SUMMARY_CACHE_VERSION,
+            "language": str(language).strip().lower(),
+            "provider": str(provider).strip().lower(),
+            "max_points": int(max_points),
+            "model": str(model or "").strip(),
+            "generated_at": now_iso(),
+            "source_fingerprint": source_fingerprint,
+            "result": deepcopy(response_payload),
+        }
+
     def summarize_video_transcript(
         self,
         *,
@@ -2080,7 +2168,9 @@ class LocalRAGService:
         if scoped_language not in SUMMARY_LANGUAGES:
             raise ValueError("language must be one of: en, ja")
 
-        safe_max_points = SUMMARY_MAX_POINTS
+        safe_max_points = int(max_points or SUMMARY_MAX_POINTS)
+        if safe_max_points not in SUMMARY_ALLOWED_POINTS:
+            raise ValueError("max_points must be 5 or 10")
 
         video = self.engine.library.videos.get(scoped_video_id, {})
         raw_chunks = video.get("chunks", [])
@@ -2096,6 +2186,40 @@ class LocalRAGService:
         segments = self._coerce_summary_segments(full_transcript.get("segments") or [])
         if not segments:
             raise ValueError("video has no transcript segments")
+
+        cache_key = self._summary_cache_key(
+            language=scoped_language,
+            provider=scoped_provider,
+            max_points=safe_max_points,
+        )
+        source_fingerprint = self._summary_source_fingerprint(
+            full_transcript=full_transcript
+        )
+        cached_summary = self._get_summary_cache(
+            video=video,
+            cache_key=cache_key,
+            source_fingerprint=source_fingerprint,
+        )
+        if cached_summary is not None:
+            response = cached_summary["result"]
+            response["video_id"] = scoped_video_id
+            response["language"] = scoped_language
+            response["provider"] = scoped_provider
+            response["cached"] = True
+            generation_details = dict(response.get("generation_details") or {})
+            generation_details["source_basis"] = "full_transcript"
+            generation_details["source_chunk_count"] = chunk_count
+            generation_details["source_segment_count"] = len(segments)
+            generation_details["full_transcript_backfilled"] = bool(
+                full_transcript_backfilled
+            )
+            generation_details["cache_hit"] = True
+            generation_details["cache_key"] = cache_key
+            generation_details["cache_generated_at"] = (
+                cached_summary.get("generated_at") or None
+            )
+            response["generation_details"] = generation_details
+            return response
 
         transcript_lines = self._summary_transcript_lines(segments)
         transcript_size = len("\n".join(transcript_lines))
@@ -2162,17 +2286,21 @@ class LocalRAGService:
         else:
             timestamp_source = "mixed"
 
-        return {
+        response = {
             "video_id": scoped_video_id,
             "language": scoped_language,
             "provider": summary_result["provider"],
             "model": summary_result["model"],
+            "cached": False,
             "summary": summary_items,
             "generation_details": {
                 "source_basis": "full_transcript",
                 "source_chunk_count": chunk_count,
                 "source_segment_count": len(segments),
                 "full_transcript_backfilled": bool(full_transcript_backfilled),
+                "cache_hit": False,
+                "cache_key": cache_key,
+                "cache_generated_at": None,
                 "timestamp_source": timestamp_source,
                 "timestamp_resolution_success_count": timestamp_success_count,
                 "timestamp_resolution_failure_count": timestamp_failure_count,
@@ -2182,6 +2310,23 @@ class LocalRAGService:
                 "retry_count": int(summary_result.get("retry_count", 0)),
             },
         }
+        self._put_summary_cache(
+            video=video,
+            cache_key=cache_key,
+            source_fingerprint=source_fingerprint,
+            language=scoped_language,
+            provider=scoped_provider,
+            max_points=safe_max_points,
+            model=str(summary_result.get("model") or ""),
+            response_payload=response,
+        )
+        if hasattr(self.engine.library, "save"):
+            try:
+                self.engine.library.save()
+            except Exception:
+                pass
+
+        return response
 
     def ask_with_sources(
         self, question: str, sources: List[dict], provider: str = DEFAULT_ASK_PROVIDER
@@ -2308,6 +2453,23 @@ class LocalRAGService:
             try:
                 self.engine.library.add_video(video_id, language=language)
                 self._hydrate_video_title(video_id)
+                video_record = self.engine.library.videos.get(video_id)
+                if isinstance(video_record, dict):
+                    video_record.setdefault("summary_cache", {})
+                if hasattr(self.engine.library, "save"):
+                    try:
+                        self.engine.library.save()
+                    except Exception as save_exc:
+                        self._append_ingest_log(
+                            level="warning",
+                            event="library.save.failed",
+                            message="library save failed after ingestion",
+                            job_id=job_id,
+                            video_id=video_id,
+                            mode=mode,
+                            language=language,
+                            error_message=str(save_exc)[:300],
+                        )
                 self._update_job(job_id, status="completed")
                 self._append_ingest_log(
                     level="info",
@@ -2694,6 +2856,8 @@ class Handler(BaseHTTPRequestHandler):
                     str(body.get("provider") or DEFAULT_ASK_PROVIDER).strip().lower()
                 )
                 max_points = int(body.get("max_points", SUMMARY_MAX_POINTS))
+                if max_points not in SUMMARY_ALLOWED_POINTS:
+                    raise ValueError("max_points must be 5 or 10")
 
                 result = SERVICE.summarize_video_transcript(
                     video_id=video_id,
