@@ -21,10 +21,15 @@ This project lets you ingest YouTube transcripts, run semantic retrieval (`hybri
 ## What's New (Theme TLDR + Timestamp Quality Update)
 
 - TLDR generation now reads from a persisted **full transcript** artifact created at ingest time (with lazy backfill for older indexed videos).
+- TLDR responses are now persisted in a per-video **summary cache** keyed by `language + provider + max_points`, so repeated requests reuse stored results instead of re-running LLM generation.
+- Cache entries automatically refresh when transcript content changes (fingerprint mismatch), preventing stale summaries from being reused.
+- TLDR Studio now supports selecting **5 or 10 themes** per request.
+- Ingest now includes an **Ingested Videos** management carousel with per-video **Review** and **Delete** actions.
+- Ingest no longer auto-redirects to TLDR after success; it stays on Ingest and shows a success status so list management can continue.
 - Theme output is ranked by **importance to the full video**, not auto-sorted by timeline order.
 - Each TLDR point now uses a **paragraph-style summary** (4-5 sentences) for stronger contextual detail.
 - Theme timestamp mapping now resolves against transcript anchors with better disambiguation and reuse penalties to reduce incorrect duplicate timestamps.
-- Summary diagnostics now include source and timestamp-resolution details in `generation_details`.
+- Summary diagnostics now include source, cache, and timestamp-resolution details in `generation_details`.
 
 ## Quick Start
 

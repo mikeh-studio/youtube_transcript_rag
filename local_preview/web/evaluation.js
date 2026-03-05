@@ -25,8 +25,10 @@ const els = {
   homeBrandLink: document.getElementById("homeBrandLink"),
   eyebrowText: document.getElementById("eyebrowText"),
   homeNavLink: document.getElementById("homeNavLink"),
-  backSearchNavLink: document.getElementById("backSearchNavLink"),
+  tldrNavLink: document.getElementById("tldrNavLink"),
+  qaNavLink: document.getElementById("qaNavLink"),
   reviewsNavLink: document.getElementById("reviewsNavLink"),
+  evaluationNavLink: document.getElementById("evaluationNavLink"),
   heroTitle: document.getElementById("heroTitle"),
   heroSubtitle: document.getElementById("heroSubtitle"),
   guidelinesHeading: document.getElementById("guidelinesHeading"),
@@ -95,8 +97,10 @@ const I18N = {
     localeLabel: "Language",
     navIngest: "Ingest",
     eyebrowText: "YouTube Transcript RAG",
-    backSearch: "Back to Search",
+    navTLDR: "TLDR Studio",
+    navQA: "Q&A Studio",
     navReviews: "Reviews",
+    navEvaluation: "Evaluation",
     heroTitle: "Semantic Retrieval Evaluation",
     heroSubtitle: "Create query sets, run ranked retrieval snapshots, label results locally, and compare metrics across runs.",
     guidelinesHeading: "Relevance Guidelines",
@@ -175,8 +179,10 @@ const I18N = {
     localeLabel: "言語",
     navIngest: "取り込み",
     eyebrowText: "YouTube Transcript RAG",
-    backSearch: "検索へ戻る",
+    navTLDR: "TLDR Studio",
+    navQA: "Q&A Studio",
     navReviews: "レビュー",
+    navEvaluation: "評価",
     heroTitle: "セマンティック検索評価",
     heroSubtitle: "クエリセット作成、検索スナップショット実行、ローカルラベリング、ラン比較を行います。",
     guidelinesHeading: "関連性ラベルガイド",
@@ -1158,8 +1164,10 @@ function applyLocale(locale) {
   els.homeBrandLink?.setAttribute("aria-label", t("navIngest"));
   els.eyebrowText.textContent = t("eyebrowText");
   els.homeNavLink.textContent = t("navIngest");
-  els.backSearchNavLink.textContent = t("backSearch");
+  els.tldrNavLink.textContent = t("navTLDR");
+  els.qaNavLink.textContent = t("navQA");
   els.reviewsNavLink.textContent = t("navReviews");
+  els.evaluationNavLink.textContent = t("navEvaluation");
   els.heroTitle.textContent = t("heroTitle");
   els.heroSubtitle.textContent = t("heroSubtitle");
   els.guidelinesHeading.textContent = t("guidelinesHeading");

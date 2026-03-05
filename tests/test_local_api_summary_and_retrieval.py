@@ -214,6 +214,94 @@ def test_summarize_video_transcript_returns_five_ranked_items():
     assert "youtube.com/watch?v=vid1&t=" in response["summary"][0]["url"]
 
 
+def test_summarize_video_transcript_accepts_ten_points():
+    class DummyLibrary:
+        def __init__(self):
+            self.videos = {
+                "vid1": {
+                    "title": "Demo Video",
+                    "full_transcript": {
+                        "segments": [
+                            {"text": "Intro", "start": 0.0, "end": 20.0},
+                            {"text": "Main topic", "start": 20.0, "end": 60.0},
+                        ],
+                        "text": "Intro\nMain topic",
+                    },
+                    "chunks": [
+                        {"raw_text": "Intro", "start": 0.0, "end": 20.0},
+                        {"raw_text": "Main topic", "start": 20.0, "end": 60.0},
+                    ],
+                }
+            }
+
+    class DummyEngine:
+        def __init__(self):
+            self.library = DummyLibrary()
+            self.model = "claude-sonnet-4-5-20250929"
+
+    service = _make_service(enabled=False)
+    service.engine = DummyEngine()
+    service._summarize_transcript_single_pass = lambda **kwargs: {
+        "provider": "chatgpt",
+        "model": "gpt-4o-mini",
+        "items": [
+            {
+                "title": f"Point {idx}",
+                "tldr": "A. B. C. D.",
+                "anchor_text": "Intro" if idx % 2 else "Main topic",
+                "start": float(idx * 10),
+                "end": float(idx * 10 + 5),
+            }
+            for idx in range(1, 11)
+        ],
+        "strategy": "single_pass",
+    }
+
+    response = service.summarize_video_transcript(
+        video_id="vid1",
+        language="en",
+        provider="chatgpt",
+        max_points=10,
+    )
+
+    assert len(response["summary"]) == 10
+
+
+def test_summarize_video_transcript_rejects_invalid_max_points():
+    class DummyLibrary:
+        def __init__(self):
+            self.videos = {
+                "vid1": {
+                    "title": "Demo Video",
+                    "full_transcript": {
+                        "segments": [
+                            {"text": "Intro", "start": 0.0, "end": 10.0},
+                        ],
+                        "text": "Intro",
+                    },
+                    "chunks": [
+                        {"raw_text": "Intro", "start": 0.0, "end": 10.0},
+                    ],
+                }
+            }
+
+    class DummyEngine:
+        def __init__(self):
+            self.library = DummyLibrary()
+            self.model = "claude-sonnet-4-5-20250929"
+
+    service = _make_service(enabled=False)
+    service.engine = DummyEngine()
+
+    with pytest.raises(ValueError, match="max_points must be 5 or 10"):
+        service.summarize_video_transcript(
+            video_id="vid1",
+            language="en",
+            provider="chatgpt",
+            max_points=7,
+        )
+
+
 def test_summarize_video_transcript_rejects_invalid_language():
     class DummyLibrary:
         def __init__(self):
@@ -611,5 +699,323 @@ def test_summarize_video_transcript_backfills_full_transcript_once():
 
     assert first["generation_details"]["full_transcript_backfilled"] is True
     assert second["generation_details"]["full_transcript_backfilled"] is False
-    assert service.engine.library.save_calls == 1
+    assert service.engine.library.save_calls == 2
     assert "full_transcript" in service.engine.library.videos["vid1"]
+
+
+def test_summarize_video_transcript_uses_summary_cache_for_repeat_request():
+    class DummyLibrary:
+        def __init__(self):
+            self.videos = {
+                "vid1": {
+                    "title": "Cached Video",
+                    "full_transcript": {
+                        "segments": [
+                            {"text": "Intro section", "start": 0.0, "end": 12.0},
+                            {"text": "Core explanation", "start": 30.0, "end": 42.0},
+                        ],
+                        "text": "Intro section\nCore explanation",
+                        "segment_count": 2,
+                    },
+                    "chunks": [
+                        {"raw_text": "Intro section", "start": 0.0, "end": 12.0},
+                        {"raw_text": "Core explanation", "start": 30.0, "end": 42.0},
+                    ],
+                }
+            }
+            self.save_calls = 0
+
+        def save(self):
+            self.save_calls += 1
+
+    class DummyEngine:
+        def __init__(self):
+            self.library = DummyLibrary()
+            self.model = "claude-sonnet-4-5-20250929"
+
+    service = _make_service(enabled=False)
+    service.engine = DummyEngine()
+    counter = {"count": 0}
+
+    def fake_single_pass(**kwargs):
+        counter["count"] += 1
+        return {
+            "provider": "chatgpt",
+            "model": "gpt-4o-mini",
+            "items": [
+                {
+                    "title": "Theme 1",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Intro section",
+                },
+                {
+                    "title": "Theme 2",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Core explanation",
+                },
+                {
+                    "title": "Theme 3",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Intro section",
+                },
+                {
+                    "title": "Theme 4",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Core explanation",
+                },
+                {
+                    "title": "Theme 5",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Intro section",
+                },
+            ],
+            "strategy": "single_pass",
+        }
+
+    service._summarize_transcript_single_pass = fake_single_pass
+
+    first = service.summarize_video_transcript(
+        video_id="vid1", language="en", provider="chatgpt"
+    )
+    second = service.summarize_video_transcript(
+        video_id="vid1", language="en", provider="chatgpt"
+    )
+
+    assert first["cached"] is False
+    assert second["cached"] is True
+    assert first["generation_details"]["cache_hit"] is False
+    assert second["generation_details"]["cache_hit"] is True
+    assert second["generation_details"]["cache_generated_at"] is not None
+    assert counter["count"] == 1
+    assert service.engine.library.save_calls == 1
+
+
+def test_summarize_video_transcript_invalidates_cache_when_transcript_changes():
+    class DummyLibrary:
+        def __init__(self):
+            self.videos = {
+                "vid1": {
+                    "title": "Cache Invalidation Video",
+                    "full_transcript": {
+                        "segments": [
+                            {"text": "Intro section", "start": 0.0, "end": 12.0},
+                            {"text": "Core explanation", "start": 30.0, "end": 42.0},
+                        ],
+                        "text": "Intro section\nCore explanation",
+                        "segment_count": 2,
+                    },
+                    "chunks": [
+                        {"raw_text": "Intro section", "start": 0.0, "end": 12.0},
+                        {"raw_text": "Core explanation", "start": 30.0, "end": 42.0},
+                    ],
+                }
+            }
+            self.save_calls = 0
+
+        def save(self):
+            self.save_calls += 1
+
+    class DummyEngine:
+        def __init__(self):
+            self.library = DummyLibrary()
+            self.model = "claude-sonnet-4-5-20250929"
+
+    service = _make_service(enabled=False)
+    service.engine = DummyEngine()
+    counter = {"count": 0}
+
+    def fake_single_pass(**kwargs):
+        counter["count"] += 1
+        return {
+            "provider": "chatgpt",
+            "model": "gpt-4o-mini",
+            "items": [
+                {
+                    "title": "Theme 1",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Intro section",
+                },
+                {
+                    "title": "Theme 2",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Core explanation",
+                },
+                {
+                    "title": "Theme 3",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Intro section",
+                },
+                {
+                    "title": "Theme 4",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Core explanation",
+                },
+                {
+                    "title": "Theme 5",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Intro section",
+                },
+            ],
+            "strategy": "single_pass",
+        }
+
+    service._summarize_transcript_single_pass = fake_single_pass
+
+    first = service.summarize_video_transcript(
+        video_id="vid1", language="en", provider="chatgpt"
+    )
+    service.engine.library.videos["vid1"]["full_transcript"]["segments"][0][
+        "text"
+    ] = "Updated intro section"
+    second = service.summarize_video_transcript(
+        video_id="vid1", language="en", provider="chatgpt"
+    )
+
+    assert first["cached"] is False
+    assert second["cached"] is False
+    assert second["generation_details"]["cache_hit"] is False
+    assert counter["count"] == 2
+    assert service.engine.library.save_calls == 2
+
+
+def test_summarize_video_transcript_cache_key_partitions_requests():
+    class DummyLibrary:
+        def __init__(self):
+            self.videos = {
+                "vid1": {
+                    "title": "Cache Key Video",
+                    "full_transcript": {
+                        "segments": [
+                            {"text": "Intro section", "start": 0.0, "end": 12.0},
+                            {"text": "Core explanation", "start": 30.0, "end": 42.0},
+                        ],
+                        "text": "Intro section\nCore explanation",
+                        "segment_count": 2,
+                    },
+                    "chunks": [
+                        {"raw_text": "Intro section", "start": 0.0, "end": 12.0},
+                        {"raw_text": "Core explanation", "start": 30.0, "end": 42.0},
+                    ],
+                }
+            }
+            self.save_calls = 0
+
+        def save(self):
+            self.save_calls += 1
+
+    class DummyEngine:
+        def __init__(self):
+            self.library = DummyLibrary()
+            self.model = "claude-sonnet-4-5-20250929"
+
+    service = _make_service(enabled=False)
+    service.engine = DummyEngine()
+    counter = {"count": 0}
+
+    def fake_single_pass(**kwargs):
+        counter["count"] += 1
+        provider = kwargs.get("provider", "chatgpt")
+        return {
+            "provider": provider,
+            "model": "gpt-4o-mini",
+            "items": [
+                {
+                    "title": "Theme 1",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Intro section",
+                },
+                {
+                    "title": "Theme 2",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Core explanation",
+                },
+                {
+                    "title": "Theme 3",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Intro section",
+                },
+                {
+                    "title": "Theme 4",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Core explanation",
+                },
+                {
+                    "title": "Theme 5",
+                    "tldr": "One. Two. Three. Four.",
+                    "anchor_text": "Intro section",
+                },
+            ],
+            "strategy": "single_pass",
+        }
+
+    service._summarize_transcript_single_pass = fake_single_pass
+
+    first = service.summarize_video_transcript(
+        video_id="vid1", language="en", provider="chatgpt"
+    )
+    second = service.summarize_video_transcript(
+        video_id="vid1", language="en", provider="chatgpt"
+    )
+    third = service.summarize_video_transcript(
+        video_id="vid1", language="ja", provider="chatgpt"
+    )
+    fourth = service.summarize_video_transcript(
+        video_id="vid1", language="en", provider="claude"
+    )
+    fifth = service.summarize_video_transcript(
+        video_id="vid1", language="en", provider="chatgpt", max_points=10
+    )
+
+    assert first["cached"] is False
+    assert second["cached"] is True
+    assert third["cached"] is False
+    assert fourth["cached"] is False
+    assert fifth["cached"] is False
+    assert counter["count"] == 4
+
+
+def test_ingest_persists_library_and_initializes_summary_cache():
+    class DummyLibrary:
+        def __init__(self):
+            self.videos = {}
+            self.save_calls = 0
+
+        def add_video(self, video_id, language="ja"):
+            self.videos[video_id] = {
+                "title": f"Video {video_id}",
+                "language": language,
+                "chunks": [{"raw_text": "hello", "start": 0.0, "end": 8.0}],
+                "full_transcript": {
+                    "segments": [{"text": "hello", "start": 0.0, "end": 8.0}],
+                    "text": "hello",
+                    "segment_count": 1,
+                },
+            }
+            return video_id
+
+        def save(self):
+            self.save_calls += 1
+
+    class DummyEngine:
+        def __init__(self):
+            self.library = DummyLibrary()
+            self.model = "claude-sonnet-4-5-20250929"
+
+    service = _make_service(enabled=False)
+    service.engine = DummyEngine()
+    service.lock = threading.Lock()
+    service.jobs = {}
+    service.title_cache = {}
+    service._append_ingest_log = lambda **kwargs: None
+    service._hydrate_video_title = lambda video_id: None
+
+    result = service.ingest(
+        url="https://www.youtube.com/watch?v=abc12345678",
+        mode="single",
+        language="en",
+        force=False,
+    )
+
+    assert result["queued_count"] == 1
+    assert service.engine.library.save_calls == 1
+    assert service.engine.library.videos["abc12345678"].get("summary_cache") == {}
