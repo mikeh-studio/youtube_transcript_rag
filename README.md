@@ -31,6 +31,14 @@ This project lets you ingest YouTube transcripts, run semantic retrieval (`hybri
 - Theme timestamp mapping now resolves against transcript anchors with better disambiguation and reuse penalties to reduce incorrect duplicate timestamps.
 - Summary diagnostics now include source, cache, and timestamp-resolution details in `generation_details`.
 
+## What's New (March 7, 2026)
+
+- TLDR fallback handling now retries with relaxed sentence validation when strict compact/map-reduce paths fail, preventing the "compact single-pass theme generation failed after 3 attempts" terminal failure.
+- TLDR responses now expose generation path metadata (`primary_strategy`, `fallback_applied`, `fallback_reason`, `validation_relaxed`) for easier debugging.
+- Header navigation is now consistent across `index`, `reviews`, and `evaluation`, including icon + label rendering under locale updates.
+- Ingest hero visual was simplified by removing the boxed decorative background layer.
+- Added regression coverage for long-transcript fallback behavior and updated shell e2e checks for cross-page header consistency.
+
 ## Quick Start
 
 From `youtube_rag_v2_portfolio`:

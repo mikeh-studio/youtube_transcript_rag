@@ -20,11 +20,28 @@
         </div>
       </a>
       <div class="appbar-actions">
-        <a id="homeNavLink" class="app-nav-link" href="./index.html#/ingest">Ingest</a>
-        <a id="tldrNavLink" class="app-nav-link" href="./index.html#/tldr">TLDR Studio</a>
-        <a id="qaNavLink" class="app-nav-link" href="./index.html#/qa">Q&amp;A Studio</a>
-        <a id="reviewsNavLink" class="app-nav-link" href="./reviews.html">Reviews</a>
-        <a id="evaluationNavLink" class="app-nav-link nav-btn active" href="./evaluation.html">Evaluation</a>
+        <nav class="appbar-nav" aria-label="Primary">
+          <a id="homeNavLink" class="app-nav-link" href="./index.html#/ingest">
+            <img class="nav-icon" src="./icons/icon-upload.svg" alt="" aria-hidden="true" />
+            <span class="nav-label nav-label-text">Ingest</span>
+          </a>
+          <a id="tldrNavLink" class="app-nav-link" href="./index.html#/tldr">
+            <img class="nav-icon" src="./icons/icon-chat.svg" alt="" aria-hidden="true" />
+            <span class="nav-label nav-label-text">TLDR Studio</span>
+          </a>
+          <a id="qaNavLink" class="app-nav-link" href="./index.html#/qa">
+            <img class="nav-icon" src="./icons/icon-search.svg" alt="" aria-hidden="true" />
+            <span class="nav-label nav-label-text">Q&amp;A Studio</span>
+          </a>
+          <a id="reviewsNavLink" class="app-nav-link" href="./reviews.html">
+            <img class="nav-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
+            <span class="nav-label nav-label-text">Reviews</span>
+          </a>
+          <a id="evaluationNavLink" class="app-nav-link nav-btn active" href="./evaluation.html">
+            <img class="nav-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+            <span class="nav-label nav-label-text">Evaluation</span>
+          </a>
+        </nav>
         <label class="locale-switch">
           <span id="localeLabel">Language</span>
           <select id="localeSelect">
@@ -212,6 +229,29 @@
         <pre id="compareResult" class="output"></pre>
       </section>
     </main>
+
+    <nav class="bottom-tabbar" aria-label="Primary mobile navigation">
+      <a id="mobileHomeNavLink" class="bottom-tab-link" href="./index.html#/ingest">
+        <img class="bottom-tab-icon" src="./icons/icon-upload.svg" alt="" aria-hidden="true" />
+        <span id="mobileHomeNavText" class="bottom-tab-label">Ingest</span>
+      </a>
+      <a id="mobileTldrNavLink" class="bottom-tab-link" href="./index.html#/tldr">
+        <img class="bottom-tab-icon" src="./icons/icon-chat.svg" alt="" aria-hidden="true" />
+        <span id="mobileTldrNavText" class="bottom-tab-label">TLDR Studio</span>
+      </a>
+      <a id="mobileQaNavLink" class="bottom-tab-link" href="./index.html#/qa">
+        <img class="bottom-tab-icon" src="./icons/icon-search.svg" alt="" aria-hidden="true" />
+        <span id="mobileQaNavText" class="bottom-tab-label">Q&amp;A Studio</span>
+      </a>
+      <a id="mobileReviewsNavLink" class="bottom-tab-link" href="./reviews.html">
+        <img class="bottom-tab-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
+        <span id="mobileReviewsNavText" class="bottom-tab-label">Reviews</span>
+      </a>
+      <a id="mobileEvaluationNavLink" class="bottom-tab-link active" href="./evaluation.html">
+        <img class="bottom-tab-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+        <span id="mobileEvaluationNavText" class="bottom-tab-label">Evaluation</span>
+      </a>
+    </nav>
 
     <script type="module" src="./evaluation.js"></script>
   </body>

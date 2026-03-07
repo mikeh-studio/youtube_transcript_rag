@@ -12,6 +12,10 @@ export default defineConfig({
     sourcemap: false,
     rollupOptions: {
       input: path.resolve(__dirname, "index.html"),
+      output: {
+        entryFileNames: "assets/index.js",
+        chunkFileNames: "assets/chunk-[name].js",
+      },
     },
   },
 });

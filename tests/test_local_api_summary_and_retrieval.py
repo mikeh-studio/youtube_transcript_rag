@@ -439,6 +439,106 @@ def test_summarize_long_transcript_uses_compact_single_pass():
     assert len(response["summary"]) == 5
 
 
+def test_summarize_long_transcript_relaxes_after_compact_and_reduce_failures():
+    class DummyLibrary:
+        def __init__(self):
+            self.videos = {
+                "vid1": {
+                    "title": "Long Video",
+                    "full_transcript": {
+                        "segments": [
+                            {
+                                "text": ("long transcript block " * 40).strip(),
+                                "start": float(idx * 10),
+                                "end": float(idx * 10 + 9),
+                            }
+                            for idx in range(120)
+                        ],
+                        "text": "\n".join(
+                            ("long transcript block " * 40).strip() for _ in range(120)
+                        ),
+                    },
+                    "chunks": [
+                        {
+                            "raw_text": ("long transcript block " * 40).strip(),
+                            "start": float(idx * 10),
+                            "end": float(idx * 10 + 9),
+                        }
+                        for idx in range(120)
+                    ],
+                }
+            }
+
+    class DummyEngine:
+        def __init__(self):
+            self.library = DummyLibrary()
+            self.model = "claude-sonnet-4-5-20250929"
+
+    service = _make_service(enabled=False)
+    service.engine = DummyEngine()
+    call_counts = {"compact": 0, "reduce": 0}
+
+    def fake_compact_single_pass(**kwargs):
+        del kwargs
+        call_counts["compact"] += 1
+        raise local_api.SummaryGenerationError(
+            "compact single-pass theme generation failed after retries"
+        )
+
+    def fake_map_reduce(**kwargs):
+        call_counts["reduce"] += 1
+        min_sentences = kwargs.get("min_sentences", local_api.SUMMARY_MIN_SENTENCES)
+        max_sentences = kwargs.get("max_sentences", local_api.SUMMARY_MAX_SENTENCES)
+
+        if (
+            min_sentences == local_api.SUMMARY_MIN_SENTENCES
+            and max_sentences == local_api.SUMMARY_MAX_SENTENCES
+        ):
+            raise local_api.SummaryGenerationError(
+                "reduce stage summary generation failed after retries"
+            )
+
+        return {
+            "provider": "chatgpt",
+            "model": "gpt-4o-mini",
+            "items": [
+                {
+                    "title": f"Theme {idx}",
+                    "tldr": "One. Two. Three.",
+                    "anchor_text": "long transcript block",
+                    "start": float((idx - 1) * 20),
+                    "end": float((idx - 1) * 20 + 10),
+                }
+                for idx in range(1, 6)
+            ],
+            "strategy": "map_reduce",
+            "total_windows": 3,
+            "processed_windows": 3,
+            "retry_count": 2,
+        }
+
+    service._summarize_transcript_compact_single_pass = fake_compact_single_pass
+    service._summarize_transcript_map_reduce = fake_map_reduce
+
+    response = service.summarize_video_transcript(
+        video_id="vid1",
+        language="en",
+        provider="chatgpt",
+        max_points=5,
+    )
+
+    assert call_counts["compact"] == 1
+    assert call_counts["reduce"] == 2
+    assert len(response["summary"]) == 5
+    assert response["generation_details"]["primary_strategy"] == "compact_single_pass"
+    assert response["generation_details"]["strategy"] == "map_reduce"
+    assert response["generation_details"]["fallback_applied"] is True
+    assert response["generation_details"]["validation_relaxed"] is True
+    assert "reduce stage failed" in str(
+        response["generation_details"]["fallback_reason"]
+    )
+
+
 def test_summarize_single_pass_retries_then_fails():
     class DummyLibrary:
         def __init__(self):

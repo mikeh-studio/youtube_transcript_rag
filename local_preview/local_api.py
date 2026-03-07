@@ -80,6 +80,8 @@ SUMMARY_COMPACT_TARGET_CHARS = 18000
 SUMMARY_RETRY_ATTEMPTS = 3
 SUMMARY_MIN_SENTENCES = 4
 SUMMARY_MAX_SENTENCES = 5
+SUMMARY_RELAXED_MIN_SENTENCES = 3
+SUMMARY_RELAXED_MAX_SENTENCES = 6
 SUMMARY_ANCHOR_MIN_CHARS = 8
 SUMMARY_ANCHOR_TOKEN_MATCH_THRESHOLD = 0.55
 SUMMARY_CACHE_VERSION = 1
@@ -1391,7 +1393,12 @@ class LocalRAGService:
         return len([part for part in parts if str(part).strip()])
 
     def _summary_items_have_required_sentence_count(
-        self, items: List[dict], language: str
+        self,
+        items: List[dict],
+        language: str,
+        *,
+        min_sentences: int = SUMMARY_MIN_SENTENCES,
+        max_sentences: int = SUMMARY_MAX_SENTENCES,
     ) -> bool:
         if not items:
             return False
@@ -1399,10 +1406,7 @@ class LocalRAGService:
             sentence_count = self._summary_sentence_count(
                 str(row.get("tldr") or ""), language
             )
-            if (
-                sentence_count < SUMMARY_MIN_SENTENCES
-                or sentence_count > SUMMARY_MAX_SENTENCES
-            ):
+            if sentence_count < min_sentences or sentence_count > max_sentences:
                 return False
         return True
 
@@ -1711,6 +1715,8 @@ class LocalRAGService:
         max_points: int,
         segments: List[dict],
         items: List[dict],
+        min_sentences: int = SUMMARY_MIN_SENTENCES,
+        max_sentences: int = SUMMARY_MAX_SENTENCES,
     ) -> List[dict]:
         language_rule = (
             "Rewrite in Japanese only."
@@ -1727,7 +1733,7 @@ class LocalRAGService:
             "You rewrite candidate transcript sections into clean final section summaries.\n"
             f"{language_rule}\n"
             f"{style_rule}\n"
-            f"Each tldr must be exactly {SUMMARY_MIN_SENTENCES}-{SUMMARY_MAX_SENTENCES} sentences.\n"
+            f"Each tldr must be exactly {min_sentences}-{max_sentences} sentences.\n"
             "Preserve or improve anchor_text so each item can be mapped to a real video timestamp.\n"
             "Avoid reusing the same anchor_text for multiple themes unless absolutely necessary.\n"
             "Do not copy transcript lines verbatim.\n"
@@ -1767,6 +1773,8 @@ class LocalRAGService:
         stage: str,
         max_tokens: int,
         require_exact_count: bool = True,
+        min_sentences: int = SUMMARY_MIN_SENTENCES,
+        max_sentences: int = SUMMARY_MAX_SENTENCES,
     ) -> dict:
         last_error: Optional[Exception] = None
         attempts = max(1, int(SUMMARY_RETRY_ATTEMPTS))
@@ -1796,7 +1804,10 @@ class LocalRAGService:
                         for row in items
                     )
                     or not self._summary_items_have_required_sentence_count(
-                        items, language
+                        items,
+                        language,
+                        min_sentences=min_sentences,
+                        max_sentences=max_sentences,
                     )
                 ):
                     items = self._rewrite_summary_items_for_quality(
@@ -1805,6 +1816,8 @@ class LocalRAGService:
                         max_points=max_points,
                         segments=segments,
                         items=items,
+                        min_sentences=min_sentences,
+                        max_sentences=max_sentences,
                     )
                     if not self._summary_items_match_language(items, language):
                         raise ValueError(
@@ -1820,10 +1833,13 @@ class LocalRAGService:
                             "Summary output still contains transcript-copy text after rewrite."
                         )
                     if not self._summary_items_have_required_sentence_count(
-                        items, language
+                        items,
+                        language,
+                        min_sentences=min_sentences,
+                        max_sentences=max_sentences,
                     ):
                         raise ValueError(
-                            f"Summary output must be {SUMMARY_MIN_SENTENCES}-{SUMMARY_MAX_SENTENCES} sentences per item after rewrite."
+                            f"Summary output must be {min_sentences}-{max_sentences} sentences per item after rewrite."
                         )
                 if require_exact_count:
                     if len(items) != max_points:
@@ -1854,6 +1870,8 @@ class LocalRAGService:
         language: str,
         provider: str,
         max_points: int,
+        min_sentences: int = SUMMARY_MIN_SENTENCES,
+        max_sentences: int = SUMMARY_MAX_SENTENCES,
     ) -> dict:
         system_prompt = self._summary_system_prompt(
             language=language, max_points=max_points
@@ -1874,6 +1892,8 @@ class LocalRAGService:
             stage="single-pass summary generation",
             max_tokens=SUMMARY_MAX_TOKENS,
             require_exact_count=True,
+            min_sentences=min_sentences,
+            max_sentences=max_sentences,
         )
         return {
             "provider": result["provider"],
@@ -1892,6 +1912,8 @@ class LocalRAGService:
         language: str,
         provider: str,
         max_points: int,
+        min_sentences: int = SUMMARY_MIN_SENTENCES,
+        max_sentences: int = SUMMARY_MAX_SENTENCES,
     ) -> dict:
         compact_lines = self._summary_compact_transcript_lines(segments)
         if not compact_lines:
@@ -1915,6 +1937,8 @@ class LocalRAGService:
             stage="compact single-pass theme generation",
             max_tokens=SUMMARY_MAX_TOKENS,
             require_exact_count=True,
+            min_sentences=min_sentences,
+            max_sentences=max_sentences,
         )
         return {
             "provider": result["provider"],
@@ -1933,6 +1957,8 @@ class LocalRAGService:
         language: str,
         provider: str,
         max_points: int,
+        min_sentences: int = SUMMARY_MIN_SENTENCES,
+        max_sentences: int = SUMMARY_MAX_SENTENCES,
     ) -> dict:
         windows = self._window_chunks_for_summary(
             segments, max_chars=SUMMARY_WINDOW_MAX_CHARS
@@ -1945,6 +1971,8 @@ class LocalRAGService:
                 language=language,
                 provider=provider,
                 max_points=max_points,
+                min_sentences=min_sentences,
+                max_sentences=max_sentences,
             )
 
         map_items: List[dict] = []
@@ -1978,6 +2006,8 @@ class LocalRAGService:
                 stage=f"map stage window {window_idx}/{len(windows)}",
                 max_tokens=900,
                 require_exact_count=False,
+                min_sentences=min_sentences,
+                max_sentences=max_sentences,
             )
             resolved_provider = map_result["provider"]
             resolved_model = map_result["model"]
@@ -2005,6 +2035,8 @@ class LocalRAGService:
             stage="reduce stage summary generation",
             max_tokens=SUMMARY_MAX_TOKENS,
             require_exact_count=True,
+            min_sentences=min_sentences,
+            max_sentences=max_sentences,
         )
         resolved_provider = final_result["provider"]
         resolved_model = final_result["model"]
@@ -2218,27 +2250,77 @@ class LocalRAGService:
             generation_details["cache_generated_at"] = (
                 cached_summary.get("generated_at") or None
             )
+            generation_details.setdefault(
+                "primary_strategy", generation_details.get("strategy") or None
+            )
+            generation_details.setdefault("fallback_applied", False)
+            generation_details.setdefault("fallback_reason", None)
+            generation_details.setdefault("validation_relaxed", False)
             response["generation_details"] = generation_details
             return response
 
         transcript_lines = self._summary_transcript_lines(segments)
         transcript_size = len("\n".join(transcript_lines))
+        fallback_applied = False
+        fallback_reason: Optional[str] = None
+        validation_relaxed = False
 
         if transcript_size <= SUMMARY_SINGLE_PASS_MAX_CHARS:
-            summary_result = self._summarize_transcript_single_pass(
-                transcript_lines=transcript_lines,
-                segments=segments,
-                language=scoped_language,
-                provider=scoped_provider,
-                max_points=safe_max_points,
-            )
+            primary_strategy = "single_pass"
+            try:
+                summary_result = self._summarize_transcript_single_pass(
+                    transcript_lines=transcript_lines,
+                    segments=segments,
+                    language=scoped_language,
+                    provider=scoped_provider,
+                    max_points=safe_max_points,
+                )
+            except SummaryGenerationError as exc:
+                fallback_applied = True
+                fallback_reason = str(exc)
+                validation_relaxed = True
+                summary_result = self._summarize_transcript_single_pass(
+                    transcript_lines=transcript_lines,
+                    segments=segments,
+                    language=scoped_language,
+                    provider=scoped_provider,
+                    max_points=safe_max_points,
+                    min_sentences=SUMMARY_RELAXED_MIN_SENTENCES,
+                    max_sentences=SUMMARY_RELAXED_MAX_SENTENCES,
+                )
         else:
-            summary_result = self._summarize_transcript_compact_single_pass(
-                segments=segments,
-                language=scoped_language,
-                provider=scoped_provider,
-                max_points=safe_max_points,
-            )
+            primary_strategy = "compact_single_pass"
+            try:
+                summary_result = self._summarize_transcript_compact_single_pass(
+                    segments=segments,
+                    language=scoped_language,
+                    provider=scoped_provider,
+                    max_points=safe_max_points,
+                )
+            except SummaryGenerationError as exc:
+                fallback_applied = True
+                fallback_reason = str(exc)
+                try:
+                    summary_result = self._summarize_transcript_map_reduce(
+                        segments=segments,
+                        language=scoped_language,
+                        provider=scoped_provider,
+                        max_points=safe_max_points,
+                    )
+                except SummaryGenerationError as reduce_exc:
+                    validation_relaxed = True
+                    fallback_reason = (
+                        f"{fallback_reason}; "
+                        f"reduce stage failed: {reduce_exc}"
+                    )
+                    summary_result = self._summarize_transcript_map_reduce(
+                        segments=segments,
+                        language=scoped_language,
+                        provider=scoped_provider,
+                        max_points=safe_max_points,
+                        min_sentences=SUMMARY_RELAXED_MIN_SENTENCES,
+                        max_sentences=SUMMARY_RELAXED_MAX_SENTENCES,
+                    )
 
         summary_items: List[dict] = []
         timestamp_success_count = 0
@@ -2305,6 +2387,10 @@ class LocalRAGService:
                 "timestamp_resolution_success_count": timestamp_success_count,
                 "timestamp_resolution_failure_count": timestamp_failure_count,
                 "strategy": summary_result["strategy"],
+                "primary_strategy": primary_strategy,
+                "fallback_applied": bool(fallback_applied),
+                "fallback_reason": fallback_reason,
+                "validation_relaxed": bool(validation_relaxed),
                 "total_windows": int(summary_result.get("total_windows", 1)),
                 "processed_windows": int(summary_result.get("processed_windows", 1)),
                 "retry_count": int(summary_result.get("retry_count", 0)),
