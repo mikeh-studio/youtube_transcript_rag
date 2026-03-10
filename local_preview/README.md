@@ -31,6 +31,13 @@ Open:
   - run comparison
 - UI language switch: `English (US)` / `日本語`
 
+## Update (March 7, 2026)
+
+- TLDR summary generation now has a relaxed fallback path for long transcripts when strict compact/map-reduce validation fails.
+- TLDR API responses now include strategy/fallback metadata to make summary generation diagnostics clearer.
+- Header menu rendering is now aligned across main shell, Reviews, and Evaluation pages (icon + label parity and locale-safe labels).
+- Ingest hero styling was simplified by removing the decorative boxed background.
+
 ## Safety Mode (Evaluation)
 
 - Evaluation data is browser-local (`localStorage`) by design.

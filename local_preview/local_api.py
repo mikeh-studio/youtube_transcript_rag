@@ -36,10 +36,19 @@ try:
 except Exception:  # pragma: no cover
     OpenAI = None
 
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover
+    load_dotenv = None
+
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+if load_dotenv is not None:
+    load_dotenv(ROOT_DIR / ".env")
+    load_dotenv(ROOT_DIR / ".env.local", override=True)
 
 from multilingual.rag_engine import (  # noqa: E402
     CONTEXT_LABELS,
@@ -70,7 +79,7 @@ FEEDBACK_MIN_SIMILARITY = 0.20
 FEEDBACK_RECENCY_HALFLIFE_DAYS = 30.0
 SUMMARY_LANGUAGES = {"en", "ja"}
 SUMMARY_MAX_POINTS = 5
-SUMMARY_ALLOWED_POINTS = {5, 10}
+SUMMARY_ALLOWED_POINTS = {5}
 SUMMARY_MAP_POINTS = 3
 SUMMARY_TEMPERATURE = 0.2
 SUMMARY_MAX_TOKENS = 1800
@@ -80,9 +89,14 @@ SUMMARY_COMPACT_TARGET_CHARS = 18000
 SUMMARY_RETRY_ATTEMPTS = 3
 SUMMARY_MIN_SENTENCES = 4
 SUMMARY_MAX_SENTENCES = 5
+SUMMARY_RELAXED_MIN_SENTENCES = 3
+SUMMARY_RELAXED_MAX_SENTENCES = 6
 SUMMARY_ANCHOR_MIN_CHARS = 8
 SUMMARY_ANCHOR_TOKEN_MATCH_THRESHOLD = 0.55
 SUMMARY_CACHE_VERSION = 1
+ASK_HISTORY_LIMIT_PER_VIDEO = 20
+ASK_HISTORY_LIST_LIMIT_MAX = 100
+LOCALHOST_CORS_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 ASK_STYLE_INSTRUCTION = (
     "Answer in the same language as the user question. "
@@ -94,6 +108,26 @@ ASK_STYLE_INSTRUCTION = (
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _chmod_private(path: Path) -> None:
+    """Best-effort chmod for local files that may contain transcripts or user history."""
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _allowed_local_origin(origin: Optional[str]) -> Optional[str]:
+    text = str(origin or "").strip()
+    if not text:
+        return None
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if parsed.hostname not in LOCALHOST_CORS_HOSTS:
+        return None
+    return text
 
 
 class SummaryGenerationError(RuntimeError):
@@ -265,11 +299,17 @@ class LocalRAGService:
         self.feedback_tuning_enabled = str(
             os.environ.get("YT_RAG_FEEDBACK_TUNING", "1")
         ).strip().lower() not in {"0", "false", "off", "no"}
+        self.ask_history_lock = threading.Lock()
+        self.ask_history_path = (
+            Path(__file__).resolve().parent / "data" / "ask_history.json"
+        )
+        self.ask_history: Dict[str, List[dict]] = {}
         self.log_lock = threading.Lock()
         self.ingest_log_path = (
             Path(__file__).resolve().parent / "data" / "ingest_jobs.log"
         )
         self._load_feedback()
+        self._load_ask_history()
 
     @property
     def openai_client(self):
@@ -334,10 +374,13 @@ class LocalRAGService:
         video["title"] = resolved
 
     def list_videos(self):
+        self._ensure_ask_history_state()
         results = []
         for video_id, data in self.engine.library.videos.items():
             self._hydrate_video_title(video_id)
             refreshed = self.engine.library.videos.get(video_id, data)
+            chunking = self.engine.library.get_video_chunking_metadata(video_id)
+            history_rows = self.ask_history.get(video_id, [])
             results.append(
                 {
                     "video_id": video_id,
@@ -347,12 +390,231 @@ class LocalRAGService:
                     ),
                     "language": refreshed.get("language", "ja"),
                     "num_chunks": len(refreshed.get("chunks", [])),
+                    "chunking_version": chunking["version"],
+                    "chunking_stale": self.engine.library.video_chunking_is_stale(
+                        video_id
+                    ),
+                    "ask_history_count": len(history_rows),
+                    "last_ask_at": history_rows[0].get("created_at")
+                    if history_rows
+                    else None,
                 }
             )
         return results
 
     def delete_video(self, video_id: str):
         self.engine.library.remove_video(video_id)
+        self._delete_ask_history(video_id)
+
+    def _ensure_ask_history_state(self) -> None:
+        if not hasattr(self, "ask_history_lock"):
+            self.ask_history_lock = threading.Lock()
+        if not hasattr(self, "ask_history_path"):
+            self.ask_history_path = (
+                Path(__file__).resolve().parent / "data" / "ask_history.json"
+            )
+        if not hasattr(self, "ask_history") or not isinstance(self.ask_history, dict):
+            self.ask_history = {}
+
+    @staticmethod
+    def _canonical_video_url(video_id: str) -> str:
+        return f"https://www.youtube.com/watch?v={video_id}"
+
+    @staticmethod
+    def _normalize_ask_history_sources(sources: List[dict]) -> List[dict]:
+        normalized = []
+        for row in sources or []:
+            if not isinstance(row, dict):
+                continue
+            video_id = str(row.get("video_id") or "").strip()
+            if not video_id:
+                continue
+            start = float(row.get("start", 0.0))
+            end = float(row.get("end", start))
+            chunk_index = row.get("chunk_index")
+            normalized.append(
+                {
+                    "video_id": video_id,
+                    "video_title": str(row.get("video_title") or video_id).strip(),
+                    "video_url": str(
+                        row.get("video_url")
+                        or LocalRAGService._canonical_video_url(video_id)
+                    ).strip(),
+                    "language": normalize_language(row.get("language"), fallback="ja"),
+                    "chunk_index": int(chunk_index)
+                    if chunk_index is not None and str(chunk_index).strip() != ""
+                    else None,
+                    "text": str(row.get("text") or "").strip(),
+                    "start": start,
+                    "end": end,
+                    "url": str(
+                        row.get("url")
+                        or f"{LocalRAGService._canonical_video_url(video_id)}&t={int(start)}s"
+                    ).strip(),
+                }
+            )
+        return normalized
+
+    @classmethod
+    def _ask_history_source_fingerprint(cls, sources: List[dict]) -> str:
+        payload = [
+            {
+                "video_id": str(row.get("video_id") or "").strip(),
+                "chunk_index": row.get("chunk_index"),
+                "start": round(float(row.get("start", 0.0)), 3),
+                "end": round(float(row.get("end", row.get("start", 0.0))), 3),
+            }
+            for row in cls._normalize_ask_history_sources(sources)
+        ]
+        serialized = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def _normalize_ask_history_record(self, video_id: str, row: dict) -> Optional[dict]:
+        if not isinstance(row, dict):
+            return None
+        scoped_video_id = str(video_id or row.get("video_id") or "").strip()
+        question = str(row.get("question") or "").strip()
+        answer = str(row.get("answer") or "").strip()
+        if not scoped_video_id or not question:
+            return None
+
+        video = self.engine.library.videos.get(scoped_video_id, {})
+        title = str(
+            row.get("video_title") or video.get("title") or f"Video {scoped_video_id}"
+        ).strip()
+        language = normalize_language(
+            row.get("language"),
+            fallback=normalize_language(video.get("language"), fallback="ja"),
+        )
+        sources = self._normalize_ask_history_sources(row.get("sources") or [])
+        chunking = (
+            self.engine.library.get_video_chunking_metadata(scoped_video_id)
+            if hasattr(self.engine.library, "get_video_chunking_metadata")
+            else {"version": "unknown"}
+        )
+        return {
+            "id": str(row.get("id") or f"ask_{uuid.uuid4()}").strip(),
+            "video_id": scoped_video_id,
+            "video_title": title,
+            "url": str(
+                row.get("url")
+                or video.get("url")
+                or self._canonical_video_url(scoped_video_id)
+            ).strip(),
+            "language": language,
+            "question": question,
+            "k": max(1, int(row.get("k", 5) or 5)),
+            "retrieval_mode": str(row.get("retrieval_mode") or "hybrid")
+            .strip()
+            .lower(),
+            "provider": str(row.get("provider") or DEFAULT_ASK_PROVIDER)
+            .strip()
+            .lower(),
+            "model": str(row.get("model") or "").strip(),
+            "answer": answer,
+            "sources": sources,
+            "retrieval_details": deepcopy(row.get("retrieval_details") or {}),
+            "created_at": str(row.get("created_at") or now_iso()).strip(),
+            "chunking_version": str(
+                row.get("chunking_version") or chunking.get("version") or "unknown"
+            ).strip(),
+            "source_fingerprint": str(
+                row.get("source_fingerprint")
+                or self._ask_history_source_fingerprint(sources)
+            ).strip(),
+        }
+
+    def _load_ask_history(self) -> None:
+        self._ensure_ask_history_state()
+        self.ask_history_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.ask_history_path.exists():
+            return
+        try:
+            raw = json.loads(self.ask_history_path.read_text(encoding="utf-8"))
+        except Exception:
+            self.ask_history = {}
+            return
+
+        normalized: Dict[str, List[dict]] = {}
+        if isinstance(raw, dict):
+            iterable = raw.items()
+        else:
+            iterable = []
+
+        for video_id, rows in iterable:
+            if not isinstance(rows, list):
+                continue
+            items = []
+            for row in rows:
+                record = self._normalize_ask_history_record(video_id, row)
+                if record:
+                    items.append(record)
+            items.sort(key=lambda row: row.get("created_at", ""), reverse=True)
+            if items:
+                normalized[str(video_id).strip()] = items[:ASK_HISTORY_LIMIT_PER_VIDEO]
+
+        self.ask_history = normalized
+
+    def _persist_ask_history(self) -> None:
+        self._ensure_ask_history_state()
+        self.ask_history_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.ask_history_path.with_suffix(".tmp")
+        temp_path.write_text(
+            json.dumps(self.ask_history, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        _chmod_private(temp_path)
+        temp_path.replace(self.ask_history_path)
+        _chmod_private(self.ask_history_path)
+
+    def save_ask_history(self, payload: dict) -> dict:
+        self._ensure_ask_history_state()
+        record = self._normalize_ask_history_record(payload.get("video_id"), payload)
+        if not record:
+            raise ValueError("video_id and question are required")
+        video_id = record["video_id"]
+        with self.ask_history_lock:
+            rows = list(self.ask_history.get(video_id, []))
+            rows.insert(0, record)
+            rows.sort(key=lambda row: row.get("created_at", ""), reverse=True)
+            self.ask_history[video_id] = rows[:ASK_HISTORY_LIMIT_PER_VIDEO]
+            self._persist_ask_history()
+        return deepcopy(record)
+
+    def list_ask_history(
+        self,
+        *,
+        video_id: Optional[str] = None,
+        limit: int = ASK_HISTORY_LIMIT_PER_VIDEO,
+    ) -> List[dict]:
+        self._ensure_ask_history_state()
+        safe_limit = max(
+            1,
+            min(int(limit or ASK_HISTORY_LIMIT_PER_VIDEO), ASK_HISTORY_LIST_LIMIT_MAX),
+        )
+        scoped_video_id = str(video_id or "").strip()
+        if scoped_video_id:
+            rows = list(self.ask_history.get(scoped_video_id, []))
+        else:
+            rows = [row for items in self.ask_history.values() for row in items]
+        rows.sort(key=lambda row: row.get("created_at", ""), reverse=True)
+        return deepcopy(rows[:safe_limit])
+
+    def _delete_ask_history(self, video_id: str) -> None:
+        self._ensure_ask_history_state()
+        scoped_video_id = str(video_id or "").strip()
+        if not scoped_video_id:
+            return
+        with self.ask_history_lock:
+            if scoped_video_id not in self.ask_history:
+                return
+            del self.ask_history[scoped_video_id]
+            self._persist_ask_history()
 
     def _load_feedback(self) -> None:
         self.feedback_path.parent.mkdir(parents=True, exist_ok=True)
@@ -387,7 +649,9 @@ class LocalRAGService:
             json.dumps(self.feedback, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        _chmod_private(temp_path)
         temp_path.replace(self.feedback_path)
+        _chmod_private(self.feedback_path)
 
     @staticmethod
     def _coerce_optional_float(value):
@@ -919,12 +1183,15 @@ class LocalRAGService:
 
         return [tok for tok in tokens if tok]
 
-    def _all_chunks(self) -> List[dict]:
+    def _all_chunks(self, video_id: Optional[str] = None) -> List[dict]:
         rows: List[dict] = []
-        for video_id, video_data in self.engine.library.videos.items():
-            title = video_data.get("title", f"Video {video_id}")
+        scoped_video_id = str(video_id or "").strip()
+        for current_video_id, video_data in self.engine.library.videos.items():
+            if scoped_video_id and current_video_id != scoped_video_id:
+                continue
+            title = video_data.get("title", f"Video {current_video_id}")
             video_url = video_data.get(
-                "url", f"https://www.youtube.com/watch?v={video_id}"
+                "url", f"https://www.youtube.com/watch?v={current_video_id}"
             )
             language = video_data.get("language", "ja")
             chunks = video_data.get("chunks", [])
@@ -932,7 +1199,7 @@ class LocalRAGService:
                 start = float(chunk.get("start", 0.0))
                 rows.append(
                     {
-                        "video_id": video_id,
+                        "video_id": current_video_id,
                         "video_title": title,
                         "video_url": video_url,
                         "language": language,
@@ -940,14 +1207,28 @@ class LocalRAGService:
                         "text": chunk.get("raw_text", ""),
                         "start": start,
                         "end": float(chunk.get("end", start)),
-                        "url": f"https://www.youtube.com/watch?v={video_id}&t={int(start)}s",
+                        "url": f"https://www.youtube.com/watch?v={current_video_id}&t={int(start)}s",
                     }
                 )
         return rows
 
-    def _dense_search(self, query: str, k: int, language: Optional[str]) -> List[dict]:
+    def _dense_search(
+        self,
+        query: str,
+        k: int,
+        language: Optional[str],
+        video_id: Optional[str] = None,
+    ) -> List[dict]:
         try:
-            dense_rows = self.engine.search(query, k=k, language=language)
+            if video_id is None:
+                dense_rows = self.engine.search(query, k=k, language=language)
+            else:
+                dense_rows = self.engine.search(
+                    query,
+                    k=k,
+                    language=language,
+                    video_id=video_id,
+                )
         except Exception:
             return []
         results: List[dict] = []
@@ -960,9 +1241,13 @@ class LocalRAGService:
         return results
 
     def _lexical_bm25_search(
-        self, query: str, k: int, language: Optional[str]
+        self,
+        query: str,
+        k: int,
+        language: Optional[str],
+        video_id: Optional[str] = None,
     ) -> List[dict]:
-        candidates = self._all_chunks()
+        candidates = self._all_chunks(video_id=video_id)
         if not candidates:
             return []
 
@@ -1157,12 +1442,16 @@ class LocalRAGService:
         k: int = 5,
         language: Optional[str] = None,
         retrieval_mode: str = "hybrid",
+        video_id: Optional[str] = None,
     ) -> dict:
         mode = (retrieval_mode or "hybrid").strip().lower()
         if mode not in RETRIEVAL_MODES:
             raise ValueError(
                 f"retrieval_mode must be one of: {', '.join(sorted(RETRIEVAL_MODES))}"
             )
+        scoped_video_id = str(video_id or "").strip()
+        if scoped_video_id and scoped_video_id not in self.engine.library.videos:
+            raise KeyError(f"video_id not found: {scoped_video_id}")
 
         top_k = max(1, min(int(k), 12))
         candidate_k = max(30, top_k * 8)
@@ -1172,11 +1461,33 @@ class LocalRAGService:
         candidate_rows: List[dict] = []
 
         if mode in {"dense", "hybrid"}:
-            dense_results = self._dense_search(query, k=candidate_k, language=language)
+            if scoped_video_id:
+                dense_results = self._dense_search(
+                    query,
+                    k=candidate_k,
+                    language=language,
+                    video_id=scoped_video_id,
+                )
+            else:
+                dense_results = self._dense_search(
+                    query,
+                    k=candidate_k,
+                    language=language,
+                )
         if mode in {"lexical", "hybrid"}:
-            lexical_results = self._lexical_bm25_search(
-                query, k=candidate_k, language=language
-            )
+            if scoped_video_id:
+                lexical_results = self._lexical_bm25_search(
+                    query,
+                    k=candidate_k,
+                    language=language,
+                    video_id=scoped_video_id,
+                )
+            else:
+                lexical_results = self._lexical_bm25_search(
+                    query,
+                    k=candidate_k,
+                    language=language,
+                )
 
         if mode == "dense":
             candidate_rows = dense_results
@@ -1217,6 +1528,7 @@ class LocalRAGService:
                 "max_adjust": FEEDBACK_MAX_ADJUST,
                 "min_similarity": FEEDBACK_MIN_SIMILARITY,
             },
+            "video_id_filter": scoped_video_id or None,
             "fallback": (
                 "dense_only"
                 if mode == "hybrid" and dense_results and not lexical_results
@@ -1391,7 +1703,12 @@ class LocalRAGService:
         return len([part for part in parts if str(part).strip()])
 
     def _summary_items_have_required_sentence_count(
-        self, items: List[dict], language: str
+        self,
+        items: List[dict],
+        language: str,
+        *,
+        min_sentences: int = SUMMARY_MIN_SENTENCES,
+        max_sentences: int = SUMMARY_MAX_SENTENCES,
     ) -> bool:
         if not items:
             return False
@@ -1399,10 +1716,7 @@ class LocalRAGService:
             sentence_count = self._summary_sentence_count(
                 str(row.get("tldr") or ""), language
             )
-            if (
-                sentence_count < SUMMARY_MIN_SENTENCES
-                or sentence_count > SUMMARY_MAX_SENTENCES
-            ):
+            if sentence_count < min_sentences or sentence_count > max_sentences:
                 return False
         return True
 
@@ -1651,6 +1965,9 @@ class LocalRAGService:
             "Rank themes by importance to the whole video, not by timestamp order.\n"
             "Do not copy transcript lines verbatim; paraphrase and summarize.\n"
             "Each tldr must be one paragraph of 4-5 sentences.\n"
+            "Make each theme title concrete and descriptive, not generic.\n"
+            "When the transcript clearly identifies who is speaking, being discussed, or which character/persona they are playing, include that detail in the title or tldr.\n"
+            "Only mention speaker names or character roles when the transcript supports them; never guess.\n"
             "Each item must include an anchor_text phrase from where the theme first appears in the transcript.\n"
             "Use distinct anchor_text values across items whenever possible.\n"
             "The start timestamp should match the anchor_text location.\n"
@@ -1711,6 +2028,8 @@ class LocalRAGService:
         max_points: int,
         segments: List[dict],
         items: List[dict],
+        min_sentences: int = SUMMARY_MIN_SENTENCES,
+        max_sentences: int = SUMMARY_MAX_SENTENCES,
     ) -> List[dict]:
         language_rule = (
             "Rewrite in Japanese only."
@@ -1727,7 +2046,10 @@ class LocalRAGService:
             "You rewrite candidate transcript sections into clean final section summaries.\n"
             f"{language_rule}\n"
             f"{style_rule}\n"
-            f"Each tldr must be exactly {SUMMARY_MIN_SENTENCES}-{SUMMARY_MAX_SENTENCES} sentences.\n"
+            f"Each tldr must be exactly {min_sentences}-{max_sentences} sentences.\n"
+            "Make titles more specific and informative when possible.\n"
+            "If the transcript clearly names the speaker, participant, or character role, preserve that detail in the title or tldr.\n"
+            "Do not invent names, roles, or casting information that is not explicit in the transcript.\n"
             "Preserve or improve anchor_text so each item can be mapped to a real video timestamp.\n"
             "Avoid reusing the same anchor_text for multiple themes unless absolutely necessary.\n"
             "Do not copy transcript lines verbatim.\n"
@@ -1767,6 +2089,8 @@ class LocalRAGService:
         stage: str,
         max_tokens: int,
         require_exact_count: bool = True,
+        min_sentences: int = SUMMARY_MIN_SENTENCES,
+        max_sentences: int = SUMMARY_MAX_SENTENCES,
     ) -> dict:
         last_error: Optional[Exception] = None
         attempts = max(1, int(SUMMARY_RETRY_ATTEMPTS))
@@ -1796,7 +2120,10 @@ class LocalRAGService:
                         for row in items
                     )
                     or not self._summary_items_have_required_sentence_count(
-                        items, language
+                        items,
+                        language,
+                        min_sentences=min_sentences,
+                        max_sentences=max_sentences,
                     )
                 ):
                     items = self._rewrite_summary_items_for_quality(
@@ -1805,6 +2132,8 @@ class LocalRAGService:
                         max_points=max_points,
                         segments=segments,
                         items=items,
+                        min_sentences=min_sentences,
+                        max_sentences=max_sentences,
                     )
                     if not self._summary_items_match_language(items, language):
                         raise ValueError(
@@ -1820,10 +2149,13 @@ class LocalRAGService:
                             "Summary output still contains transcript-copy text after rewrite."
                         )
                     if not self._summary_items_have_required_sentence_count(
-                        items, language
+                        items,
+                        language,
+                        min_sentences=min_sentences,
+                        max_sentences=max_sentences,
                     ):
                         raise ValueError(
-                            f"Summary output must be {SUMMARY_MIN_SENTENCES}-{SUMMARY_MAX_SENTENCES} sentences per item after rewrite."
+                            f"Summary output must be {min_sentences}-{max_sentences} sentences per item after rewrite."
                         )
                 if require_exact_count:
                     if len(items) != max_points:
@@ -1854,6 +2186,8 @@ class LocalRAGService:
         language: str,
         provider: str,
         max_points: int,
+        min_sentences: int = SUMMARY_MIN_SENTENCES,
+        max_sentences: int = SUMMARY_MAX_SENTENCES,
     ) -> dict:
         system_prompt = self._summary_system_prompt(
             language=language, max_points=max_points
@@ -1874,6 +2208,8 @@ class LocalRAGService:
             stage="single-pass summary generation",
             max_tokens=SUMMARY_MAX_TOKENS,
             require_exact_count=True,
+            min_sentences=min_sentences,
+            max_sentences=max_sentences,
         )
         return {
             "provider": result["provider"],
@@ -1892,6 +2228,8 @@ class LocalRAGService:
         language: str,
         provider: str,
         max_points: int,
+        min_sentences: int = SUMMARY_MIN_SENTENCES,
+        max_sentences: int = SUMMARY_MAX_SENTENCES,
     ) -> dict:
         compact_lines = self._summary_compact_transcript_lines(segments)
         if not compact_lines:
@@ -1915,6 +2253,8 @@ class LocalRAGService:
             stage="compact single-pass theme generation",
             max_tokens=SUMMARY_MAX_TOKENS,
             require_exact_count=True,
+            min_sentences=min_sentences,
+            max_sentences=max_sentences,
         )
         return {
             "provider": result["provider"],
@@ -1933,6 +2273,8 @@ class LocalRAGService:
         language: str,
         provider: str,
         max_points: int,
+        min_sentences: int = SUMMARY_MIN_SENTENCES,
+        max_sentences: int = SUMMARY_MAX_SENTENCES,
     ) -> dict:
         windows = self._window_chunks_for_summary(
             segments, max_chars=SUMMARY_WINDOW_MAX_CHARS
@@ -1945,6 +2287,8 @@ class LocalRAGService:
                 language=language,
                 provider=provider,
                 max_points=max_points,
+                min_sentences=min_sentences,
+                max_sentences=max_sentences,
             )
 
         map_items: List[dict] = []
@@ -1978,6 +2322,8 @@ class LocalRAGService:
                 stage=f"map stage window {window_idx}/{len(windows)}",
                 max_tokens=900,
                 require_exact_count=False,
+                min_sentences=min_sentences,
+                max_sentences=max_sentences,
             )
             resolved_provider = map_result["provider"]
             resolved_model = map_result["model"]
@@ -2005,6 +2351,8 @@ class LocalRAGService:
             stage="reduce stage summary generation",
             max_tokens=SUMMARY_MAX_TOKENS,
             require_exact_count=True,
+            min_sentences=min_sentences,
+            max_sentences=max_sentences,
         )
         resolved_provider = final_result["provider"]
         resolved_model = final_result["model"]
@@ -2170,7 +2518,7 @@ class LocalRAGService:
 
         safe_max_points = int(max_points or SUMMARY_MAX_POINTS)
         if safe_max_points not in SUMMARY_ALLOWED_POINTS:
-            raise ValueError("max_points must be 5 or 10")
+            raise ValueError("max_points must be 5")
 
         video = self.engine.library.videos.get(scoped_video_id, {})
         raw_chunks = video.get("chunks", [])
@@ -2218,27 +2566,76 @@ class LocalRAGService:
             generation_details["cache_generated_at"] = (
                 cached_summary.get("generated_at") or None
             )
+            generation_details.setdefault(
+                "primary_strategy", generation_details.get("strategy") or None
+            )
+            generation_details.setdefault("fallback_applied", False)
+            generation_details.setdefault("fallback_reason", None)
+            generation_details.setdefault("validation_relaxed", False)
             response["generation_details"] = generation_details
             return response
 
         transcript_lines = self._summary_transcript_lines(segments)
         transcript_size = len("\n".join(transcript_lines))
+        fallback_applied = False
+        fallback_reason: Optional[str] = None
+        validation_relaxed = False
 
         if transcript_size <= SUMMARY_SINGLE_PASS_MAX_CHARS:
-            summary_result = self._summarize_transcript_single_pass(
-                transcript_lines=transcript_lines,
-                segments=segments,
-                language=scoped_language,
-                provider=scoped_provider,
-                max_points=safe_max_points,
-            )
+            primary_strategy = "single_pass"
+            try:
+                summary_result = self._summarize_transcript_single_pass(
+                    transcript_lines=transcript_lines,
+                    segments=segments,
+                    language=scoped_language,
+                    provider=scoped_provider,
+                    max_points=safe_max_points,
+                )
+            except SummaryGenerationError as exc:
+                fallback_applied = True
+                fallback_reason = str(exc)
+                validation_relaxed = True
+                summary_result = self._summarize_transcript_single_pass(
+                    transcript_lines=transcript_lines,
+                    segments=segments,
+                    language=scoped_language,
+                    provider=scoped_provider,
+                    max_points=safe_max_points,
+                    min_sentences=SUMMARY_RELAXED_MIN_SENTENCES,
+                    max_sentences=SUMMARY_RELAXED_MAX_SENTENCES,
+                )
         else:
-            summary_result = self._summarize_transcript_compact_single_pass(
-                segments=segments,
-                language=scoped_language,
-                provider=scoped_provider,
-                max_points=safe_max_points,
-            )
+            primary_strategy = "compact_single_pass"
+            try:
+                summary_result = self._summarize_transcript_compact_single_pass(
+                    segments=segments,
+                    language=scoped_language,
+                    provider=scoped_provider,
+                    max_points=safe_max_points,
+                )
+            except SummaryGenerationError as exc:
+                fallback_applied = True
+                fallback_reason = str(exc)
+                try:
+                    summary_result = self._summarize_transcript_map_reduce(
+                        segments=segments,
+                        language=scoped_language,
+                        provider=scoped_provider,
+                        max_points=safe_max_points,
+                    )
+                except SummaryGenerationError as reduce_exc:
+                    validation_relaxed = True
+                    fallback_reason = (
+                        f"{fallback_reason}; " f"reduce stage failed: {reduce_exc}"
+                    )
+                    summary_result = self._summarize_transcript_map_reduce(
+                        segments=segments,
+                        language=scoped_language,
+                        provider=scoped_provider,
+                        max_points=safe_max_points,
+                        min_sentences=SUMMARY_RELAXED_MIN_SENTENCES,
+                        max_sentences=SUMMARY_RELAXED_MAX_SENTENCES,
+                    )
 
         summary_items: List[dict] = []
         timestamp_success_count = 0
@@ -2305,6 +2702,10 @@ class LocalRAGService:
                 "timestamp_resolution_success_count": timestamp_success_count,
                 "timestamp_resolution_failure_count": timestamp_failure_count,
                 "strategy": summary_result["strategy"],
+                "primary_strategy": primary_strategy,
+                "fallback_applied": bool(fallback_applied),
+                "fallback_reason": fallback_reason,
+                "validation_relaxed": bool(validation_relaxed),
                 "total_windows": int(summary_result.get("total_windows", 1)),
                 "processed_windows": int(summary_result.get("processed_windows", 1)),
                 "retry_count": int(summary_result.get("retry_count", 0)),
@@ -2405,7 +2806,11 @@ class LocalRAGService:
         skipped = []
 
         for idx, video_id in enumerate(targets):
-            if (not force) and (video_id in self.engine.library.videos):
+            video_exists = video_id in self.engine.library.videos
+            video_is_stale = (
+                video_exists and self.engine.library.video_chunking_is_stale(video_id)
+            )
+            if (not force) and video_exists and (not video_is_stale):
                 skipped.append(
                     {
                         "video_id": video_id,
@@ -2421,6 +2826,15 @@ class LocalRAGService:
                     language=language,
                 )
                 continue
+            if (not force) and video_is_stale:
+                self._append_ingest_log(
+                    level="info",
+                    event="job.reingest.stale_chunking",
+                    message="video uses stale chunking; re-ingesting",
+                    video_id=video_id,
+                    mode=mode,
+                    language=language,
+                )
 
             job_id = f"job_{uuid.uuid4()}"
             job_started = time.time()
@@ -2571,7 +2985,10 @@ class Handler(BaseHTTPRequestHandler):
     def _set_headers(self, status=200, content_type="application/json; charset=utf-8"):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = _allowed_local_origin(self.headers.get("Origin"))
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header(
@@ -2686,6 +3103,28 @@ class Handler(BaseHTTPRequestHandler):
                     count=len(videos),
                 )
                 self._json({"ok": True, "videos": videos})
+                return
+
+            if path == "/v1/history/ask":
+                params = parse_qs(parsed.query or "")
+                video_id = (params.get("video_id") or [None])[0]
+                limit_raw = (params.get("limit") or [ASK_HISTORY_LIMIT_PER_VIDEO])[0]
+                try:
+                    limit = int(limit_raw)
+                except (TypeError, ValueError):
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "INVALID_INPUT",
+                                "message": "limit must be an integer",
+                            },
+                        },
+                        400,
+                    )
+                    return
+                items = SERVICE.list_ask_history(video_id=video_id, limit=limit)
+                self._json({"ok": True, "count": len(items), "items": items})
                 return
 
             if path == "/v1/logs/ingest-jobs":
@@ -2857,7 +3296,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 max_points = int(body.get("max_points", SUMMARY_MAX_POINTS))
                 if max_points not in SUMMARY_ALLOWED_POINTS:
-                    raise ValueError("max_points must be 5 or 10")
+                    raise ValueError("max_points must be 5")
 
                 result = SERVICE.summarize_video_transcript(
                     video_id=video_id,
@@ -2934,6 +3373,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 k = max(1, min(int(body.get("k", 5)), 12))
                 language = body.get("language")
+                video_id = str(body.get("video_id") or "").strip() or None
                 retrieval_mode = (
                     str(body.get("retrieval_mode") or "hybrid").strip().lower()
                 )
@@ -2971,13 +3411,30 @@ class Handler(BaseHTTPRequestHandler):
                     k=k,
                     language=normalize_language(language) if language else None,
                     retrieval_mode=retrieval_mode,
+                    video_id=video_id,
                 )
                 result = SERVICE.ask_with_sources(
                     question, retrieval["results"], provider=provider
                 )
+                if video_id:
+                    SERVICE.save_ask_history(
+                        {
+                            "video_id": video_id,
+                            "question": question,
+                            "k": k,
+                            "language": language,
+                            "retrieval_mode": retrieval["retrieval_mode"],
+                            "provider": result["provider"],
+                            "model": result["model"],
+                            "answer": result["answer"],
+                            "sources": result["sources"],
+                            "retrieval_details": retrieval["details"],
+                        }
+                    )
                 self._json(
                     {
                         "ok": True,
+                        "video_id": video_id,
                         "retrieval_mode": retrieval["retrieval_mode"],
                         "retrieval_details": retrieval["details"],
                         **result,

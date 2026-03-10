@@ -60,7 +60,7 @@ class FakeProcessor:
                 )
         return lines
 
-    def chunk_by_time_with_overlap(self, lines, window=45, overlap=15):
+    def chunk_by_time_with_overlap(self, lines, window=60, overlap=15):
         # Simple chunking: one chunk per line for testing
         chunks = []
         for line in lines:
@@ -127,6 +127,8 @@ class TestVideoLibraryBasics:
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_add_video(self, mock_api_cls, library):
+        from multilingual.video_library import CHUNKING_VERSION
+
         mock_api = MagicMock()
         mock_api.fetch.return_value = _make_transcript(5)
         mock_api_cls.return_value = mock_api
@@ -140,6 +142,8 @@ class TestVideoLibraryBasics:
         assert "full_transcript" in library.videos["abc12345678"]
         assert library.videos["abc12345678"]["full_transcript"]["segment_count"] == 5
         assert library.videos["abc12345678"]["summary_cache"] == {}
+        assert library.videos["abc12345678"]["chunking"]["version"] == CHUNKING_VERSION
+        assert library.video_chunking_is_stale("abc12345678") is False
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_add_duplicate_video(self, mock_api_cls, library):
@@ -185,6 +189,8 @@ class TestVideoLibraryBasics:
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_list_videos(self, mock_api_cls, library):
+        from multilingual.video_library import CHUNKING_VERSION
+
         mock_api = MagicMock()
         mock_api.fetch.return_value = _make_transcript(3)
         mock_api_cls.return_value = mock_api
@@ -194,6 +200,8 @@ class TestVideoLibraryBasics:
         assert len(videos) == 1
         assert videos[0]["video_id"] == "abc12345678"
         assert videos[0]["num_chunks"] == 3
+        assert videos[0]["chunking_version"] == CHUNKING_VERSION
+        assert videos[0]["chunking_stale"] is False
 
 
 class TestVideoLibrarySearch:
@@ -240,13 +248,26 @@ class TestVideoLibrarySearch:
         video_ids = {r["video_id"] for r in results}
         assert len(video_ids) >= 1  # At least one video represented
 
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
+    def test_search_can_scope_to_single_video(self, mock_api_cls, library):
+        mock_api = MagicMock()
+        mock_api.fetch.side_effect = [_make_transcript(3), _make_transcript(3)]
+        mock_api_cls.return_value = mock_api
+
+        library.add_video("https://www.youtube.com/watch?v=abc12345678")
+        library.add_video("https://www.youtube.com/watch?v=xyz98765432")
+        results = library.search("テスト", k=3, video_id="abc12345678")
+
+        assert results
+        assert all(row["video_id"] == "abc12345678" for row in results)
+
 
 class TestVideoLibraryPersistence:
     """Test save/load functionality."""
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_save_and_load(self, mock_api_cls, tmp_data_dir):
-        from multilingual.video_library import VideoLibrary
+        from multilingual.video_library import CHUNKING_VERSION, VideoLibrary
 
         mock_api = MagicMock()
         mock_api.fetch.return_value = _make_transcript(5)
@@ -274,6 +295,8 @@ class TestVideoLibraryPersistence:
         assert len(lib2.chunk_map) == 5
         assert lib2.videos["abc12345678"]["full_transcript"]["segment_count"] == 5
         assert "en:chatgpt:5" in lib2.videos["abc12345678"]["summary_cache"]
+        assert lib2.videos["abc12345678"]["chunking"]["version"] == CHUNKING_VERSION
+        assert lib2.video_chunking_is_stale("abc12345678") is False
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_save_creates_files(self, mock_api_cls, tmp_data_dir):
@@ -287,8 +310,10 @@ class TestVideoLibraryPersistence:
         lib.add_video("https://www.youtube.com/watch?v=abc12345678")
         lib.save()
 
-        assert os.path.exists(os.path.join(tmp_data_dir, "library_meta.json"))
+        meta_path = os.path.join(tmp_data_dir, "library_meta.json")
+        assert os.path.exists(meta_path)
         assert os.path.exists(os.path.join(tmp_data_dir, "library.faiss"))
+        assert (os.stat(meta_path).st_mode & 0o777) == 0o600
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_load_backfills_missing_summary_cache(self, mock_api_cls, tmp_data_dir):
@@ -311,6 +336,35 @@ class TestVideoLibraryPersistence:
 
         loaded = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
         assert loaded.videos["abc12345678"]["summary_cache"] == {}
+
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
+    def test_load_legacy_chunking_metadata_marks_video_stale(
+        self, mock_api_cls, tmp_data_dir
+    ):
+        from multilingual.video_library import LEGACY_CHUNKING_VERSION, VideoLibrary
+
+        mock_api = MagicMock()
+        mock_api.fetch.return_value = _make_transcript(3)
+        mock_api_cls.return_value = mock_api
+
+        lib = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        lib.add_video("https://www.youtube.com/watch?v=abc12345678")
+        lib.save()
+
+        meta_path = os.path.join(tmp_data_dir, "library_meta.json")
+        with open(meta_path, "r", encoding="utf-8") as fh:
+            meta = json.load(fh)
+        meta.pop("library_metadata", None)
+        meta["videos"]["abc12345678"].pop("chunking", None)
+        with open(meta_path, "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, ensure_ascii=False, indent=2)
+
+        loaded = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        assert (
+            loaded.videos["abc12345678"]["chunking"]["version"]
+            == LEGACY_CHUNKING_VERSION
+        )
+        assert loaded.video_chunking_is_stale("abc12345678") is True
 
     def test_load_nonexistent(self, tmp_data_dir):
         from multilingual.video_library import VideoLibrary

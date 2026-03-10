@@ -17,6 +17,11 @@ const els = {
   qaNavLink: document.getElementById("qaNavLink"),
   reviewsNavLink: document.getElementById("reviewsNavLink"),
   evalNavLink: document.getElementById("evalNavLink"),
+  mobileHomeNavText: document.getElementById("mobileHomeNavText"),
+  mobileTldrNavText: document.getElementById("mobileTldrNavText"),
+  mobileQaNavText: document.getElementById("mobileQaNavText"),
+  mobileReviewsNavText: document.getElementById("mobileReviewsNavText"),
+  mobileEvalNavText: document.getElementById("mobileEvalNavText"),
   heroTitle: document.getElementById("heroTitle"),
   heroSubtitle: document.getElementById("heroSubtitle"),
   filtersHeading: document.getElementById("filtersHeading"),
@@ -187,6 +192,18 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll("\"", "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function setNavLabel(element, text) {
+  if (!element) {
+    return;
+  }
+  const label = element.querySelector(".nav-label-text");
+  if (label) {
+    label.textContent = text;
+    return;
+  }
+  element.textContent = text;
 }
 
 function formatSeconds(sec) {
@@ -416,11 +433,26 @@ function applyLocale(locale) {
   els.localeLabel.textContent = t("localeLabel");
   els.homeBrandLink?.setAttribute("aria-label", t("navIngest"));
   els.eyebrowText.textContent = t("eyebrowText");
-  els.homeNavLink.textContent = t("navIngest");
-  els.tldrNavLink.textContent = t("navTLDR");
-  els.qaNavLink.textContent = t("navQA");
-  els.reviewsNavLink.textContent = t("navReviews");
-  els.evalNavLink.textContent = t("navEvaluation");
+  setNavLabel(els.homeNavLink, t("navIngest"));
+  setNavLabel(els.tldrNavLink, t("navTLDR"));
+  setNavLabel(els.qaNavLink, t("navQA"));
+  setNavLabel(els.reviewsNavLink, t("navReviews"));
+  setNavLabel(els.evalNavLink, t("navEvaluation"));
+  if (els.mobileHomeNavText) {
+    els.mobileHomeNavText.textContent = t("navIngest");
+  }
+  if (els.mobileTldrNavText) {
+    els.mobileTldrNavText.textContent = t("navTLDR");
+  }
+  if (els.mobileQaNavText) {
+    els.mobileQaNavText.textContent = t("navQA");
+  }
+  if (els.mobileReviewsNavText) {
+    els.mobileReviewsNavText.textContent = t("navReviews");
+  }
+  if (els.mobileEvalNavText) {
+    els.mobileEvalNavText.textContent = t("navEvaluation");
+  }
   els.heroTitle.textContent = t("heroTitle");
   els.heroSubtitle.textContent = t("heroSubtitle");
   els.filtersHeading.querySelector("span").textContent = t("filtersHeading");

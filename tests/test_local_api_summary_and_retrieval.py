@@ -3,6 +3,7 @@
 import importlib
 import os
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -26,14 +27,97 @@ def _make_service(enabled=True):
     service.feedback_lock = threading.Lock()
     service.feedback_tuning_enabled = bool(enabled)
     service._persist_feedback = lambda: None
+    service.feedback_path = Path(tempfile.mkdtemp()) / "search_feedback.json"
     service.openai_model = "gpt-4o-mini"
+    service.ask_history_lock = threading.Lock()
+    service.ask_history = {}
+    service.ask_history_path = Path(tempfile.mkdtemp()) / "ask_history.json"
     return service
+
+
+def test_allowed_local_origin_accepts_only_loopback_hosts():
+    assert (
+        local_api._allowed_local_origin("http://127.0.0.1:8000")
+        == "http://127.0.0.1:8000"
+    )
+    assert (
+        local_api._allowed_local_origin("https://localhost:3000")
+        == "https://localhost:3000"
+    )
+    assert local_api._allowed_local_origin("https://example.com") is None
+    assert local_api._allowed_local_origin("file:///tmp/index.html") is None
+
+
+def test_persist_ask_history_writes_private_file_mode():
+    service = _make_service(enabled=False)
+    service.ask_history = {"vid1": [{"question": "q1"}]}
+
+    LocalRAGService._persist_ask_history(service)
+
+    assert service.ask_history_path.exists()
+    assert (service.ask_history_path.stat().st_mode & 0o777) == 0o600
+
+
+def test_persist_feedback_writes_private_file_mode():
+    service = _make_service(enabled=False)
+    service.feedback = {"vid1:0": {"video_id": "vid1", "label": "relevant"}}
+
+    LocalRAGService._persist_feedback(service)
+
+    assert service.feedback_path.exists()
+    assert (service.feedback_path.stat().st_mode & 0o777) == 0o600
+
+
+def test_list_videos_includes_chunking_metadata():
+    class DummyLibrary:
+        def __init__(self):
+            self.videos = {
+                "vid1": {
+                    "title": "Video vid1",
+                    "url": "https://www.youtube.com/watch?v=vid1",
+                    "language": "en",
+                    "chunks": [{"raw_text": "hello", "start": 0.0, "end": 8.0}],
+                }
+            }
+
+        def get_video_chunking_metadata(self, video_id):
+            assert video_id == "vid1"
+            return {"version": "time_v1_45s_15s"}
+
+        def video_chunking_is_stale(self, video_id):
+            assert video_id == "vid1"
+            return True
+
+    class DummyEngine:
+        def __init__(self):
+            self.library = DummyLibrary()
+
+    service = _make_service(enabled=False)
+    service.engine = DummyEngine()
+    service.title_cache = {}
+    service._hydrate_video_title = lambda video_id: None
+
+    videos = service.list_videos()
+
+    assert videos == [
+        {
+            "video_id": "vid1",
+            "title": "Video vid1",
+            "url": "https://www.youtube.com/watch?v=vid1",
+            "language": "en",
+            "num_chunks": 1,
+            "chunking_version": "time_v1_45s_15s",
+            "chunking_stale": True,
+            "ask_history_count": 0,
+            "last_ask_at": None,
+        }
+    ]
 
 
 def test_retrieve_rerank_happens_before_topk_cut():
     service = _make_service(enabled=True)
 
-    service._dense_search = lambda query, k, language: [
+    service._dense_search = lambda query, k, language, video_id=None: [
         {
             "video_id": "vid1",
             "video_title": "Video 1",
@@ -46,7 +130,7 @@ def test_retrieve_rerank_happens_before_topk_cut():
         }
         for i in range(10)
     ]
-    service._lexical_bm25_search = lambda query, k, language: []
+    service._lexical_bm25_search = lambda query, k, language, video_id=None: []
 
     service.save_search_feedback(
         {
@@ -113,8 +197,8 @@ def test_retrieve_applies_diversity_to_mix_videos():
             "rank": 4,
         },
     ]
-    service._dense_search = lambda query, k, language: dense_rows
-    service._lexical_bm25_search = lambda query, k, language: []
+    service._dense_search = lambda query, k, language, video_id=None: dense_rows
+    service._lexical_bm25_search = lambda query, k, language, video_id=None: []
 
     result = service.retrieve("python", k=3, retrieval_mode="dense")
     video_ids = [row["video_id"] for row in result["results"]]
@@ -122,6 +206,159 @@ def test_retrieve_applies_diversity_to_mix_videos():
     assert "vidB" in video_ids
     assert result["details"]["diversity_applied"] is True
     assert result["details"]["selected_per_video_cap"] == 2
+
+
+def test_retrieve_passes_video_id_filter_to_search_backends():
+    service = _make_service(enabled=False)
+    calls = {"dense": [], "lexical": []}
+
+    def fake_dense(query, k, language, video_id=None):
+        calls["dense"].append(
+            {
+                "query": query,
+                "k": k,
+                "language": language,
+                "video_id": video_id,
+            }
+        )
+        return [
+            {
+                "video_id": "vid1",
+                "video_title": "Video 1",
+                "start": 0.0,
+                "end": 10.0,
+                "chunk_index": 0,
+                "text": "python lists",
+                "score": 0.8,
+                "rank": 1,
+            }
+        ]
+
+    def fake_lexical(query, k, language, video_id=None):
+        calls["lexical"].append(
+            {
+                "query": query,
+                "k": k,
+                "language": language,
+                "video_id": video_id,
+            }
+        )
+        return []
+
+    service._dense_search = fake_dense
+    service._lexical_bm25_search = fake_lexical
+    service.engine = type(
+        "DummyEngine",
+        (),
+        {"library": type("DummyLibrary", (), {"videos": {"vid1": {}}})()},
+    )()
+
+    result = service.retrieve(
+        "python",
+        k=2,
+        retrieval_mode="dense",
+        video_id="vid1",
+    )
+
+    assert result["details"]["video_id_filter"] == "vid1"
+    assert calls["dense"][0]["video_id"] == "vid1"
+    assert calls["lexical"] == []
+
+
+def test_save_ask_history_persists_and_lists_records():
+    class DummyLibrary:
+        def __init__(self):
+            self.videos = {
+                "vid1": {
+                    "title": "Video vid1",
+                    "url": "https://www.youtube.com/watch?v=vid1",
+                    "language": "en",
+                }
+            }
+
+        def get_video_chunking_metadata(self, video_id):
+            assert video_id == "vid1"
+            return {"version": "time_v2_60s_15s"}
+
+    service = _make_service(enabled=False)
+    service.engine = type("DummyEngine", (), {"library": DummyLibrary()})()
+
+    record = service.save_ask_history(
+        {
+            "video_id": "vid1",
+            "question": "What is this video about?",
+            "k": 5,
+            "language": "en",
+            "retrieval_mode": "hybrid",
+            "provider": "chatgpt",
+            "model": "gpt-4o-mini",
+            "answer": "It explains Python basics.",
+            "sources": [
+                {
+                    "video_id": "vid1",
+                    "video_title": "Video vid1",
+                    "video_url": "https://www.youtube.com/watch?v=vid1",
+                    "language": "en",
+                    "chunk_index": 0,
+                    "text": "Python basics",
+                    "start": 0.0,
+                    "end": 30.0,
+                    "url": "https://www.youtube.com/watch?v=vid1&t=0s",
+                }
+            ],
+            "retrieval_details": {"fusion": "rrf"},
+        }
+    )
+
+    listed = service.list_ask_history(video_id="vid1", limit=5)
+
+    assert record["video_id"] == "vid1"
+    assert record["chunking_version"] == "time_v2_60s_15s"
+    assert record["source_fingerprint"]
+    assert listed[0]["question"] == "What is this video about?"
+    assert listed[0]["answer"] == "It explains Python basics."
+    assert listed[0]["retrieval_details"]["fusion"] == "rrf"
+
+
+def test_save_ask_history_trims_to_recent_limit():
+    class DummyLibrary:
+        def __init__(self):
+            self.videos = {
+                "vid1": {
+                    "title": "Video vid1",
+                    "url": "https://www.youtube.com/watch?v=vid1",
+                    "language": "en",
+                }
+            }
+
+        def get_video_chunking_metadata(self, video_id):
+            assert video_id == "vid1"
+            return {"version": "time_v2_60s_15s"}
+
+    service = _make_service(enabled=False)
+    service.engine = type("DummyEngine", (), {"library": DummyLibrary()})()
+
+    for idx in range(25):
+        service.save_ask_history(
+            {
+                "video_id": "vid1",
+                "question": f"Question {idx}",
+                "k": 5,
+                "language": "en",
+                "retrieval_mode": "hybrid",
+                "provider": "chatgpt",
+                "model": "gpt-4o-mini",
+                "answer": f"Answer {idx}",
+                "sources": [],
+                "created_at": f"2026-01-{idx + 1:02d}T00:00:00+00:00",
+            }
+        )
+
+    rows = service.list_ask_history(video_id="vid1", limit=50)
+
+    assert len(rows) == local_api.ASK_HISTORY_LIMIT_PER_VIDEO
+    assert rows[0]["question"] == "Question 24"
+    assert rows[-1]["question"] == "Question 5"
 
 
 def test_summarize_video_transcript_returns_five_ranked_items():
@@ -214,7 +451,7 @@ def test_summarize_video_transcript_returns_five_ranked_items():
     assert "youtube.com/watch?v=vid1&t=" in response["summary"][0]["url"]
 
 
-def test_summarize_video_transcript_accepts_ten_points():
+def test_summarize_video_transcript_rejects_ten_points():
     class DummyLibrary:
         def __init__(self):
             self.videos = {
@@ -241,30 +478,13 @@ def test_summarize_video_transcript_accepts_ten_points():
 
     service = _make_service(enabled=False)
     service.engine = DummyEngine()
-    service._summarize_transcript_single_pass = lambda **kwargs: {
-        "provider": "chatgpt",
-        "model": "gpt-4o-mini",
-        "items": [
-            {
-                "title": f"Point {idx}",
-                "tldr": "A. B. C. D.",
-                "anchor_text": "Intro" if idx % 2 else "Main topic",
-                "start": float(idx * 10),
-                "end": float(idx * 10 + 5),
-            }
-            for idx in range(1, 11)
-        ],
-        "strategy": "single_pass",
-    }
-
-    response = service.summarize_video_transcript(
-        video_id="vid1",
-        language="en",
-        provider="chatgpt",
-        max_points=10,
-    )
-
-    assert len(response["summary"]) == 10
+    with pytest.raises(ValueError, match="max_points must be 5"):
+        service.summarize_video_transcript(
+            video_id="vid1",
+            language="en",
+            provider="chatgpt",
+            max_points=10,
+        )
 
 
 def test_summarize_video_transcript_rejects_invalid_max_points():
@@ -293,7 +513,7 @@ def test_summarize_video_transcript_rejects_invalid_max_points():
     service = _make_service(enabled=False)
     service.engine = DummyEngine()
 
-    with pytest.raises(ValueError, match="max_points must be 5 or 10"):
+    with pytest.raises(ValueError, match="max_points must be 5"):
         service.summarize_video_transcript(
             video_id="vid1",
             language="en",
@@ -437,6 +657,106 @@ def test_summarize_long_transcript_uses_compact_single_pass():
     assert called["compact"] is True
     assert response["generation_details"]["strategy"] == "compact_single_pass"
     assert len(response["summary"]) == 5
+
+
+def test_summarize_long_transcript_relaxes_after_compact_and_reduce_failures():
+    class DummyLibrary:
+        def __init__(self):
+            self.videos = {
+                "vid1": {
+                    "title": "Long Video",
+                    "full_transcript": {
+                        "segments": [
+                            {
+                                "text": ("long transcript block " * 40).strip(),
+                                "start": float(idx * 10),
+                                "end": float(idx * 10 + 9),
+                            }
+                            for idx in range(120)
+                        ],
+                        "text": "\n".join(
+                            ("long transcript block " * 40).strip() for _ in range(120)
+                        ),
+                    },
+                    "chunks": [
+                        {
+                            "raw_text": ("long transcript block " * 40).strip(),
+                            "start": float(idx * 10),
+                            "end": float(idx * 10 + 9),
+                        }
+                        for idx in range(120)
+                    ],
+                }
+            }
+
+    class DummyEngine:
+        def __init__(self):
+            self.library = DummyLibrary()
+            self.model = "claude-sonnet-4-5-20250929"
+
+    service = _make_service(enabled=False)
+    service.engine = DummyEngine()
+    call_counts = {"compact": 0, "reduce": 0}
+
+    def fake_compact_single_pass(**kwargs):
+        del kwargs
+        call_counts["compact"] += 1
+        raise local_api.SummaryGenerationError(
+            "compact single-pass theme generation failed after retries"
+        )
+
+    def fake_map_reduce(**kwargs):
+        call_counts["reduce"] += 1
+        min_sentences = kwargs.get("min_sentences", local_api.SUMMARY_MIN_SENTENCES)
+        max_sentences = kwargs.get("max_sentences", local_api.SUMMARY_MAX_SENTENCES)
+
+        if (
+            min_sentences == local_api.SUMMARY_MIN_SENTENCES
+            and max_sentences == local_api.SUMMARY_MAX_SENTENCES
+        ):
+            raise local_api.SummaryGenerationError(
+                "reduce stage summary generation failed after retries"
+            )
+
+        return {
+            "provider": "chatgpt",
+            "model": "gpt-4o-mini",
+            "items": [
+                {
+                    "title": f"Theme {idx}",
+                    "tldr": "One. Two. Three.",
+                    "anchor_text": "long transcript block",
+                    "start": float((idx - 1) * 20),
+                    "end": float((idx - 1) * 20 + 10),
+                }
+                for idx in range(1, 6)
+            ],
+            "strategy": "map_reduce",
+            "total_windows": 3,
+            "processed_windows": 3,
+            "retry_count": 2,
+        }
+
+    service._summarize_transcript_compact_single_pass = fake_compact_single_pass
+    service._summarize_transcript_map_reduce = fake_map_reduce
+
+    response = service.summarize_video_transcript(
+        video_id="vid1",
+        language="en",
+        provider="chatgpt",
+        max_points=5,
+    )
+
+    assert call_counts["compact"] == 1
+    assert call_counts["reduce"] == 2
+    assert len(response["summary"]) == 5
+    assert response["generation_details"]["primary_strategy"] == "compact_single_pass"
+    assert response["generation_details"]["strategy"] == "map_reduce"
+    assert response["generation_details"]["fallback_applied"] is True
+    assert response["generation_details"]["validation_relaxed"] is True
+    assert "reduce stage failed" in str(
+        response["generation_details"]["fallback_reason"]
+    )
 
 
 def test_summarize_single_pass_retries_then_fails():
@@ -962,16 +1282,21 @@ def test_summarize_video_transcript_cache_key_partitions_requests():
     fourth = service.summarize_video_transcript(
         video_id="vid1", language="en", provider="claude"
     )
-    fifth = service.summarize_video_transcript(
-        video_id="vid1", language="en", provider="chatgpt", max_points=10
-    )
-
     assert first["cached"] is False
     assert second["cached"] is True
     assert third["cached"] is False
     assert fourth["cached"] is False
-    assert fifth["cached"] is False
-    assert counter["count"] == 4
+    assert counter["count"] == 3
+
+
+def test_summary_prompt_requests_descriptive_speaker_aware_themes():
+    service = _make_service(enabled=False)
+
+    prompt = service._summary_system_prompt(language="en", max_points=5)
+
+    assert "Make each theme title concrete and descriptive" in prompt
+    assert "who is speaking" in prompt
+    assert "never guess" in prompt
 
 
 def test_ingest_persists_library_and_initializes_summary_cache():
@@ -992,6 +1317,14 @@ def test_ingest_persists_library_and_initializes_summary_cache():
                 },
             }
             return video_id
+
+        def get_video_chunking_metadata(self, video_id):
+            del video_id
+            return {"version": "time_v2_60s_15s"}
+
+        def video_chunking_is_stale(self, video_id):
+            del video_id
+            return False
 
         def save(self):
             self.save_calls += 1
@@ -1019,3 +1352,74 @@ def test_ingest_persists_library_and_initializes_summary_cache():
     assert result["queued_count"] == 1
     assert service.engine.library.save_calls == 1
     assert service.engine.library.videos["abc12345678"].get("summary_cache") == {}
+
+
+def test_ingest_reingests_stale_video_without_force():
+    class DummyLibrary:
+        def __init__(self):
+            self.videos = {
+                "abc12345678": {
+                    "title": "Old Video",
+                    "language": "en",
+                    "chunks": [{"raw_text": "old", "start": 0.0, "end": 45.0}],
+                    "chunking": {"version": "time_v1_45s_15s"},
+                }
+            }
+            self.save_calls = 0
+            self.add_calls = []
+
+        def add_video(self, video_id, language="ja"):
+            self.add_calls.append((video_id, language))
+            self.videos[video_id] = {
+                "title": f"Video {video_id}",
+                "language": language,
+                "chunks": [{"raw_text": "new", "start": 0.0, "end": 60.0}],
+                "full_transcript": {
+                    "segments": [{"text": "new", "start": 0.0, "end": 60.0}],
+                    "text": "new",
+                    "segment_count": 1,
+                },
+                "chunking": {"version": "time_v2_60s_15s"},
+            }
+            return video_id
+
+        def get_video_chunking_metadata(self, video_id):
+            return self.videos[video_id].get("chunking", {"version": "unknown"})
+
+        def video_chunking_is_stale(self, video_id):
+            return (
+                self.get_video_chunking_metadata(video_id).get("version")
+                != "time_v2_60s_15s"
+            )
+
+        def save(self):
+            self.save_calls += 1
+
+    class DummyEngine:
+        def __init__(self):
+            self.library = DummyLibrary()
+            self.model = "claude-sonnet-4-5-20250929"
+
+    service = _make_service(enabled=False)
+    service.engine = DummyEngine()
+    service.lock = threading.Lock()
+    service.jobs = {}
+    service.title_cache = {}
+    service._append_ingest_log = lambda **kwargs: None
+    service._hydrate_video_title = lambda video_id: None
+
+    result = service.ingest(
+        url="https://www.youtube.com/watch?v=abc12345678",
+        mode="single",
+        language="en",
+        force=False,
+    )
+
+    assert result["queued_count"] == 1
+    assert result["skipped_count"] == 0
+    assert service.engine.library.add_calls == [("abc12345678", "en")]
+    assert service.engine.library.save_calls == 1
+    assert (
+        service.engine.library.videos["abc12345678"]["chunking"]["version"]
+        == "time_v2_60s_15s"
+    )

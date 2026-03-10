@@ -4,11 +4,19 @@ const LOCK_KEY = "yt_rag_ingest_unlocked";
 const LAST_VIDEO_KEY = "yt_rag_last_video_id";
 const FEEDBACK_REVISION_STORAGE_KEY = "youtube-rag-feedback-revision";
 const LOCALE_STORAGE_KEY = "youtube-rag-ui-locale";
+const INTRO_SEEN_SESSION_KEY = "yt_rag_intro_seen";
 const ROUTES = {
   INGEST: "/ingest",
   TLDR: "/tldr",
   QA: "/qa",
 };
+const NAV_ITEMS = [
+  { key: "ingest", label: "Ingest", icon: "/icons/icon-upload.svg", route: ROUTES.INGEST },
+  { key: "tldr", label: "TLDR Studio", icon: "/icons/icon-chat.svg", route: ROUTES.TLDR, requiresUnlock: true },
+  { key: "qa", label: "Q&A Studio", icon: "/icons/icon-search.svg", route: ROUTES.QA, requiresUnlock: true },
+  { key: "reviews", label: "Reviews", icon: "/icons/icon-library.svg", href: "/reviews.html", requiresUnlock: true },
+  { key: "evaluation", label: "Evaluation", icon: "/icons/icon-jobs.svg", href: "/evaluation.html", requiresUnlock: true },
+];
 
 function readHashRoute() {
   const raw = String(window.location.hash || "").replace(/^#/, "").trim();
@@ -78,6 +86,13 @@ function extractVideoId(value) {
     }
   }
   return null;
+}
+
+function prefersReducedMotion() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 function IngestPage({ onSuccess }) {
@@ -832,7 +847,6 @@ function TLDRStudioPage() {
   const [selectedVideoId, setSelectedVideoId] = useState("");
   const [language, setLanguage] = useState("en");
   const [provider, setProvider] = useState("chatgpt");
-  const [themeCount, setThemeCount] = useState(5);
   const [summaryResponse, setSummaryResponse] = useState(null);
   const [summaryError, setSummaryError] = useState("");
   const [isSummarizing, setIsSummarizing] = useState(false);
@@ -901,7 +915,7 @@ function TLDRStudioPage() {
           video_id: scopedVideoId,
           language,
           provider,
-          max_points: Number(themeCount || 5),
+          max_points: 5,
         },
       });
       setSummaryResponse(payload);
@@ -940,7 +954,7 @@ function TLDRStudioPage() {
       <header className="hero">
         <h1>TLDR Studio</h1>
         <p className="subtitle">
-          Generate top {themeCount} themes from the full transcript and jump to where each theme starts.
+          Generate the top 5 themes from the full transcript with richer, speaker-aware summaries when the transcript supports them.
         </p>
       </header>
 
@@ -985,10 +999,7 @@ function TLDRStudioPage() {
           </label>
           <label>
             <span>Themes</span>
-            <select value={themeCount} onChange={(event) => setThemeCount(Number(event.target.value) || 5)}>
-              <option value="5">5</option>
-              <option value="10">10</option>
-            </select>
+            <input value="5" disabled readOnly />
           </label>
           <button className="btn" type="submit" disabled={isSummarizing || !selectedVideoId}>
             {isSummarizing ? "Generating..." : "Generate TLDR"}
@@ -999,9 +1010,9 @@ function TLDRStudioPage() {
       </section>
 
       <section className="panel">
-        <h3 className="chart-heading">Top {themeCount} Themes</h3>
+        <h3 className="chart-heading">Top 5 Themes</h3>
         {!summaryItems.length ? (
-          <div className="search-empty">Click Generate TLDR to create the top {themeCount} themes.</div>
+          <div className="search-empty">Click Generate TLDR to create the top 5 themes.</div>
         ) : (
           <div className="search-cards">
             {summaryItems.map((item, index) => (
@@ -1042,6 +1053,13 @@ function App() {
     return stored === "ja-JP" ? "ja-JP" : "en-US";
   });
   const [routeAnimationKey, setRouteAnimationKey] = useState(0);
+  const [showIntro, setShowIntro] = useState(() => {
+    try {
+      return sessionStorage.getItem(INTRO_SEEN_SESSION_KEY) !== "1";
+    } catch (_) {
+      return true;
+    }
+  });
 
   useEffect(() => {
     function onHashChange() {
@@ -1072,6 +1090,24 @@ function App() {
     localStorage.setItem(LOCALE_STORAGE_KEY, locale);
   }, [locale]);
 
+  useEffect(() => {
+    if (!showIntro) {
+      return undefined;
+    }
+    const timeoutMs = prefersReducedMotion() ? 70 : 1250;
+    const timeoutId = window.setTimeout(() => {
+      setShowIntro(false);
+      try {
+        sessionStorage.setItem(INTRO_SEEN_SESSION_KEY, "1");
+      } catch (_) {
+        // best effort only
+      }
+    }, timeoutMs);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [showIntro]);
+
   function handleIngestSuccess(videoId) {
     localStorage.setItem(LOCK_KEY, "1");
     if (videoId) {
@@ -1080,21 +1116,54 @@ function App() {
     setUnlocked(true);
   }
 
-  function NavButton({ target, label }) {
-    const active = route === target;
+  function isNavItemVisible(item) {
+    return !item.requiresUnlock || unlocked;
+  }
+
+  function isNavItemActive(item) {
+    return !!item.route && route === item.route;
+  }
+
+  function NavItem({ item, mobile = false }) {
+    const active = isNavItemActive(item);
+    const className = mobile ? `bottom-tab-link ${active ? "active" : ""}` : `app-nav-link nav-btn ${active ? "active" : ""}`;
+    const content = (
+      <>
+        <img className={mobile ? "bottom-tab-icon" : "nav-icon"} src={item.icon} alt="" aria-hidden="true" />
+        <span className={mobile ? "bottom-tab-label" : "nav-label"}>{item.label}</span>
+      </>
+    );
+
+    if (item.route) {
+      return (
+        <button
+          type="button"
+          className={className}
+          onClick={() => navigate(item.route)}
+          aria-current={active ? "page" : undefined}
+        >
+          {content}
+        </button>
+      );
+    }
     return (
-      <button
-        type="button"
-        className={`app-nav-link nav-btn ${active ? "active" : ""}`}
-        onClick={() => navigate(target)}
-      >
-        {label}
-      </button>
+      <a className={className} href={item.href}>
+        {content}
+      </a>
     );
   }
 
   return (
-    <div className="react-shell-root">
+    <div className={`react-shell-root ${showIntro ? "intro-playing" : ""}`}>
+      {showIntro ? (
+        <div className="site-intro" data-testid="intro-overlay" aria-hidden="true">
+          <div className="site-intro-glow" />
+          <div className="site-intro-content">
+            <p className="site-intro-eyebrow">YouTube Transcript RAG</p>
+            <p className="site-intro-title">Local Studio</p>
+          </div>
+        </div>
+      ) : null}
       <header className="appbar">
         <a className="brand brand-link" href="#/ingest" onClick={() => navigate(ROUTES.INGEST)}>
           <img src="/icons/icon-play.svg" alt="" aria-hidden="true" />
@@ -1104,11 +1173,11 @@ function App() {
           </div>
         </a>
         <div className="appbar-actions">
-          <NavButton target={ROUTES.INGEST} label="Ingest" />
-          {unlocked ? <NavButton target={ROUTES.TLDR} label="TLDR Studio" /> : null}
-          {unlocked ? <NavButton target={ROUTES.QA} label="Q&A Studio" /> : null}
-          {unlocked ? <a className="app-nav-link" href="/reviews.html">Reviews</a> : null}
-          {unlocked ? <a className="app-nav-link" href="/evaluation.html">Evaluation</a> : null}
+          <nav className="appbar-nav" aria-label="Primary">
+            {NAV_ITEMS.filter(isNavItemVisible).map((item) => (
+              <NavItem key={item.key} item={item} />
+            ))}
+          </nav>
           <label className="locale-switch">
             <span>Language</span>
             <select value={locale} onChange={(event) => setLocale(event.target.value)}>
@@ -1126,6 +1195,12 @@ function App() {
           {route === ROUTES.QA && unlocked ? <QAStudioPage /> : null}
         </div>
       </main>
+
+      <nav className="bottom-tabbar" aria-label="Primary mobile navigation">
+        {NAV_ITEMS.filter(isNavItemVisible).map((item) => (
+          <NavItem key={`mobile-${item.key}`} item={item} mobile />
+        ))}
+      </nav>
     </div>
   );
 }
