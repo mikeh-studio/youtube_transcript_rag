@@ -20,6 +20,19 @@ from youtube_transcript_api import YouTubeTranscriptApi
 
 from multilingual.text_processing import TextProcessor, LANGUAGE_CONFIG
 
+CHUNK_WINDOW_SECONDS = 60
+CHUNK_OVERLAP_SECONDS = 15
+CHUNKING_VERSION = "time_v2_60s_15s"
+LEGACY_CHUNKING_VERSION = "time_v1_45s_15s"
+
+
+def _chmod_private(path: str) -> None:
+    """Best-effort chmod for locally persisted transcript metadata."""
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
 
 class VideoLibrary:
     """Manages multiple video transcripts with a unified search index."""
@@ -42,6 +55,7 @@ class VideoLibrary:
         # Unified index state
         self.index = None  # FAISS index
         self.chunk_map = []  # Maps global index position -> (video_id, chunk_index)
+        self.library_metadata = {"chunking": self.current_chunking_metadata()}
 
         # Try to auto-load saved library
         if self._save_exists():
@@ -73,11 +87,13 @@ class VideoLibrary:
         if not video_id:
             raise ValueError(f"Invalid YouTube URL or video ID: {url}")
 
-        if video_id in self.videos:
-            if isinstance(self.videos.get(video_id), dict):
-                self.videos[video_id].setdefault("summary_cache", {})
-            print(f"Video {video_id} is already in the library.")
-            return video_id
+        existing_video = self.videos.get(video_id)
+        if isinstance(existing_video, dict):
+            existing_video.setdefault("summary_cache", {})
+            if not self.video_chunking_is_stale(video_id):
+                print(f"Video {video_id} is already in the library.")
+                return video_id
+            print(f"Video {video_id} uses stale chunking; re-ingesting.")
 
         print(f"\nFetching transcript for video: {video_id} (language: {language})")
         transcript_codes = LANGUAGE_CONFIG[language]["transcript_codes"]
@@ -91,7 +107,11 @@ class VideoLibrary:
         print(f"Processed {len(lines)} lines")
 
         print("Creating time-based chunks...")
-        chunks = self.processor.chunk_by_time_with_overlap(lines, window=45, overlap=15)
+        chunks = self.processor.chunk_by_time_with_overlap(
+            lines,
+            window=CHUNK_WINDOW_SECONDS,
+            overlap=CHUNK_OVERLAP_SECONDS,
+        )
         print(f"Created {len(chunks)} chunks")
         full_transcript = self._build_full_transcript(lines)
 
@@ -106,6 +126,7 @@ class VideoLibrary:
             "chunks": chunks,
             "full_transcript": full_transcript,
             "summary_cache": {},
+            "chunking": self.current_chunking_metadata(),
         }
 
         # Rebuild the unified index
@@ -113,6 +134,79 @@ class VideoLibrary:
 
         print(f"Added video: {title} ({video_id}) [{language}] - {len(chunks)} chunks")
         return video_id
+
+    @staticmethod
+    def _derive_chunking_version(window_seconds, overlap_seconds):
+        if int(window_seconds) == 45 and int(overlap_seconds) == 15:
+            return LEGACY_CHUNKING_VERSION
+        if (
+            int(window_seconds) == CHUNK_WINDOW_SECONDS
+            and int(overlap_seconds) == CHUNK_OVERLAP_SECONDS
+        ):
+            return CHUNKING_VERSION
+        return f"time_vcustom_{int(window_seconds)}s_{int(overlap_seconds)}s"
+
+    @classmethod
+    def current_chunking_metadata(cls):
+        return {
+            "version": CHUNKING_VERSION,
+            "strategy": "time_window_overlap",
+            "window_seconds": CHUNK_WINDOW_SECONDS,
+            "overlap_seconds": CHUNK_OVERLAP_SECONDS,
+        }
+
+    @classmethod
+    def legacy_chunking_metadata(cls):
+        return {
+            "version": LEGACY_CHUNKING_VERSION,
+            "strategy": "time_window_overlap",
+            "window_seconds": 45,
+            "overlap_seconds": 15,
+        }
+
+    @classmethod
+    def _normalize_chunking_metadata(cls, chunking, fallback=None):
+        if not isinstance(chunking, dict):
+            chunking = fallback if isinstance(fallback, dict) else None
+        if not isinstance(chunking, dict):
+            return cls.legacy_chunking_metadata()
+
+        try:
+            window_seconds = int(chunking.get("window_seconds") or CHUNK_WINDOW_SECONDS)
+        except (TypeError, ValueError):
+            window_seconds = CHUNK_WINDOW_SECONDS
+        try:
+            overlap_seconds = int(
+                chunking.get("overlap_seconds") or CHUNK_OVERLAP_SECONDS
+            )
+        except (TypeError, ValueError):
+            overlap_seconds = CHUNK_OVERLAP_SECONDS
+
+        version = str(chunking.get("version") or "").strip()
+        if not version:
+            version = cls._derive_chunking_version(window_seconds, overlap_seconds)
+        strategy = str(chunking.get("strategy") or "time_window_overlap").strip()
+        if not strategy:
+            strategy = "time_window_overlap"
+        return {
+            "version": version,
+            "strategy": strategy,
+            "window_seconds": window_seconds,
+            "overlap_seconds": overlap_seconds,
+        }
+
+    def get_video_chunking_metadata(self, video_id):
+        video = self.videos.get(video_id, {})
+        return self._normalize_chunking_metadata(
+            video.get("chunking"),
+            fallback=self.library_metadata.get("chunking"),
+        )
+
+    def video_chunking_is_stale(self, video_id):
+        return (
+            self.get_video_chunking_metadata(video_id).get("version")
+            != CHUNKING_VERSION
+        )
 
     @staticmethod
     def _build_full_transcript(lines):
@@ -336,6 +430,10 @@ class VideoLibrary:
                     "url": data["url"],
                     "language": data.get("language", "ja"),
                     "num_chunks": len(data["chunks"]),
+                    "chunking_version": self.get_video_chunking_metadata(vid)[
+                        "version"
+                    ],
+                    "chunking_stale": self.video_chunking_is_stale(vid),
                 }
             )
         return result
@@ -370,7 +468,7 @@ class VideoLibrary:
         langs = [data.get("language", "ja") for data in self.videos.values()]
         return max(set(langs), key=langs.count)
 
-    def search(self, query, k=5, language=None):
+    def search(self, query, k=5, language=None, video_id=None):
         """Semantic search across all videos.
 
         Args:
@@ -378,6 +476,7 @@ class VideoLibrary:
             k: Number of results to return.
             language: Language code for query tokenization. If None, uses
                 the dominant language of stored videos.
+            video_id: Optional video ID to restrict retrieval to one video.
 
         Returns:
             List of result dicts with score, text, video info, timestamps, and language.
@@ -389,22 +488,35 @@ class VideoLibrary:
         if k <= 0:
             return []
 
+        scoped_video_id = str(video_id or "").strip()
+        if scoped_video_id:
+            if scoped_video_id not in self.videos:
+                raise KeyError(f"Video {scoped_video_id} not found in library.")
+            if not self.videos[scoped_video_id].get("chunks"):
+                return []
+
         if language is None:
-            language = self._dominant_language()
+            if scoped_video_id:
+                language = self.videos[scoped_video_id].get("language", "ja")
+            else:
+                language = self._dominant_language()
         query_emb = self.processor.encode_query(query, language=language)
-        scores, indices = self.index.search(query_emb, k)
+        search_k = int(self.index.ntotal) if scoped_video_id else k
+        scores, indices = self.index.search(query_emb, search_k)
 
         results = []
         for rank, (score, idx) in enumerate(zip(scores[0], indices[0])):
             if idx < 0:
                 continue
             video_id, chunk_idx = self.chunk_map[idx]
+            if scoped_video_id and video_id != scoped_video_id:
+                continue
             video_data = self.videos[video_id]
             chunk = video_data["chunks"][chunk_idx]
 
             results.append(
                 {
-                    "rank": rank + 1,
+                    "rank": len(results) + 1,
                     "score": float(score),
                     "video_id": video_id,
                     "video_title": video_data["title"],
@@ -417,6 +529,8 @@ class VideoLibrary:
                     "url": f"https://www.youtube.com/watch?v={video_id}&t={int(chunk['start'])}s",
                 }
             )
+            if len(results) >= k:
+                break
 
         return results
 
@@ -433,6 +547,9 @@ class VideoLibrary:
 
         # Save metadata (videos + chunk_map) as JSON
         meta = {
+            "library_metadata": {
+                "chunking": self.current_chunking_metadata(),
+            },
             "videos": {},
             "chunk_map": self.chunk_map,
         }
@@ -444,11 +561,13 @@ class VideoLibrary:
                 "chunks": data["chunks"],
                 "full_transcript": data.get("full_transcript"),
                 "summary_cache": data.get("summary_cache", {}),
+                "chunking": self._normalize_chunking_metadata(data.get("chunking")),
             }
 
         meta_path = os.path.join(self.data_dir, "library_meta.json")
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
+        _chmod_private(meta_path)
 
         print(f"Library saved to {self.data_dir}/")
 
@@ -463,6 +582,16 @@ class VideoLibrary:
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
 
+        library_metadata = meta.get("library_metadata")
+        library_chunking = None
+        if isinstance(library_metadata, dict):
+            library_chunking = self._normalize_chunking_metadata(
+                library_metadata.get("chunking")
+            )
+            self.library_metadata = {"chunking": library_chunking}
+        else:
+            self.library_metadata = {"chunking": self.current_chunking_metadata()}
+
         raw_videos = meta.get("videos", {})
         self.videos = {}
         for video_id, data in raw_videos.items():
@@ -474,6 +603,10 @@ class VideoLibrary:
                 "summary_cache": data.get("summary_cache", {})
                 if isinstance(data.get("summary_cache"), dict)
                 else {},
+                "chunking": self._normalize_chunking_metadata(
+                    data.get("chunking"),
+                    fallback=library_chunking,
+                ),
             }
             if isinstance(data.get("full_transcript"), dict):
                 normalized["full_transcript"] = data.get("full_transcript")

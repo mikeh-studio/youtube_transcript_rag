@@ -106,18 +106,21 @@ class RAGEngine:
             self._client = anthropic.Anthropic(api_key=api_key)
         return self._client
 
-    def search(self, query, k=5, language=None):
+    def search(self, query, k=5, language=None, video_id=None):
         """Semantic search across all videos.
 
         Args:
             query: Search query string.
             k: Number of results to return.
             language: Language code for query tokenization. Forwarded to library.
+            video_id: Optional video ID to restrict retrieval to one video.
 
         Returns:
             List of result dicts with score, text, video info, and timestamps.
         """
-        return self.library.search(query, k=k, language=language)
+        if video_id is None:
+            return self.library.search(query, k=k, language=language)
+        return self.library.search(query, k=k, language=language, video_id=video_id)
 
     def ask(self, question, k=5, language=None):
         """Full RAG: retrieve chunks then generate an answer with citations.

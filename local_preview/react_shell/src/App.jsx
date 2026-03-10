@@ -847,7 +847,6 @@ function TLDRStudioPage() {
   const [selectedVideoId, setSelectedVideoId] = useState("");
   const [language, setLanguage] = useState("en");
   const [provider, setProvider] = useState("chatgpt");
-  const [themeCount, setThemeCount] = useState(5);
   const [summaryResponse, setSummaryResponse] = useState(null);
   const [summaryError, setSummaryError] = useState("");
   const [isSummarizing, setIsSummarizing] = useState(false);
@@ -916,7 +915,7 @@ function TLDRStudioPage() {
           video_id: scopedVideoId,
           language,
           provider,
-          max_points: Number(themeCount || 5),
+          max_points: 5,
         },
       });
       setSummaryResponse(payload);
@@ -955,7 +954,7 @@ function TLDRStudioPage() {
       <header className="hero">
         <h1>TLDR Studio</h1>
         <p className="subtitle">
-          Generate top {themeCount} themes from the full transcript and jump to where each theme starts.
+          Generate the top 5 themes from the full transcript with richer, speaker-aware summaries when the transcript supports them.
         </p>
       </header>
 
@@ -1000,10 +999,7 @@ function TLDRStudioPage() {
           </label>
           <label>
             <span>Themes</span>
-            <select value={themeCount} onChange={(event) => setThemeCount(Number(event.target.value) || 5)}>
-              <option value="5">5</option>
-              <option value="10">10</option>
-            </select>
+            <input value="5" disabled readOnly />
           </label>
           <button className="btn" type="submit" disabled={isSummarizing || !selectedVideoId}>
             {isSummarizing ? "Generating..." : "Generate TLDR"}
@@ -1014,9 +1010,9 @@ function TLDRStudioPage() {
       </section>
 
       <section className="panel">
-        <h3 className="chart-heading">Top {themeCount} Themes</h3>
+        <h3 className="chart-heading">Top 5 Themes</h3>
         {!summaryItems.length ? (
-          <div className="search-empty">Click Generate TLDR to create the top {themeCount} themes.</div>
+          <div className="search-empty">Click Generate TLDR to create the top 5 themes.</div>
         ) : (
           <div className="search-cards">
             {summaryItems.map((item, index) => (

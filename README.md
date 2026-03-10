@@ -23,11 +23,12 @@ This project lets you ingest YouTube transcripts, run semantic retrieval (`hybri
 - TLDR generation now reads from a persisted **full transcript** artifact created at ingest time (with lazy backfill for older indexed videos).
 - TLDR responses are now persisted in a per-video **summary cache** keyed by `language + provider + max_points`, so repeated requests reuse stored results instead of re-running LLM generation.
 - Cache entries automatically refresh when transcript content changes (fingerprint mismatch), preventing stale summaries from being reused.
-- TLDR Studio now supports selecting **5 or 10 themes** per request.
+- TLDR Studio now generates a fixed **5-theme** TLDR for more reliable output quality.
 - Ingest now includes an **Ingested Videos** management carousel with per-video **Review** and **Delete** actions.
 - Ingest no longer auto-redirects to TLDR after success; it stays on Ingest and shows a success status so list management can continue.
 - Theme output is ranked by **importance to the full video**, not auto-sorted by timeline order.
 - Each TLDR point now uses a **paragraph-style summary** (4-5 sentences) for stronger contextual detail.
+- TLDR prompts now try to include speaker or character-role context in the theme description when that information is explicitly present in the transcript.
 - Theme timestamp mapping now resolves against transcript anchors with better disambiguation and reuse penalties to reduce incorrect duplicate timestamps.
 - Summary diagnostics now include source, cache, and timestamp-resolution details in `generation_details`.
 
@@ -45,8 +46,22 @@ From `youtube_rag_v2_portfolio`:
 
 ```bash
 pip install -r requirements.txt
+cp .env.example .env.local
 python local_preview/local_api.py
 ```
+
+Set your local API keys in `.env.local` before starting the app:
+
+```env
+OPENAI_API_KEY=your_openai_api_key_here
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+```
+
+Notes:
+- `.env` and `.env.local` are gitignored for local-only secrets.
+- `.env.example` is the checked-in template for portfolio setup.
+- `local_preview/local_api.py` loads `.env` first, then `.env.local`, so `.env.local` wins for machine-specific overrides.
+- For a private local key file, run `chmod 600 .env.local` after you create it.
 
 Open:
 
@@ -62,6 +77,7 @@ Note:
 ```bash
 cd youtube_rag_v2_portfolio
 pip install -r requirements.txt
+cp .env.example .env.local
 python local_preview/local_api.py
 ```
 
@@ -82,9 +98,9 @@ Open:
 
 ## Screenshots
 
-### Main Console
+### TLDR Studio
 
-![Main Console](docs/media/01-main-console.png)
+![TLDR Studio](docs/media/01-main-console.png)
 
 ### Evaluation Metrics
 
