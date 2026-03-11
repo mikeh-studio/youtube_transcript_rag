@@ -24,6 +24,7 @@ CHUNK_WINDOW_SECONDS = 60
 CHUNK_OVERLAP_SECONDS = 15
 CHUNKING_VERSION = "time_v2_60s_15s"
 LEGACY_CHUNKING_VERSION = "time_v1_45s_15s"
+LIBRARY_FORMAT_VERSION = 2
 
 
 def _chmod_private(path: str) -> None:
@@ -63,9 +64,39 @@ class VideoLibrary:
 
     def _save_exists(self):
         """Check if a saved library exists on disk."""
-        meta_path = os.path.join(self.data_dir, "library_meta.json")
-        index_path = os.path.join(self.data_dir, "library.faiss")
-        return os.path.exists(meta_path) and os.path.exists(index_path)
+        return os.path.exists(self._manifest_path()) or os.path.exists(
+            self._legacy_meta_path()
+        )
+
+    def _library_dir(self):
+        return os.path.join(self.data_dir, "library")
+
+    def _videos_dir(self):
+        return os.path.join(self._library_dir(), "videos")
+
+    def _manifest_path(self):
+        return os.path.join(self._library_dir(), "library.json")
+
+    def _index_dir(self):
+        return os.path.join(self.data_dir, "index")
+
+    def _index_path(self):
+        return os.path.join(self._index_dir(), "library.faiss")
+
+    def _legacy_meta_path(self):
+        return os.path.join(self.data_dir, "library_meta.json")
+
+    def _legacy_index_path(self):
+        return os.path.join(self.data_dir, "library.faiss")
+
+    def _video_record_path(self, video_id):
+        return os.path.join(self._videos_dir(), video_id, "record.json")
+
+    def _rebuild_chunk_map(self):
+        self.chunk_map = []
+        for video_id, data in self.videos.items():
+            for chunk_idx, _chunk in enumerate(data.get("chunks", [])):
+                self.chunk_map.append((video_id, chunk_idx))
 
     def add_video(self, url, language="ja"):
         """Fetch, process, and add a video to the library.
@@ -537,48 +568,132 @@ class VideoLibrary:
     def save(self):
         """Save library to disk."""
         os.makedirs(self.data_dir, exist_ok=True)
+        os.makedirs(self._library_dir(), exist_ok=True)
+        os.makedirs(self._videos_dir(), exist_ok=True)
+        os.makedirs(self._index_dir(), exist_ok=True)
 
         # Save FAISS index
-        index_path = os.path.join(self.data_dir, "library.faiss")
+        index_path = self._index_path()
         if self.index is not None:
             faiss.write_index(self.index, index_path)
         elif os.path.exists(index_path):
             os.remove(index_path)
 
-        # Save metadata (videos + chunk_map) as JSON
-        meta = {
+        # Save library manifest
+        manifest = {
+            "format_version": LIBRARY_FORMAT_VERSION,
             "library_metadata": {
                 "chunking": self.current_chunking_metadata(),
             },
-            "videos": {},
-            "chunk_map": self.chunk_map,
+            "videos": list(self.videos.keys()),
         }
+
+        manifest_path = self._manifest_path()
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        _chmod_private(manifest_path)
+
+        existing_video_dirs = set()
+        if os.path.isdir(self._videos_dir()):
+            existing_video_dirs = {
+                name
+                for name in os.listdir(self._videos_dir())
+                if os.path.isdir(os.path.join(self._videos_dir(), name))
+            }
+
         for vid, data in self.videos.items():
-            meta["videos"][vid] = {
+            video_dir = os.path.join(self._videos_dir(), vid)
+            os.makedirs(video_dir, exist_ok=True)
+            record = {
                 "url": data["url"],
                 "title": data["title"],
                 "language": data.get("language", "ja"),
                 "chunks": data["chunks"],
                 "full_transcript": data.get("full_transcript"),
-                "summary_cache": data.get("summary_cache", {}),
                 "chunking": self._normalize_chunking_metadata(data.get("chunking")),
             }
+            record_path = self._video_record_path(vid)
+            with open(record_path, "w", encoding="utf-8") as f:
+                json.dump(record, f, ensure_ascii=False, indent=2)
+            _chmod_private(record_path)
+            existing_video_dirs.discard(vid)
 
-        meta_path = os.path.join(self.data_dir, "library_meta.json")
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
-        _chmod_private(meta_path)
+        for stale_video_id in existing_video_dirs:
+            record_path = self._video_record_path(stale_video_id)
+            stale_video_dir = os.path.dirname(record_path)
+            if os.path.exists(record_path):
+                os.remove(record_path)
+            if os.path.isdir(stale_video_dir):
+                try:
+                    os.rmdir(stale_video_dir)
+                except OSError:
+                    pass
 
         print(f"Library saved to {self.data_dir}/")
 
     def load(self):
         """Load library from disk."""
-        meta_path = os.path.join(self.data_dir, "library_meta.json")
-        index_path = os.path.join(self.data_dir, "library.faiss")
+        manifest_path = self._manifest_path()
+        legacy_meta_path = self._legacy_meta_path()
 
-        if not os.path.exists(meta_path):
-            raise FileNotFoundError(f"No saved library found at {meta_path}")
+        if os.path.exists(manifest_path):
+            self._load_split_layout(manifest_path)
+            index_path = self._index_path()
+        elif os.path.exists(legacy_meta_path):
+            self._load_legacy_layout(legacy_meta_path)
+            index_path = self._legacy_index_path()
+        else:
+            raise FileNotFoundError(
+                f"No saved library found at {manifest_path} or {legacy_meta_path}"
+            )
 
+        self._rebuild_chunk_map()
+
+        if os.path.exists(index_path):
+            self.index = faiss.read_index(index_path)
+            print(
+                f"Loaded library: {len(self.videos)} videos, {self.index.ntotal} vectors"
+            )
+        else:
+            self.index = None
+            print(f"Loaded library: {len(self.videos)} videos (no index)")
+
+    def _load_split_layout(self, manifest_path):
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        library_metadata = manifest.get("library_metadata")
+        library_chunking = None
+        if isinstance(library_metadata, dict):
+            library_chunking = self._normalize_chunking_metadata(
+                library_metadata.get("chunking")
+            )
+            self.library_metadata = {"chunking": library_chunking}
+        else:
+            self.library_metadata = {"chunking": self.current_chunking_metadata()}
+
+        raw_video_ids = manifest.get("videos", [])
+        if isinstance(raw_video_ids, dict):
+            raw_video_ids = list(raw_video_ids.keys())
+
+        self.videos = {}
+        for raw_video_id in raw_video_ids:
+            video_id = str(raw_video_id or "").strip()
+            if not video_id:
+                continue
+            record_path = self._video_record_path(video_id)
+            if not os.path.exists(record_path):
+                continue
+            with open(record_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.videos[video_id] = self._normalize_video_record(
+                video_id,
+                data,
+                fallback_chunking=library_chunking,
+                include_summary_cache=False,
+            )
+
+    def _load_legacy_layout(self, meta_path):
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
 
@@ -595,32 +710,32 @@ class VideoLibrary:
         raw_videos = meta.get("videos", {})
         self.videos = {}
         for video_id, data in raw_videos.items():
-            normalized = {
-                "url": data.get("url", f"https://www.youtube.com/watch?v={video_id}"),
-                "title": data.get("title", f"Video {video_id}"),
-                "language": data.get("language", "ja"),
-                "chunks": data.get("chunks", []),
-                "summary_cache": data.get("summary_cache", {})
-                if isinstance(data.get("summary_cache"), dict)
-                else {},
-                "chunking": self._normalize_chunking_metadata(
-                    data.get("chunking"),
-                    fallback=library_chunking,
-                ),
-            }
-            if isinstance(data.get("full_transcript"), dict):
-                normalized["full_transcript"] = data.get("full_transcript")
-            self.videos[video_id] = normalized
-        self.chunk_map = [tuple(x) for x in meta["chunk_map"]]
-
-        if os.path.exists(index_path):
-            self.index = faiss.read_index(index_path)
-            print(
-                f"Loaded library: {len(self.videos)} videos, {self.index.ntotal} vectors"
+            self.videos[video_id] = self._normalize_video_record(
+                video_id,
+                data,
+                fallback_chunking=library_chunking,
+                include_summary_cache=True,
             )
-        else:
-            self.index = None
-            print(f"Loaded library: {len(self.videos)} videos (no index)")
+
+    def _normalize_video_record(
+        self, video_id, data, *, fallback_chunking=None, include_summary_cache=False
+    ):
+        normalized = {
+            "url": data.get("url", f"https://www.youtube.com/watch?v={video_id}"),
+            "title": data.get("title", f"Video {video_id}"),
+            "language": data.get("language", "ja"),
+            "chunks": data.get("chunks", []),
+            "summary_cache": {},
+            "chunking": self._normalize_chunking_metadata(
+                data.get("chunking"),
+                fallback=fallback_chunking,
+            ),
+        }
+        if include_summary_cache and isinstance(data.get("summary_cache"), dict):
+            normalized["summary_cache"] = data.get("summary_cache")
+        if isinstance(data.get("full_transcript"), dict):
+            normalized["full_transcript"] = data.get("full_transcript")
+        return normalized
 
     @property
     def total_chunks(self):

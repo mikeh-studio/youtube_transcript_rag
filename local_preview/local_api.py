@@ -291,23 +291,24 @@ class LocalRAGService:
         self.jobs: Dict[str, IngestJob] = {}
         self.title_cache: Dict[str, str] = {}
         self.feedback_lock = threading.Lock()
-        self.feedback_path = (
-            Path(__file__).resolve().parent / "data" / "search_feedback.json"
-        )
+        self.runtime_data_dir = ROOT_DIR / "data" / "runtime"
+        self.cache_data_dir = ROOT_DIR / "data" / "cache"
+        self.summary_cache_dir = self.cache_data_dir / "summaries"
+        self.legacy_data_dir = Path(__file__).resolve().parent / "data"
+        self.feedback_path = self.runtime_data_dir / "search_feedback.json"
+        self.legacy_feedback_path = self.legacy_data_dir / "search_feedback.json"
         self.feedback: Dict[str, dict] = {}
         self.feedback_index: Dict[str, dict] = {}
         self.feedback_tuning_enabled = str(
             os.environ.get("YT_RAG_FEEDBACK_TUNING", "1")
         ).strip().lower() not in {"0", "false", "off", "no"}
         self.ask_history_lock = threading.Lock()
-        self.ask_history_path = (
-            Path(__file__).resolve().parent / "data" / "ask_history.json"
-        )
+        self.ask_history_path = self.runtime_data_dir / "ask_history.json"
+        self.legacy_ask_history_path = self.legacy_data_dir / "ask_history.json"
         self.ask_history: Dict[str, List[dict]] = {}
         self.log_lock = threading.Lock()
-        self.ingest_log_path = (
-            Path(__file__).resolve().parent / "data" / "ingest_jobs.log"
-        )
+        self.ingest_log_path = self.runtime_data_dir / "ingest_jobs.log"
+        self.legacy_ingest_log_path = self.legacy_data_dir / "ingest_jobs.log"
         self._load_feedback()
         self._load_ask_history()
 
@@ -529,13 +530,23 @@ class LocalRAGService:
             ).strip(),
         }
 
+    @staticmethod
+    def _resolve_existing_path(*paths: Optional[Path]) -> Optional[Path]:
+        for path in paths:
+            if path and path.exists():
+                return path
+        return None
+
     def _load_ask_history(self) -> None:
         self._ensure_ask_history_state()
         self.ask_history_path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.ask_history_path.exists():
+        source_path = self._resolve_existing_path(
+            self.ask_history_path, self.legacy_ask_history_path
+        )
+        if source_path is None:
             return
         try:
-            raw = json.loads(self.ask_history_path.read_text(encoding="utf-8"))
+            raw = json.loads(source_path.read_text(encoding="utf-8"))
         except Exception:
             self.ask_history = {}
             return
@@ -618,10 +629,13 @@ class LocalRAGService:
 
     def _load_feedback(self) -> None:
         self.feedback_path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.feedback_path.exists():
+        source_path = self._resolve_existing_path(
+            self.feedback_path, self.legacy_feedback_path
+        )
+        if source_path is None:
             return
         try:
-            raw = json.loads(self.feedback_path.read_text(encoding="utf-8"))
+            raw = json.loads(source_path.read_text(encoding="utf-8"))
             normalized: Dict[str, dict] = {}
 
             if isinstance(raw, dict):
@@ -929,6 +943,18 @@ class LocalRAGService:
                 fh.write(json.dumps(record, ensure_ascii=False))
                 fh.write("\n")
 
+    def _existing_log_paths(self) -> List[Path]:
+        paths: List[Path] = []
+        seen = set()
+        for candidate in (self.ingest_log_path, self.legacy_ingest_log_path):
+            if candidate and candidate.exists():
+                key = str(candidate.resolve())
+                if key in seen:
+                    continue
+                seen.add(key)
+                paths.append(candidate)
+        return paths
+
     def list_ingest_logs(
         self,
         *,
@@ -944,30 +970,35 @@ class LocalRAGService:
         scoped_video = str(video_id or "").strip()
         scoped_since = str(since or "").strip()
 
-        if not self.ingest_log_path.exists():
+        log_paths = self._existing_log_paths()
+        if not log_paths:
             return []
 
         rows: List[dict] = []
         with self.log_lock:
-            for line in self.ingest_log_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+            for log_path in log_paths:
+                for line in log_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
 
-                if scoped_level and str(row.get("level") or "").lower() != scoped_level:
-                    continue
-                if scoped_job and str(row.get("job_id") or "") != scoped_job:
-                    continue
-                if scoped_video and str(row.get("video_id") or "") != scoped_video:
-                    continue
-                if scoped_since and str(row.get("ts") or "") < scoped_since:
-                    continue
+                    if (
+                        scoped_level
+                        and str(row.get("level") or "").lower() != scoped_level
+                    ):
+                        continue
+                    if scoped_job and str(row.get("job_id") or "") != scoped_job:
+                        continue
+                    if scoped_video and str(row.get("video_id") or "") != scoped_video:
+                        continue
+                    if scoped_since and str(row.get("ts") or "") < scoped_since:
+                        continue
 
-                rows.append(row)
+                    rows.append(row)
 
         rows.sort(key=lambda row: str(row.get("ts") or ""), reverse=True)
         return rows[:safe_limit]
@@ -2414,6 +2445,38 @@ class LocalRAGService:
     def _summary_cache_key(*, language: str, provider: str, max_points: int) -> str:
         return f"{str(language).strip().lower()}:{str(provider).strip().lower()}:{int(max_points)}"
 
+    def _summary_cache_path(self, video_id: str) -> Path:
+        safe_video_id = str(video_id or "").strip()
+        return self.summary_cache_dir / f"{safe_video_id}.json"
+
+    def _load_summary_cache_rows(self, *, video_id: str, video: dict) -> dict:
+        cache_path = self._summary_cache_path(video_id)
+        cache_rows: dict = {}
+        if cache_path.exists():
+            try:
+                raw = json.loads(cache_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    cache_rows = raw
+            except Exception:
+                cache_rows = {}
+        elif isinstance(video.get("summary_cache"), dict):
+            cache_rows = deepcopy(video.get("summary_cache") or {})
+
+        video["summary_cache"] = deepcopy(cache_rows)
+        return cache_rows
+
+    def _persist_summary_cache_rows(self, *, video_id: str, cache_rows: dict) -> None:
+        self.summary_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = self._summary_cache_path(video_id)
+        temp_path = cache_path.with_suffix(".tmp")
+        temp_path.write_text(
+            json.dumps(cache_rows, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        _chmod_private(temp_path)
+        temp_path.replace(cache_path)
+        _chmod_private(cache_path)
+
     def _summary_source_fingerprint(self, *, full_transcript: dict) -> str:
         segments = self._coerce_summary_segments(full_transcript.get("segments") or [])
         normalized_segments = [
@@ -2440,13 +2503,12 @@ class LocalRAGService:
     def _get_summary_cache(
         self,
         *,
+        video_id: str,
         video: dict,
         cache_key: str,
         source_fingerprint: str,
     ) -> Optional[dict]:
-        cache_rows = video.get("summary_cache")
-        if not isinstance(cache_rows, dict):
-            return None
+        cache_rows = self._load_summary_cache_rows(video_id=video_id, video=video)
 
         entry = cache_rows.get(cache_key)
         if not isinstance(entry, dict):
@@ -2469,6 +2531,7 @@ class LocalRAGService:
     def _put_summary_cache(
         self,
         *,
+        video_id: str,
         video: dict,
         cache_key: str,
         source_fingerprint: str,
@@ -2478,10 +2541,7 @@ class LocalRAGService:
         model: str,
         response_payload: dict,
     ) -> None:
-        cache_rows = video.get("summary_cache")
-        if not isinstance(cache_rows, dict):
-            cache_rows = {}
-            video["summary_cache"] = cache_rows
+        cache_rows = self._load_summary_cache_rows(video_id=video_id, video=video)
 
         cache_rows[cache_key] = {
             "version": SUMMARY_CACHE_VERSION,
@@ -2493,6 +2553,8 @@ class LocalRAGService:
             "source_fingerprint": source_fingerprint,
             "result": deepcopy(response_payload),
         }
+        video["summary_cache"] = deepcopy(cache_rows)
+        self._persist_summary_cache_rows(video_id=video_id, cache_rows=cache_rows)
 
     def summarize_video_transcript(
         self,
@@ -2544,6 +2606,7 @@ class LocalRAGService:
             full_transcript=full_transcript
         )
         cached_summary = self._get_summary_cache(
+            video_id=scoped_video_id,
             video=video,
             cache_key=cache_key,
             source_fingerprint=source_fingerprint,
@@ -2712,6 +2775,7 @@ class LocalRAGService:
             },
         }
         self._put_summary_cache(
+            video_id=scoped_video_id,
             video=video,
             cache_key=cache_key,
             source_fingerprint=source_fingerprint,
@@ -2721,11 +2785,6 @@ class LocalRAGService:
             model=str(summary_result.get("model") or ""),
             response_payload=response,
         )
-        if hasattr(self.engine.library, "save"):
-            try:
-                self.engine.library.save()
-            except Exception:
-                pass
 
         return response
 
@@ -2867,9 +2926,6 @@ class LocalRAGService:
             try:
                 self.engine.library.add_video(video_id, language=language)
                 self._hydrate_video_title(video_id)
-                video_record = self.engine.library.videos.get(video_id)
-                if isinstance(video_record, dict):
-                    video_record.setdefault("summary_cache", {})
                 if hasattr(self.engine.library, "save"):
                     try:
                         self.engine.library.save()
