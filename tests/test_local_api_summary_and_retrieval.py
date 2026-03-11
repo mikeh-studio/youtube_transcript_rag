@@ -27,11 +27,23 @@ def _make_service(enabled=True):
     service.feedback_lock = threading.Lock()
     service.feedback_tuning_enabled = bool(enabled)
     service._persist_feedback = lambda: None
-    service.feedback_path = Path(tempfile.mkdtemp()) / "search_feedback.json"
+    runtime_dir = Path(tempfile.mkdtemp())
+    cache_dir = Path(tempfile.mkdtemp())
+    legacy_dir = Path(tempfile.mkdtemp())
+    service.runtime_data_dir = runtime_dir
+    service.cache_data_dir = cache_dir
+    service.summary_cache_dir = cache_dir / "summaries"
+    service.legacy_data_dir = legacy_dir
+    service.feedback_path = runtime_dir / "search_feedback.json"
+    service.legacy_feedback_path = legacy_dir / "search_feedback.json"
     service.openai_model = "gpt-4o-mini"
     service.ask_history_lock = threading.Lock()
     service.ask_history = {}
-    service.ask_history_path = Path(tempfile.mkdtemp()) / "ask_history.json"
+    service.ask_history_path = runtime_dir / "ask_history.json"
+    service.legacy_ask_history_path = legacy_dir / "ask_history.json"
+    service.ingest_log_path = runtime_dir / "ingest_jobs.log"
+    service.legacy_ingest_log_path = legacy_dir / "ingest_jobs.log"
+    service.log_lock = threading.Lock()
     return service
 
 
@@ -1019,8 +1031,9 @@ def test_summarize_video_transcript_backfills_full_transcript_once():
 
     assert first["generation_details"]["full_transcript_backfilled"] is True
     assert second["generation_details"]["full_transcript_backfilled"] is False
-    assert service.engine.library.save_calls == 2
+    assert service.engine.library.save_calls == 1
     assert "full_transcript" in service.engine.library.videos["vid1"]
+    assert service._summary_cache_path("vid1").exists()
 
 
 def test_summarize_video_transcript_uses_summary_cache_for_repeat_request():
@@ -1107,7 +1120,8 @@ def test_summarize_video_transcript_uses_summary_cache_for_repeat_request():
     assert second["generation_details"]["cache_hit"] is True
     assert second["generation_details"]["cache_generated_at"] is not None
     assert counter["count"] == 1
-    assert service.engine.library.save_calls == 1
+    assert service.engine.library.save_calls == 0
+    assert service._summary_cache_path("vid1").exists()
 
 
 def test_summarize_video_transcript_invalidates_cache_when_transcript_changes():
@@ -1195,7 +1209,7 @@ def test_summarize_video_transcript_invalidates_cache_when_transcript_changes():
     assert second["cached"] is False
     assert second["generation_details"]["cache_hit"] is False
     assert counter["count"] == 2
-    assert service.engine.library.save_calls == 2
+    assert service.engine.library.save_calls == 0
 
 
 def test_summarize_video_transcript_cache_key_partitions_requests():
@@ -1351,7 +1365,7 @@ def test_ingest_persists_library_and_initializes_summary_cache():
 
     assert result["queued_count"] == 1
     assert service.engine.library.save_calls == 1
-    assert service.engine.library.videos["abc12345678"].get("summary_cache") == {}
+    assert service.engine.library.videos["abc12345678"].get("summary_cache") is None
 
 
 def test_ingest_reingests_stale_video_without_force():

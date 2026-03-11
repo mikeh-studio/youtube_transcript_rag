@@ -4,7 +4,7 @@
 - `multilingual/`: core retrieval pipeline (`video_library.py`, `rag_engine.py`, `text_processing.py`) and language-specific tests in `multilingual/tests/`.
 - `local_preview/`: local HTTP API (`local_api.py`) plus static UI in `local_preview/web/`.
 - `tests/`: top-level regression tests for retrieval, feedback tuning, and library behavior.
-- `data/`: local indexed artifacts and runtime data (do not commit generated files).
+- `data/`: local indexed artifacts, runtime data, and cache files (do not commit generated files).
 - `docs/media/`: screenshots used in documentation.
 
 ## Build, Test, and Development Commands

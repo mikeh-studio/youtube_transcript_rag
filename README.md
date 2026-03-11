@@ -21,7 +21,7 @@ This project lets you ingest YouTube transcripts, run semantic retrieval (`hybri
 ## What's New (Theme TLDR + Timestamp Quality Update)
 
 - TLDR generation now reads from a persisted **full transcript** artifact created at ingest time (with lazy backfill for older indexed videos).
-- TLDR responses are now persisted in a per-video **summary cache** keyed by `language + provider + max_points`, so repeated requests reuse stored results instead of re-running LLM generation.
+- TLDR responses are now persisted in `data/cache/summaries/<video_id>.json` as a per-video **summary cache** keyed by `language + provider + max_points`, so repeated requests reuse stored results instead of re-running LLM generation.
 - Cache entries automatically refresh when transcript content changes (fingerprint mismatch), preventing stale summaries from being reused.
 - TLDR Studio now generates a fixed **5-theme** TLDR for more reliable output quality.
 - Ingest now includes an **Ingested Videos** management carousel with per-video **Review** and **Delete** actions.
@@ -127,7 +127,10 @@ multilingual/*  (retrieval pipeline: chunking, embeddings, hybrid search)
           |
           v
 local files:
-  - data/ (indexed library)
+  - data/library/ (library manifest + per-video records)
+  - data/index/ (FAISS index artifacts)
+  - data/runtime/ (feedback, ask history, ingest logs)
+  - data/cache/summaries/ (per-video TLDR cache files)
   - browser localStorage (evaluation query sets/runs/labels)
 ```
 

@@ -4,7 +4,7 @@ Run and evaluate YouTube Transcript RAG locally.
 
 ## Start
 
-From `japanese_youtube_rag_v2`:
+From `youtube_rag_v2_portfolio`:
 
 ```bash
 python local_preview/local_api.py
@@ -47,4 +47,6 @@ Open:
 
 - Ingestion runs synchronously in local mode.
 - If embedding model download is unavailable, local preview can fall back to local hashing embeddings.
+- Local preview writes runtime state to `data/runtime/` and TLDR cache files to `data/cache/summaries/`.
+- Library persistence is split across `data/library/` (manifest + per-video records) and `data/index/` (FAISS index).
 - Cloudflare production stack remains in `production_cloudflare/` for later.
