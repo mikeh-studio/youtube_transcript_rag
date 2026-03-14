@@ -29,11 +29,13 @@ const els = {
   qaNavLink: document.getElementById("qaNavLink"),
   reviewsNavLink: document.getElementById("reviewsNavLink"),
   evaluationNavLink: document.getElementById("evaluationNavLink"),
+  chunkingNavLink: document.getElementById("chunkingNavLink"),
   mobileHomeNavText: document.getElementById("mobileHomeNavText"),
   mobileTldrNavText: document.getElementById("mobileTldrNavText"),
   mobileQaNavText: document.getElementById("mobileQaNavText"),
   mobileReviewsNavText: document.getElementById("mobileReviewsNavText"),
   mobileEvaluationNavText: document.getElementById("mobileEvaluationNavText"),
+  mobileChunkingNavText: document.getElementById("mobileChunkingNavText"),
   heroTitle: document.getElementById("heroTitle"),
   heroSubtitle: document.getElementById("heroSubtitle"),
   guidelinesHeading: document.getElementById("guidelinesHeading"),
@@ -106,6 +108,7 @@ const I18N = {
     navQA: "Q&A Studio",
     navReviews: "Reviews",
     navEvaluation: "Evaluation",
+    navChunking: "Chunking",
     heroTitle: "Semantic Retrieval Evaluation",
     heroSubtitle: "Create query sets, run ranked retrieval snapshots, label results locally, and compare metrics across runs.",
     guidelinesHeading: "Relevance Guidelines",
@@ -188,6 +191,7 @@ const I18N = {
     navQA: "Q&A Studio",
     navReviews: "レビュー",
     navEvaluation: "評価",
+    navChunking: "チャンキング",
     heroTitle: "セマンティック検索評価",
     heroSubtitle: "クエリセット作成、検索スナップショット実行、ローカルラベリング、ラン比較を行います。",
     guidelinesHeading: "関連性ラベルガイド",
@@ -1185,6 +1189,7 @@ function applyLocale(locale) {
   setNavLabel(els.qaNavLink, t("navQA"));
   setNavLabel(els.reviewsNavLink, t("navReviews"));
   setNavLabel(els.evaluationNavLink, t("navEvaluation"));
+  setNavLabel(els.chunkingNavLink, t("navChunking"));
   if (els.mobileHomeNavText) {
     els.mobileHomeNavText.textContent = t("navIngest");
   }
@@ -1199,6 +1204,9 @@ function applyLocale(locale) {
   }
   if (els.mobileEvaluationNavText) {
     els.mobileEvaluationNavText.textContent = t("navEvaluation");
+  }
+  if (els.mobileChunkingNavText) {
+    els.mobileChunkingNavText.textContent = t("navChunking");
   }
   els.heroTitle.textContent = t("heroTitle");
   els.heroSubtitle.textContent = t("heroSubtitle");

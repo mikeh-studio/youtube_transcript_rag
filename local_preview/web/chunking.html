@@ -12,10 +12,10 @@
   </head>
   <body>
     <header class="appbar">
-      <a class="brand brand-link" href="./index.html" aria-label="Ingest">
+      <a id="homeBrandLink" class="brand brand-link" href="./index.html" aria-label="Ingest">
         <img src="./icons/icon-play.svg" alt="" aria-hidden="true" />
         <div>
-          <p class="eyebrow">YouTube Transcript RAG</p>
+          <p id="eyebrowText" class="eyebrow">YouTube Transcript RAG</p>
           <p class="brand-sub">Chunking Lab</p>
         </div>
       </a>
@@ -47,7 +47,7 @@
           </a>
         </nav>
         <label class="locale-switch">
-          <span>Language</span>
+          <span id="localeLabel">Language</span>
           <select id="localeSelect">
             <option value="en-US">English (US)</option>
             <option value="ja-JP">日本語</option>
@@ -183,9 +183,9 @@
         <img class="bottom-tab-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
         <span id="mobileReviewsNavText" class="bottom-tab-label">Reviews</span>
       </a>
-      <a id="mobileEvalNavLink" class="bottom-tab-link" href="./evaluation.html">
+      <a id="mobileEvaluationNavLink" class="bottom-tab-link" href="./evaluation.html">
         <img class="bottom-tab-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
-        <span id="mobileEvalNavText" class="bottom-tab-label">Evaluation</span>
+        <span id="mobileEvaluationNavText" class="bottom-tab-label">Evaluation</span>
       </a>
       <a id="mobileChunkingNavLink" class="bottom-tab-link active" href="./chunking.html">
         <img class="bottom-tab-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
