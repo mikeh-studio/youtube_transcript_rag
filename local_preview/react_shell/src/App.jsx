@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { key: "qa", label: "Q&A Studio", icon: "/icons/icon-search.svg", route: ROUTES.QA, requiresUnlock: true },
   { key: "reviews", label: "Reviews", icon: "/icons/icon-library.svg", href: "/reviews.html", requiresUnlock: true },
   { key: "evaluation", label: "Evaluation", icon: "/icons/icon-jobs.svg", href: "/evaluation.html", requiresUnlock: true },
+  { key: "chunking", label: "Chunking", icon: "/icons/icon-jobs.svg", href: "/chunking.html", requiresUnlock: true },
 ];
 
 function readHashRoute() {

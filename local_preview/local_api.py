@@ -1003,6 +1003,136 @@ class LocalRAGService:
         rows.sort(key=lambda row: str(row.get("ts") or ""), reverse=True)
         return rows[:safe_limit]
 
+    # ------------------------------------------------------------------
+    # Chunking comparison (ephemeral re-chunk + search)
+    # ------------------------------------------------------------------
+
+    CHUNKING_STRATEGIES = {"time", "sentence", "token"}
+
+    def _get_video_with_transcript(self, video_id: str):
+        """Return video data dict, raising ValueError if missing transcript."""
+        video_id = str(video_id or "").strip()
+        if not video_id:
+            raise ValueError("video_id is required")
+        video = self.engine.library.videos.get(video_id)
+        if not video:
+            raise KeyError(f"Video {video_id} not found in library")
+        ft = video.get("full_transcript")
+        if not ft or not ft.get("segments"):
+            raise ValueError(
+                f"Video {video_id} has no full_transcript. "
+                "Re-ingest this video to generate one."
+            )
+        return video, ft
+
+    def preview_chunking(self, video_id, strategy, params):
+        """Re-chunk a video in memory and return chunk preview (no embeddings)."""
+        video, ft = self._get_video_with_transcript(video_id)
+        language = video.get("language", "ja")
+        processor = self.engine.library.processor
+
+        lines = processor.reconstruct_lines_from_transcript(ft, language)
+        chunks = self._apply_chunking_strategy(
+            processor, lines, strategy, params, language
+        )
+
+        chunk_list = []
+        for i, c in enumerate(chunks):
+            chunk_list.append({
+                "index": i,
+                "start": c["start"],
+                "end": c["end"],
+                "raw_text": c["raw_text"],
+                "char_count": len(c["raw_text"]),
+            })
+
+        char_counts = [c["char_count"] for c in chunk_list] or [0]
+        return {
+            "chunk_count": len(chunk_list),
+            "chunks": chunk_list,
+            "stats": {
+                "total_chars": sum(char_counts),
+                "avg_chunk_chars": round(sum(char_counts) / max(1, len(char_counts)), 1),
+                "min_chunk_chars": min(char_counts),
+                "max_chunk_chars": max(char_counts),
+            },
+        }
+
+    def search_with_chunking(self, video_id, strategy, params, query, k, language_override):
+        """Re-chunk, embed, build temp FAISS index, search, return ranked results."""
+        import faiss as _faiss
+
+        video, ft = self._get_video_with_transcript(video_id)
+        language = language_override or video.get("language", "ja")
+        processor = self.engine.library.processor
+
+        lines = processor.reconstruct_lines_from_transcript(ft, language)
+        chunks = self._apply_chunking_strategy(
+            processor, lines, strategy, params, language
+        )
+        if not chunks:
+            return {
+                "chunk_count": 0,
+                "results": [],
+                "embedding_time_ms": 0,
+                "search_time_ms": 0,
+            }
+
+        t0 = time.monotonic()
+        embeddings = processor.generate_embeddings(chunks)
+        embedding_time_ms = round((time.monotonic() - t0) * 1000, 1)
+
+        _faiss.omp_set_num_threads(1)
+        dim = embeddings.shape[1]
+        index = _faiss.IndexFlatIP(dim)
+        index.add(embeddings)
+
+        t1 = time.monotonic()
+        query_emb = processor.encode_query(query, language=language)
+        safe_k = min(k, len(chunks))
+        scores, indices = index.search(query_emb, safe_k)
+        search_time_ms = round((time.monotonic() - t1) * 1000, 1)
+
+        results = []
+        for rank, (score, idx) in enumerate(zip(scores[0], indices[0])):
+            if idx < 0:
+                continue
+            c = chunks[idx]
+            results.append({
+                "rank": rank + 1,
+                "score": round(float(score), 4),
+                "chunk_index": int(idx),
+                "start": c["start"],
+                "end": c["end"],
+                "text": c["raw_text"],
+            })
+
+        return {
+            "chunk_count": len(chunks),
+            "results": results,
+            "embedding_time_ms": embedding_time_ms,
+            "search_time_ms": search_time_ms,
+        }
+
+    @staticmethod
+    def _apply_chunking_strategy(processor, lines, strategy, params, language):
+        """Dispatch to the appropriate chunking method."""
+        if strategy == "time":
+            window = max(10, min(int(params.get("window", 60)), 300))
+            overlap = max(0, min(int(params.get("overlap", 15)), window - 1))
+            return processor.chunk_by_time_with_overlap(lines, window=window, overlap=overlap)
+        elif strategy == "sentence":
+            max_chars = max(100, min(int(params.get("max_chars", 1000)), 5000))
+            return processor.chunk_by_sentence_boundary(lines, max_chars=max_chars)
+        elif strategy == "token":
+            token_count = max(32, min(int(params.get("token_count", 256)), 1024))
+            overlap_fraction = max(0.0, min(float(params.get("overlap_fraction", 0.25)), 0.5))
+            return processor.chunk_by_token_count(
+                lines, token_count=token_count, overlap_fraction=overlap_fraction, language=language
+            )
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}. Must be one of: time, sentence, token")
+
     def save_search_feedback(self, payload: dict) -> dict:
         query = str(payload.get("query") or "").strip()
         retrieval_mode = str(payload.get("retrieval_mode") or "").strip().lower()
@@ -3359,6 +3489,64 @@ class Handler(BaseHTTPRequestHandler):
                     language=language,
                     provider=provider,
                     max_points=max_points,
+                )
+                self._json({"ok": True, **result})
+                return
+
+            if path == "/v1/chunking/preview":
+                video_id = str(body.get("video_id") or "").strip()
+                strategy = str(body.get("strategy") or "").strip().lower()
+                if strategy not in SERVICE.CHUNKING_STRATEGIES:
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "INVALID_INPUT",
+                                "message": f"strategy must be one of: {', '.join(sorted(SERVICE.CHUNKING_STRATEGIES))}",
+                            },
+                        },
+                        400,
+                    )
+                    return
+                params = body.get("params") or {}
+                result = SERVICE.preview_chunking(video_id, strategy, params)
+                self._json({"ok": True, **result})
+                return
+
+            if path == "/v1/chunking/search":
+                video_id = str(body.get("video_id") or "").strip()
+                strategy = str(body.get("strategy") or "").strip().lower()
+                if strategy not in SERVICE.CHUNKING_STRATEGIES:
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "INVALID_INPUT",
+                                "message": f"strategy must be one of: {', '.join(sorted(SERVICE.CHUNKING_STRATEGIES))}",
+                            },
+                        },
+                        400,
+                    )
+                    return
+                query = str(body.get("query") or "").strip()
+                if not query:
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "INVALID_QUERY",
+                                "message": "query is required",
+                            },
+                        },
+                        400,
+                    )
+                    return
+                params = body.get("params") or {}
+                k = max(1, min(int(body.get("k", 5)), 12))
+                language = body.get("language")
+                result = SERVICE.search_with_chunking(
+                    video_id, strategy, params, query, k,
+                    normalize_language(language) if language else None,
                 )
                 self._json({"ok": True, **result})
                 return

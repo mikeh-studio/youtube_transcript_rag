@@ -274,6 +274,178 @@ class TextProcessor:
 
         return chunks
 
+    def reconstruct_lines_from_transcript(self, full_transcript, language):
+        """Convert stored full_transcript.segments back to processed-line format.
+
+        Args:
+            full_transcript: Dict with 'segments' list of {start, end, text}.
+            language: Language code for tokenization.
+
+        Returns:
+            List of processed line dicts with start, duration, raw_text, embed_text.
+        """
+        segments = full_transcript.get("segments", [])
+        lines = []
+        for seg in segments:
+            raw_text = str(seg.get("text", "")).strip()
+            if not raw_text:
+                continue
+            start = float(seg.get("start", 0.0))
+            end = float(seg.get("end", start))
+            duration = max(0.0, end - start)
+            embed_text = self.make_embed_text(raw_text, language)
+            if embed_text.strip():
+                lines.append({
+                    "start": start,
+                    "duration": duration,
+                    "raw_text": self.clean_text(raw_text),
+                    "embed_text": embed_text,
+                })
+        return lines
+
+    def chunk_by_sentence_boundary(self, lines, max_chars=1000):
+        """Chunk lines by accumulating up to max_chars, splitting at sentence boundaries.
+
+        Args:
+            lines: List of processed line dicts with start, duration, raw_text, embed_text.
+            max_chars: Maximum characters per chunk before forcing a split.
+
+        Returns:
+            List of chunk dicts with start, end, raw_text, embed_text.
+        """
+        if not lines:
+            return []
+
+        sentence_end_re = re.compile(r'[.!?。！？]\s*$')
+        chunks = []
+        buf_lines = []
+        buf_chars = 0
+
+        def build_chunk(chunk_lines):
+            raw_text = " ".join(item["raw_text"] for item in chunk_lines).strip()
+            embed_text = "\n".join(item["embed_text"] for item in chunk_lines).strip()
+            if not embed_text:
+                return None
+            last_line = chunk_lines[-1]
+            return {
+                "start": chunk_lines[0]["start"],
+                "end": last_line["start"] + last_line["duration"],
+                "raw_text": raw_text,
+                "embed_text": embed_text,
+            }
+
+        for line in lines:
+            line_chars = len(line["raw_text"])
+
+            if buf_chars > 0 and buf_chars + line_chars > max_chars:
+                # Try to split at last sentence boundary
+                split_idx = len(buf_lines)
+                for k in range(len(buf_lines) - 1, -1, -1):
+                    if sentence_end_re.search(buf_lines[k]["raw_text"]):
+                        split_idx = k + 1
+                        break
+
+                if split_idx == 0:
+                    split_idx = len(buf_lines)
+
+                chunk = build_chunk(buf_lines[:split_idx])
+                if chunk:
+                    chunks.append(chunk)
+
+                buf_lines = buf_lines[split_idx:]
+                if buf_lines:
+                    buf_chars = sum(len(item["raw_text"]) for item in buf_lines)
+                else:
+                    buf_chars = 0
+
+            buf_lines.append(line)
+            buf_chars += line_chars
+
+        if buf_lines:
+            chunk = build_chunk(buf_lines)
+            if chunk:
+                chunks.append(chunk)
+
+        return chunks
+
+    def chunk_by_token_count(self, lines, token_count=256, overlap_fraction=0.25, language="ja"):
+        """Chunk lines by fixed token windows with overlap.
+
+        Tokenizes all lines using the language-specific tokenizer, creates
+        fixed-size token windows, and maps back to timestamps.
+
+        Args:
+            lines: List of processed line dicts with start, duration, raw_text, embed_text.
+            token_count: Number of tokens per chunk window.
+            overlap_fraction: Fraction of token_count to overlap between windows.
+            language: Language code for tokenization.
+
+        Returns:
+            List of chunk dicts with start, end, raw_text, embed_text.
+        """
+        if not lines:
+            return []
+
+        # Build flat token list with line index tracking
+        all_tokens = []
+        line_boundaries = []  # (token_start_idx, token_end_idx) per line
+        for i, line in enumerate(lines):
+            try:
+                tokenized = self.tokenize(line["raw_text"], language)
+            except ValueError:
+                tokenized = line["raw_text"]
+            tokens = tokenized.split()
+            start_idx = len(all_tokens)
+            all_tokens.extend(tokens)
+            line_boundaries.append((start_idx, len(all_tokens), i))
+
+        if not all_tokens:
+            return []
+
+        overlap_tokens = max(0, int(token_count * overlap_fraction))
+        step = max(1, token_count - overlap_tokens)
+        chunks = []
+        pos = 0
+
+        while pos < len(all_tokens):
+            end_pos = min(pos + token_count, len(all_tokens))
+
+            # Find which lines are covered by this token window
+            first_line_idx = None
+            last_line_idx = None
+            for tok_start, tok_end, line_idx in line_boundaries:
+                if tok_end > pos and tok_start < end_pos:
+                    if first_line_idx is None:
+                        first_line_idx = line_idx
+                    last_line_idx = line_idx
+
+            if first_line_idx is not None:
+                chunk_start = lines[first_line_idx]["start"]
+                last = lines[last_line_idx]
+                chunk_end = last["start"] + last["duration"]
+
+                raw_parts = []
+                embed_parts = []
+                for li in range(first_line_idx, last_line_idx + 1):
+                    raw_parts.append(lines[li]["raw_text"])
+                    embed_parts.append(lines[li]["embed_text"])
+
+                raw_text = " ".join(raw_parts).strip()
+                embed_text = "\n".join(embed_parts).strip()
+                if embed_text:
+                    chunks.append({
+                        "start": chunk_start,
+                        "end": chunk_end,
+                        "raw_text": raw_text,
+                        "embed_text": embed_text,
+                    })
+
+            if end_pos >= len(all_tokens):
+                break
+            pos += step
+
+        return chunks
+
     def process_transcript(self, transcript, language):
         """Process raw transcript segments into lines ready for chunking.
 

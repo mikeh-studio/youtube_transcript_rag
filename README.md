@@ -40,6 +40,17 @@ This project lets you ingest YouTube transcripts, run semantic retrieval (`hybri
 - Ingest hero visual was simplified by removing the boxed decorative background layer.
 - Added regression coverage for long-transcript fallback behavior and updated shell e2e checks for cross-page header consistency.
 
+## What's New (March 13, 2026)
+
+- Added a dedicated **Chunking Lab** at `http://127.0.0.1:8000/chunking.html` for side-by-side chunk strategy comparison.
+- Added in-memory chunk preview and search comparison routes:
+  - `POST /v1/chunking/preview`
+  - `POST /v1/chunking/search`
+- Added support for comparing **time window**, **sentence boundary**, and **token count** chunking against the same ingested video.
+- Chunking Lab can export the latest comparison into the local Evaluation workspace as ephemeral run snapshots.
+- Chunk previews/search comparisons require videos with persisted `full_transcript` data; older videos may need re-ingest.
+- Added regression coverage for sentence-split timestamp handling and chunking strategy parameter clamping.
+
 ## Quick Start
 
 From `youtube_rag_v2_portfolio`:
@@ -68,6 +79,7 @@ Open:
 - `http://127.0.0.1:8000/` (Main Console)
 - `http://127.0.0.1:8000/reviews.html` (Reviewed Chunks)
 - `http://127.0.0.1:8000/evaluation.html` (Evaluation Workspace)
+- `http://127.0.0.1:8000/chunking.html` (Chunking Lab)
 
 Note:
 - If model download/network is unavailable, the app falls back to local hashing embeddings in local preview mode.
@@ -86,6 +98,7 @@ Open:
 - `http://127.0.0.1:8000/`
 - `http://127.0.0.1:8000/reviews.html`
 - `http://127.0.0.1:8000/evaluation.html`
+- `http://127.0.0.1:8000/chunking.html`
 
 ## Demo Flow (Portfolio-Friendly)
 
@@ -117,7 +130,7 @@ Open:
 ## Architecture
 
 ```text
-Browser UI (index / reviews / evaluation)
+Browser UI (index / reviews / evaluation / chunking)
           |
           v
 local_preview/local_api.py  (local HTTP API + static files)
@@ -147,9 +160,12 @@ local files:
 - Evaluation labels are **browser-local** (not shared across devices by default).
 - Inter-rater agreement/adjudication workflow is not implemented yet.
 - Retrieval quality depends on transcript availability from YouTube.
+- Chunking Lab works on already ingested videos and needs a stored `full_transcript`; legacy videos without that artifact must be re-ingested before preview/search comparison works.
 
 ## Tests
 
 ```bash
 pytest tests/
+HF_HUB_OFFLINE=1 pytest multilingual/tests/test_chunking_strategies.py -q
+pytest tests/test_chunking_api.py -q
 ```
