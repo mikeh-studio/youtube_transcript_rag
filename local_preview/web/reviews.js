@@ -16,12 +16,14 @@ const els = {
   tldrNavLink: document.getElementById("tldrNavLink"),
   qaNavLink: document.getElementById("qaNavLink"),
   reviewsNavLink: document.getElementById("reviewsNavLink"),
-  evalNavLink: document.getElementById("evalNavLink"),
+  evaluationNavLink: document.getElementById("evaluationNavLink"),
+  chunkingNavLink: document.getElementById("chunkingNavLink"),
   mobileHomeNavText: document.getElementById("mobileHomeNavText"),
   mobileTldrNavText: document.getElementById("mobileTldrNavText"),
   mobileQaNavText: document.getElementById("mobileQaNavText"),
   mobileReviewsNavText: document.getElementById("mobileReviewsNavText"),
-  mobileEvalNavText: document.getElementById("mobileEvalNavText"),
+  mobileEvaluationNavText: document.getElementById("mobileEvaluationNavText"),
+  mobileChunkingNavText: document.getElementById("mobileChunkingNavText"),
   heroTitle: document.getElementById("heroTitle"),
   heroSubtitle: document.getElementById("heroSubtitle"),
   filtersHeading: document.getElementById("filtersHeading"),
@@ -65,6 +67,7 @@ const I18N = {
     navReviews: "Reviews",
     eyebrowText: "YouTube Transcript RAG",
     navEvaluation: "Evaluation",
+    navChunking: "Chunking",
     heroTitle: "Review Analytics",
     heroSubtitle: "Inspect reviewed chunks, filter by video, and export data.",
     filtersHeading: "Filters",
@@ -107,6 +110,7 @@ const I18N = {
     navReviews: "レビュー",
     eyebrowText: "YouTube Transcript RAG",
     navEvaluation: "評価",
+    navChunking: "チャンキング",
     heroTitle: "レビュー分析",
     heroSubtitle: "レビュー済みチャンクを確認し、動画で絞り込み、CSVをエクスポートします。",
     filtersHeading: "フィルター",
@@ -437,7 +441,8 @@ function applyLocale(locale) {
   setNavLabel(els.tldrNavLink, t("navTLDR"));
   setNavLabel(els.qaNavLink, t("navQA"));
   setNavLabel(els.reviewsNavLink, t("navReviews"));
-  setNavLabel(els.evalNavLink, t("navEvaluation"));
+  setNavLabel(els.evaluationNavLink, t("navEvaluation"));
+  setNavLabel(els.chunkingNavLink, t("navChunking"));
   if (els.mobileHomeNavText) {
     els.mobileHomeNavText.textContent = t("navIngest");
   }
@@ -450,8 +455,11 @@ function applyLocale(locale) {
   if (els.mobileReviewsNavText) {
     els.mobileReviewsNavText.textContent = t("navReviews");
   }
-  if (els.mobileEvalNavText) {
-    els.mobileEvalNavText.textContent = t("navEvaluation");
+  if (els.mobileEvaluationNavText) {
+    els.mobileEvaluationNavText.textContent = t("navEvaluation");
+  }
+  if (els.mobileChunkingNavText) {
+    els.mobileChunkingNavText.textContent = t("navChunking");
   }
   els.heroTitle.textContent = t("heroTitle");
   els.heroSubtitle.textContent = t("heroSubtitle");

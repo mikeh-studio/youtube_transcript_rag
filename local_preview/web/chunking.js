@@ -13,6 +13,9 @@ const DEFAULT_LOCALE = "en-US";
 // ------------------------------------------------------------------
 const I18N = {
   "en-US": {
+    pageTitle: "YouTube Transcript RAG | Chunking",
+    localeLabel: "Language",
+    eyebrowText: "YouTube Transcript RAG",
     heroTitle: "Chunking Strategy Comparison",
     heroSubtitle: "Compare chunking strategies side-by-side and measure their effect on search results.",
     videoHeading: "Video & Strategy Selection",
@@ -49,13 +52,16 @@ const I18N = {
     paramTokenCount: "Token Count",
     paramOverlapFraction: "Overlap Fraction",
     navIngest: "Ingest",
-    navTldr: "TLDR Studio",
-    navQa: "Q&A Studio",
+    navTLDR: "TLDR Studio",
+    navQA: "Q&A Studio",
     navReviews: "Reviews",
-    navEval: "Evaluation",
+    navEvaluation: "Evaluation",
     navChunking: "Chunking",
   },
   "ja-JP": {
+    pageTitle: "YouTube Transcript RAG | チャンキング",
+    localeLabel: "言語",
+    eyebrowText: "YouTube Transcript RAG",
     heroTitle: "チャンキング戦略比較",
     heroSubtitle: "チャンキング戦略を並べて比較し、検索結果への影響を測定します。",
     videoHeading: "動画と戦略の選択",
@@ -92,10 +98,10 @@ const I18N = {
     paramTokenCount: "トークン数",
     paramOverlapFraction: "オーバーラップ率",
     navIngest: "取り込み",
-    navTldr: "TLDR スタジオ",
-    navQa: "Q&A スタジオ",
+    navTLDR: "TLDR スタジオ",
+    navQA: "Q&A スタジオ",
     navReviews: "レビュー",
-    navEval: "評価",
+    navEvaluation: "評価",
     navChunking: "チャンキング",
   },
 };
@@ -105,6 +111,9 @@ const I18N = {
 // ------------------------------------------------------------------
 const els = {
   localeSelect: document.getElementById("localeSelect"),
+  localeLabel: document.getElementById("localeLabel"),
+  homeBrandLink: document.getElementById("homeBrandLink"),
+  eyebrowText: document.getElementById("eyebrowText"),
   heroTitle: document.getElementById("heroTitle"),
   heroSubtitle: document.getElementById("heroSubtitle"),
   videoHeading: document.getElementById("videoHeading"),
@@ -155,7 +164,7 @@ const els = {
   mobileTldrNavText: document.getElementById("mobileTldrNavText"),
   mobileQaNavText: document.getElementById("mobileQaNavText"),
   mobileReviewsNavText: document.getElementById("mobileReviewsNavText"),
-  mobileEvalNavText: document.getElementById("mobileEvalNavText"),
+  mobileEvaluationNavText: document.getElementById("mobileEvaluationNavText"),
   mobileChunkingNavText: document.getElementById("mobileChunkingNavText"),
 };
 
@@ -539,6 +548,11 @@ function exportToEvaluation() {
 // i18n apply
 // ------------------------------------------------------------------
 function applyLocale() {
+  document.title = t("pageTitle");
+  if (els.localeLabel) els.localeLabel.textContent = t("localeLabel");
+  if (els.homeBrandLink) els.homeBrandLink.setAttribute("aria-label", t("navIngest"));
+  if (els.eyebrowText) els.eyebrowText.textContent = t("eyebrowText");
+
   const textKeys = [
     "heroTitle", "heroSubtitle", "videoHeading", "videoSelectLabel",
     "strategyALegend", "strategyBLegend", "strategyALabel", "strategyBLabel",
@@ -555,16 +569,16 @@ function applyLocale() {
 
   // nav labels
   setNavLabel(els.homeNavLink, t("navIngest"));
-  setNavLabel(els.tldrNavLink, t("navTldr"));
-  setNavLabel(els.qaNavLink, t("navQa"));
+  setNavLabel(els.tldrNavLink, t("navTLDR"));
+  setNavLabel(els.qaNavLink, t("navQA"));
   setNavLabel(els.reviewsNavLink, t("navReviews"));
-  setNavLabel(els.evaluationNavLink, t("navEval"));
+  setNavLabel(els.evaluationNavLink, t("navEvaluation"));
   setNavLabel(els.chunkingNavLink, t("navChunking"));
   if (els.mobileHomeNavText) els.mobileHomeNavText.textContent = t("navIngest");
-  if (els.mobileTldrNavText) els.mobileTldrNavText.textContent = t("navTldr");
-  if (els.mobileQaNavText) els.mobileQaNavText.textContent = t("navQa");
+  if (els.mobileTldrNavText) els.mobileTldrNavText.textContent = t("navTLDR");
+  if (els.mobileQaNavText) els.mobileQaNavText.textContent = t("navQA");
   if (els.mobileReviewsNavText) els.mobileReviewsNavText.textContent = t("navReviews");
-  if (els.mobileEvalNavText) els.mobileEvalNavText.textContent = t("navEval");
+  if (els.mobileEvaluationNavText) els.mobileEvaluationNavText.textContent = t("navEvaluation");
   if (els.mobileChunkingNavText) els.mobileChunkingNavText.textContent = t("navChunking");
 
   // re-render strategy param labels
