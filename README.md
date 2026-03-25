@@ -1,7 +1,5 @@
 # YouTube Transcript RAG
 
-If you see an `AGENTS.md` file in this repo, it documents AI/agent-assisted development conventions and can be ignored for normal setup, review, and runtime usage.
-
 Local-first YouTube transcript retrieval and evaluation platform.
 
 This project lets you ingest YouTube transcripts, run semantic retrieval (`hybrid` / `dense` / `lexical`), and evaluate ranking quality with a dedicated local Evaluation workspace. It currently supports English (EN-US) and Japanese (JP) only, with a built-in UI Language switch for EN/JP.
