@@ -1,6 +1,7 @@
 """Tests for local preview summary generation and retrieval upgrades."""
 
 import importlib
+import json
 import os
 import sys
 import tempfile
@@ -371,6 +372,359 @@ def test_save_ask_history_trims_to_recent_limit():
     assert len(rows) == local_api.ASK_HISTORY_LIMIT_PER_VIDEO
     assert rows[0]["question"] == "Question 24"
     assert rows[-1]["question"] == "Question 5"
+
+
+def _make_answer_sources():
+    return [
+        {
+            "video_id": "vid1",
+            "video_title": "Demo Video",
+            "video_url": "https://www.youtube.com/watch?v=vid1",
+            "language": "en",
+            "chunk_index": 2,
+            "text": "The speaker says the product runs fully offline and stores runtime data locally.",
+            "start": 65.0,
+            "end": 88.0,
+            "url": "https://www.youtube.com/watch?v=vid1&t=65s",
+            "rank": 1,
+            "score": 0.91,
+            "dense_score": 0.87,
+            "lexical_score": 6.3,
+        },
+        {
+            "video_id": "vid2",
+            "video_title": "Demo Video 2",
+            "video_url": "https://www.youtube.com/watch?v=vid2",
+            "language": "en",
+            "chunk_index": 0,
+            "text": "A later excerpt says the local preview is portfolio-friendly and optimized for explainability.",
+            "start": 12.0,
+            "end": 30.0,
+            "url": "https://www.youtube.com/watch?v=vid2&t=12s",
+            "rank": 2,
+            "score": 0.84,
+            "dense_score": 0.8,
+            "lexical_score": 5.1,
+        },
+    ]
+
+
+def test_ask_with_sources_returns_stable_grounded_answer_payload():
+    service = _make_service(enabled=False)
+    service._llm_text_response = lambda **kwargs: {
+        "provider": "chatgpt",
+        "model": "gpt-4o-mini",
+        "text": json.dumps(
+            {
+                "status": "answered",
+                "confidence": "high",
+                "answer": "The app is designed to run locally and keep runtime data on the local filesystem [1]. It is also positioned as a portfolio-friendly, explainable demo experience [2].",
+                "citations": [
+                    {
+                        "citation_id": 1,
+                        "reason": "This excerpt states the app runs locally and stores local runtime data.",
+                    },
+                    {
+                        "citation_id": 2,
+                        "reason": "This excerpt frames the project as portfolio-friendly and explainable.",
+                    },
+                ],
+                "warnings": [],
+                "has_conflict": False,
+            }
+        ),
+    }
+
+    result = service.ask_with_sources(
+        "Does the app run locally and present itself as a portfolio-friendly demo?",
+        _make_answer_sources(),
+        provider="chatgpt",
+    )
+
+    assert result["status"] == "answered"
+    assert result["confidence"] == "medium"
+    assert result["provider"] == "chatgpt"
+    assert result["model"] == "gpt-4o-mini"
+    assert result["sources"][0]["video_id"] == "vid1"
+    assert result["retrieved_chunks"][0]["timestamp_range_label"] == "1:05-1:28"
+    assert result["retrieved_chunks"][0]["url"].endswith("&t=65s")
+    assert result["retrieved_chunks"][0]["video_url"].endswith("watch?v=vid1")
+    assert result["citations"][0]["citation_id"] == 1
+    assert result["citations"][0]["video_title"] == "Demo Video"
+    assert result["citations"][0]["timestamp_label"] == "1:05"
+    assert result["citations"][0]["timestamp_range_label"] == "1:05-1:28"
+    assert result["citations"][0]["chunk_id"] == "vid1:2"
+    assert result["citations"][0]["url"].endswith("&t=65s")
+    assert "locally" in result["answer"]
+
+
+def test_ask_with_sources_returns_insufficient_evidence_when_no_sources():
+    service = _make_service(enabled=False)
+
+    result = service.ask_with_sources(
+        "What does the transcript say?",
+        [],
+        provider="chatgpt",
+    )
+
+    assert result["status"] == "insufficient_evidence"
+    assert result["confidence"] == "low"
+    assert result["citations"] == []
+    assert result["retrieved_chunks"] == []
+    assert result["sources"] == []
+    assert "Insufficient transcript evidence" in result["answer"]
+
+
+def test_ask_with_sources_refuses_weak_nonempty_evidence_without_llm_call():
+    service = _make_service(enabled=False)
+    llm_called = {"value": False}
+
+    def _unexpected_llm_call(**kwargs):
+        llm_called["value"] = True
+        raise AssertionError("LLM should not be called for weak evidence.")
+
+    service._llm_text_response = _unexpected_llm_call
+    weak_sources = [
+        {
+            "video_id": "vid1",
+            "video_title": "Demo Video",
+            "video_url": "https://www.youtube.com/watch?v=vid1",
+            "language": "en",
+            "chunk_index": 9,
+            "text": "This excerpt talks about local setup steps and startup logs.",
+            "start": 140.0,
+            "end": 168.0,
+            "url": "https://www.youtube.com/watch?v=vid1&t=140s",
+            "rank": 1,
+            "score": 0.58,
+            "dense_score": 0.58,
+        }
+    ]
+
+    result = service.ask_with_sources(
+        "What is the refund policy?",
+        weak_sources,
+        provider="chatgpt",
+        retrieval_mode="dense",
+    )
+
+    assert llm_called["value"] is False
+    assert result["status"] == "insufficient_evidence"
+    assert result["confidence"] == "low"
+    assert result["citations"] == []
+    assert result["retrieved_chunks"][0]["url"].endswith("&t=140s")
+    assert result["retrieved_chunks"][0]["video_url"].endswith("watch?v=vid1")
+    assert any(
+        "weak" in warning.lower() or "thin" in warning.lower()
+        for warning in result["warnings"]
+    )
+
+
+def test_ask_with_sources_allows_strong_single_chunk_but_caps_confidence():
+    service = _make_service(enabled=False)
+    service._llm_text_response = lambda **kwargs: {
+        "provider": "chatgpt",
+        "model": "gpt-4o-mini",
+        "text": json.dumps(
+            {
+                "status": "answered",
+                "confidence": "high",
+                "answer": "The product runs fully offline and stores runtime data locally [1].",
+                "citations": [
+                    {
+                        "citation_id": 1,
+                        "reason": "The excerpt directly states the offline/local runtime behavior.",
+                    }
+                ],
+                "warnings": [],
+                "has_conflict": False,
+            }
+        ),
+    }
+    single_source = [_make_answer_sources()[0]]
+
+    result = service.ask_with_sources(
+        "Does the product run fully offline and keep runtime data local?",
+        single_source,
+        provider="chatgpt",
+        retrieval_mode="dense",
+    )
+
+    assert result["status"] == "answered"
+    assert result["confidence"] == "medium"
+    assert len(result["citations"]) == 1
+    assert any("single excerpt" in warning.lower() for warning in result["warnings"])
+
+
+def test_ask_with_sources_surfaces_conflicting_evidence_warning():
+    service = _make_service(enabled=False)
+    service._llm_text_response = lambda **kwargs: {
+        "provider": "chatgpt",
+        "model": "gpt-4o-mini",
+        "text": json.dumps(
+            {
+                "status": "answered",
+                "confidence": "medium",
+                "answer": "The retrieved excerpts disagree about the rollout timing [1] [2].",
+                "citations": [
+                    {
+                        "citation_id": 1,
+                        "reason": "One excerpt says the rollout already happened.",
+                    },
+                    {
+                        "citation_id": 2,
+                        "reason": "Another excerpt says it is still upcoming.",
+                    },
+                ],
+                "warnings": ["The timeline is inconsistent across retrieved chunks."],
+                "has_conflict": True,
+            }
+        ),
+    }
+
+    result = service.ask_with_sources(
+        "When did the rollout happen?",
+        _make_answer_sources(),
+        provider="chatgpt",
+    )
+
+    assert result["status"] == "answered"
+    assert result["confidence"] == "low"
+    assert any("conflicting" in warning.lower() for warning in result["warnings"])
+
+
+def test_ask_with_sources_handles_provider_unavailable_gracefully():
+    service = _make_service(enabled=False)
+
+    def _raise_unconfigured_provider(**kwargs):
+        raise ValueError("OPENAI_API_KEY environment variable is not set.")
+
+    service._llm_text_response = _raise_unconfigured_provider
+
+    result = service.ask_with_sources(
+        "Does the product run fully offline and keep runtime data local?",
+        _make_answer_sources(),
+        provider="chatgpt",
+    )
+
+    assert result["status"] == "error"
+    assert result["confidence"] == "low"
+    assert result["citations"] == []
+    assert result["retrieved_chunks"]
+    assert "currently unavailable" in result["answer"]
+    assert "OPENAI_API_KEY" in result["warnings"][0]
+
+
+def test_answer_route_alias_returns_grounded_answer_payload(monkeypatch):
+    saved_history = {}
+
+    class StubService:
+        def retrieve(self, query, k, language, retrieval_mode, video_id=None):
+            assert query == "What is the product intent?"
+            assert k == 4
+            assert retrieval_mode == "hybrid"
+            assert video_id == "vid1"
+            return {
+                "retrieval_mode": "hybrid",
+                "details": {"fusion": "rrf"},
+                "results": _make_answer_sources(),
+            }
+
+        def ask_with_sources(
+            self, question, sources, provider, retrieval_mode="hybrid"
+        ):
+            assert question == "What is the product intent?"
+            assert provider == "chatgpt"
+            assert len(sources) == 2
+            assert retrieval_mode == "hybrid"
+            return {
+                "status": "answered",
+                "answer": "It is a local-first, explainable demo [1] [2].",
+                "confidence": "high",
+                "citations": [
+                    {
+                        "citation_id": 1,
+                        "video_id": "vid1",
+                        "video_title": "Demo Video",
+                        "chunk_id": "vid1:2",
+                        "start_seconds": 65.0,
+                        "end_seconds": 88.0,
+                        "timestamp_label": "1:05",
+                        "timestamp_range_label": "1:05-1:28",
+                        "snippet": "The speaker says the product runs fully offline...",
+                        "reason": "States the local-first behavior.",
+                        "url": "https://www.youtube.com/watch?v=vid1&t=65s",
+                    }
+                ],
+                "retrieved_chunks": [
+                    {
+                        "video_id": "vid1",
+                        "video_title": "Demo Video",
+                        "chunk_index": 2,
+                        "start_seconds": 65.0,
+                        "end_seconds": 88.0,
+                        "timestamp_label": "1:05",
+                        "timestamp_range_label": "1:05-1:28",
+                        "video_url": "https://www.youtube.com/watch?v=vid1",
+                        "url": "https://www.youtube.com/watch?v=vid1&t=65s",
+                        "score": 0.91,
+                        "snippet": "The speaker says the product runs fully offline...",
+                    }
+                ],
+                "warnings": [],
+                "sources": sources,
+                "provider": "chatgpt",
+                "model": "gpt-4o-mini",
+            }
+
+        def save_ask_history(self, payload):
+            saved_history.update(payload)
+            return payload
+
+    original_service = local_api.SERVICE
+    try:
+        local_api.SERVICE = StubService()
+
+        class FakeHandler:
+            def __init__(self, path, body):
+                self.path = path
+                self._body = body
+                self.response_status = None
+                self.response_payload = None
+
+            def _read_json_body(self):
+                return self._body
+
+            def _json(self, payload, status=200):
+                self.response_status = status
+                self.response_payload = payload
+
+        handler = FakeHandler(
+            "/v1/answer",
+            {
+                "query": "What is the product intent?",
+                "top_k": 4,
+                "retrieval_mode": "hybrid",
+                "provider": "chatgpt",
+                "video_id": "vid1",
+            },
+        )
+        local_api.Handler.do_POST(handler)
+        payload = handler.response_payload
+    finally:
+        local_api.SERVICE = original_service
+
+    assert handler.response_status == 200
+    assert payload["ok"] is True
+    assert payload["question"] == "What is the product intent?"
+    assert payload["k"] == 4
+    assert payload["status"] == "answered"
+    assert payload["result_count"] == 2
+    assert payload["citations"][0]["citation_id"] == 1
+    assert payload["retrieval_details"]["fusion"] == "rrf"
+    assert saved_history["status"] == "answered"
+    assert saved_history["confidence"] == "high"
+    assert saved_history["video_id"] == "vid1"
 
 
 def test_summarize_video_transcript_returns_five_ranked_items():

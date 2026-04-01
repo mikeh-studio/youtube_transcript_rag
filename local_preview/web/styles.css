@@ -706,6 +706,42 @@ th {
   color: var(--text);
 }
 
+.ask-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.8rem;
+  align-items: center;
+}
+
+.ask-status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.2rem 0.58rem;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  font-size: 0.73rem;
+  font-weight: 700;
+}
+
+.ask-status-pill.ok {
+  border-color: rgba(79, 199, 122, 0.52);
+  background: rgba(46, 125, 50, 0.2);
+  color: #b6f2bf;
+}
+
+.ask-status-pill.error {
+  border-color: rgba(225, 102, 102, 0.56);
+  background: rgba(178, 58, 58, 0.18);
+  color: #ffc2c2;
+}
+
+.ask-status-pill.pending {
+  border-color: rgba(255, 197, 102, 0.48);
+  background: rgba(126, 96, 24, 0.22);
+  color: #f5ddb1;
+}
+
 .search-summary code {
   color: #8ab4f8;
 }
@@ -816,6 +852,67 @@ th {
   white-space: pre-wrap;
 }
 
+.ask-answer-answered {
+  border-color: rgba(77, 179, 255, 0.35);
+  background:
+    linear-gradient(180deg, rgba(37, 84, 130, 0.12) 0%, rgba(22, 22, 22, 0.92) 100%),
+    var(--surface-2);
+}
+
+.ask-answer-insufficient_evidence {
+  border-color: rgba(255, 196, 94, 0.32);
+  background:
+    linear-gradient(180deg, rgba(120, 92, 22, 0.16) 0%, rgba(22, 22, 22, 0.92) 100%),
+    var(--surface-2);
+}
+
+.ask-answer-error {
+  border-color: rgba(235, 102, 102, 0.38);
+  background:
+    linear-gradient(180deg, rgba(111, 28, 28, 0.18) 0%, rgba(22, 22, 22, 0.92) 100%),
+    var(--surface-2);
+}
+
+.ask-trust-note {
+  margin-top: 0.55rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid rgba(101, 191, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(36, 58, 77, 0.22);
+  color: #cfe8fb;
+  font-size: 0.78rem;
+}
+
+.ask-warning-list {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.55rem;
+}
+
+.ask-warning {
+  border-left: 3px solid #f0bb59;
+  padding: 0.42rem 0.68rem;
+  border-radius: 8px;
+  background: rgba(108, 81, 18, 0.18);
+  color: #f0d9a8;
+  font-size: 0.8rem;
+}
+
+.ask-evidence-header {
+  margin-top: 0.75rem;
+  margin-bottom: 0.55rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.ask-evidence-title {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
 .summary-card .search-snippet {
   white-space: pre-wrap;
 }
@@ -893,6 +990,24 @@ th {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.45rem;
+}
+
+.citation-reason {
+  margin: -0.12rem 0 0.58rem;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.citation-link {
+  color: #a8dbff;
+  font-size: 0.76rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.citation-link:hover {
+  text-decoration: underline;
 }
 
 .search-link-btn {

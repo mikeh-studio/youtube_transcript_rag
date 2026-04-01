@@ -50,14 +50,20 @@ if load_dotenv is not None:
     load_dotenv(ROOT_DIR / ".env")
     load_dotenv(ROOT_DIR / ".env.local", override=True)
 
-from multilingual.rag_engine import (  # noqa: E402
-    CONTEXT_LABELS,
-    SYSTEM_PROMPTS,
-    RAGEngine,
-    _detect_dominant_language,
-    _format_context,
-)
+from multilingual.rag_engine import RAGEngine  # noqa: E402
 from multilingual.text_processing import LANGUAGE_CONFIG  # noqa: E402
+from grounded_answer import (  # noqa: E402
+    ANSWER_CONFIDENCE_LEVELS,
+    ANSWER_STATUSES,
+    assess_grounded_answer_evidence,
+    build_citation_catalog,
+    build_grounded_answer_messages,
+    build_retrieved_chunks_payload,
+    cap_confidence,
+    default_error_answer,
+    default_insufficient_answer,
+    normalize_grounded_answer_payload,
+)
 
 
 VIDEO_ID_RE = re.compile(r"[a-zA-Z0-9_-]{11}")
@@ -71,7 +77,6 @@ ASK_PROVIDERS = {"chatgpt", "claude"}
 DEFAULT_ASK_PROVIDER = "chatgpt"
 ASK_MAX_TOKENS = 2000
 ASK_TEMPERATURE = 0.5
-ASK_TONE_INSTRUCTION = "Use a light, engaging tone without inventing facts."
 FEEDBACK_ALPHA_QUERY = 0.30
 FEEDBACK_BETA_GLOBAL = 0.10
 FEEDBACK_MAX_ADJUST = 0.35
@@ -97,13 +102,6 @@ SUMMARY_CACHE_VERSION = 1
 ASK_HISTORY_LIMIT_PER_VIDEO = 20
 ASK_HISTORY_LIST_LIMIT_MAX = 100
 LOCALHOST_CORS_HOSTS = {"127.0.0.1", "localhost", "::1"}
-
-ASK_STYLE_INSTRUCTION = (
-    "Answer in the same language as the user question. "
-    "Use only provided excerpts. "
-    "For every factual claim, include an inline citation like [Video Title mm:ss-mm:ss]. "
-    "If evidence is missing, explicitly say so."
-)
 
 
 def now_iso() -> str:
@@ -456,6 +454,54 @@ class LocalRAGService:
             )
         return normalized
 
+    @staticmethod
+    def _normalize_ask_history_citations(citations: List[dict]) -> List[dict]:
+        normalized = []
+        for row in citations or []:
+            if not isinstance(row, dict):
+                continue
+            video_id = str(row.get("video_id") or "").strip()
+            if not video_id:
+                continue
+            start_seconds = float(row.get("start_seconds", row.get("start", 0.0)))
+            end_seconds = float(row.get("end_seconds", row.get("end", start_seconds)))
+            citation_id = row.get("citation_id")
+            try:
+                normalized_citation_id = int(citation_id)
+            except (TypeError, ValueError):
+                normalized_citation_id = len(normalized) + 1
+            chunk_index = row.get("chunk_index")
+            try:
+                normalized_chunk_index = (
+                    int(chunk_index)
+                    if chunk_index is not None and str(chunk_index).strip() != ""
+                    else None
+                )
+            except (TypeError, ValueError):
+                normalized_chunk_index = None
+            normalized.append(
+                {
+                    "citation_id": normalized_citation_id,
+                    "video_id": video_id,
+                    "video_title": str(row.get("video_title") or video_id).strip(),
+                    "chunk_id": str(
+                        row.get("chunk_id")
+                        or f"{video_id}:{int(start_seconds * 1000)}:{int(end_seconds * 1000)}"
+                    ).strip(),
+                    "chunk_index": normalized_chunk_index,
+                    "start_seconds": start_seconds,
+                    "end_seconds": end_seconds,
+                    "timestamp_label": str(row.get("timestamp_label") or "").strip(),
+                    "timestamp_range_label": str(
+                        row.get("timestamp_range_label") or ""
+                    ).strip(),
+                    "snippet": str(row.get("snippet") or "").strip(),
+                    "reason": str(row.get("reason") or "").strip(),
+                    "url": str(row.get("url") or "").strip(),
+                }
+            )
+        return normalized
+
     @classmethod
     def _ask_history_source_fingerprint(cls, sources: List[dict]) -> str:
         payload = [
@@ -493,6 +539,7 @@ class LocalRAGService:
             fallback=normalize_language(video.get("language"), fallback="ja"),
         )
         sources = self._normalize_ask_history_sources(row.get("sources") or [])
+        citations = self._normalize_ask_history_citations(row.get("citations") or [])
         chunking = (
             self.engine.library.get_video_chunking_metadata(scoped_video_id)
             if hasattr(self.engine.library, "get_video_chunking_metadata")
@@ -517,8 +564,22 @@ class LocalRAGService:
             .strip()
             .lower(),
             "model": str(row.get("model") or "").strip(),
+            "status": str(row.get("status") or "answered").strip().lower()
+            if str(row.get("status") or "answered").strip().lower() in ANSWER_STATUSES
+            else "answered",
+            "confidence": str(row.get("confidence") or "low").strip().lower()
+            if str(row.get("confidence") or "low").strip().lower()
+            in ANSWER_CONFIDENCE_LEVELS
+            else "low",
             "answer": answer,
             "sources": sources,
+            "citations": citations,
+            "warnings": [
+                str(item).strip()
+                for item in (row.get("warnings") or [])
+                if str(item).strip()
+            ],
+            "retrieved_chunks": deepcopy(row.get("retrieved_chunks") or []),
             "retrieval_details": deepcopy(row.get("retrieval_details") or {}),
             "created_at": str(row.get("created_at") or now_iso()).strip(),
             "chunking_version": str(
@@ -1038,13 +1099,15 @@ class LocalRAGService:
 
         chunk_list = []
         for i, c in enumerate(chunks):
-            chunk_list.append({
-                "index": i,
-                "start": c["start"],
-                "end": c["end"],
-                "raw_text": c["raw_text"],
-                "char_count": len(c["raw_text"]),
-            })
+            chunk_list.append(
+                {
+                    "index": i,
+                    "start": c["start"],
+                    "end": c["end"],
+                    "raw_text": c["raw_text"],
+                    "char_count": len(c["raw_text"]),
+                }
+            )
 
         char_counts = [c["char_count"] for c in chunk_list] or [0]
         return {
@@ -1052,13 +1115,17 @@ class LocalRAGService:
             "chunks": chunk_list,
             "stats": {
                 "total_chars": sum(char_counts),
-                "avg_chunk_chars": round(sum(char_counts) / max(1, len(char_counts)), 1),
+                "avg_chunk_chars": round(
+                    sum(char_counts) / max(1, len(char_counts)), 1
+                ),
                 "min_chunk_chars": min(char_counts),
                 "max_chunk_chars": max(char_counts),
             },
         }
 
-    def search_with_chunking(self, video_id, strategy, params, query, k, language_override):
+    def search_with_chunking(
+        self, video_id, strategy, params, query, k, language_override
+    ):
         """Re-chunk, embed, build temp FAISS index, search, return ranked results."""
         import faiss as _faiss
 
@@ -1098,14 +1165,16 @@ class LocalRAGService:
             if idx < 0:
                 continue
             c = chunks[idx]
-            results.append({
-                "rank": rank + 1,
-                "score": round(float(score), 4),
-                "chunk_index": int(idx),
-                "start": c["start"],
-                "end": c["end"],
-                "text": c["raw_text"],
-            })
+            results.append(
+                {
+                    "rank": rank + 1,
+                    "score": round(float(score), 4),
+                    "chunk_index": int(idx),
+                    "start": c["start"],
+                    "end": c["end"],
+                    "text": c["raw_text"],
+                }
+            )
 
         return {
             "chunk_count": len(chunks),
@@ -1120,18 +1189,27 @@ class LocalRAGService:
         if strategy == "time":
             window = max(10, min(int(params.get("window", 60)), 300))
             overlap = max(0, min(int(params.get("overlap", 15)), window - 1))
-            return processor.chunk_by_time_with_overlap(lines, window=window, overlap=overlap)
+            return processor.chunk_by_time_with_overlap(
+                lines, window=window, overlap=overlap
+            )
         elif strategy == "sentence":
             max_chars = max(100, min(int(params.get("max_chars", 1000)), 5000))
             return processor.chunk_by_sentence_boundary(lines, max_chars=max_chars)
         elif strategy == "token":
             token_count = max(32, min(int(params.get("token_count", 256)), 1024))
-            overlap_fraction = max(0.0, min(float(params.get("overlap_fraction", 0.25)), 0.5))
+            overlap_fraction = max(
+                0.0, min(float(params.get("overlap_fraction", 0.25)), 0.5)
+            )
             return processor.chunk_by_token_count(
-                lines, token_count=token_count, overlap_fraction=overlap_fraction, language=language
+                lines,
+                token_count=token_count,
+                overlap_fraction=overlap_fraction,
+                language=language,
             )
         else:
-            raise ValueError(f"Unknown strategy: {strategy}. Must be one of: time, sentence, token")
+            raise ValueError(
+                f"Unknown strategy: {strategy}. Must be one of: time, sentence, token"
+            )
 
     def save_search_feedback(self, payload: dict) -> dict:
         query = str(payload.get("query") or "").strip()
@@ -2919,49 +2997,117 @@ class LocalRAGService:
         return response
 
     def ask_with_sources(
-        self, question: str, sources: List[dict], provider: str = DEFAULT_ASK_PROVIDER
+        self,
+        question: str,
+        sources: List[dict],
+        provider: str = DEFAULT_ASK_PROVIDER,
+        retrieval_mode: str = "hybrid",
     ) -> dict:
         scoped_provider = str(provider or DEFAULT_ASK_PROVIDER).strip().lower()
         if scoped_provider not in ASK_PROVIDERS:
             raise ValueError("provider must be one of: chatgpt, claude")
 
+        answer_language = self._infer_query_language(question)
         selected_model = (
             self.openai_model if scoped_provider == "chatgpt" else self.engine.model
         )
+        retrieved_chunks = build_retrieved_chunks_payload(sources)
+        citations = build_citation_catalog(sources)
+
         if not sources:
             return {
-                "answer": "No videos in the library. Please add videos first.",
+                "status": "insufficient_evidence",
+                "answer": default_insufficient_answer(answer_language),
+                "confidence": "low",
+                "citations": [],
+                "retrieved_chunks": [],
+                "warnings": [
+                    "No transcript chunks matched the question."
+                    if answer_language != "ja"
+                    else "質問に合う書き起こしチャンクが見つかりませんでした。"
+                ],
                 "sources": [],
                 "provider": scoped_provider,
                 "model": selected_model,
             }
 
-        dominant_language = _detect_dominant_language(sources)
-        system_prompt = SYSTEM_PROMPTS.get(dominant_language, SYSTEM_PROMPTS["en"])
-        system_prompt = (
-            f"{system_prompt}\n"
-            f"- {ASK_TONE_INSTRUCTION}\n"
-            f"- {ASK_STYLE_INSTRUCTION}"
+        evidence = assess_grounded_answer_evidence(
+            question=question,
+            rows=sources,
+            retrieval_mode=retrieval_mode,
+            tokenize_fn=self._tokenize_for_lexical,
+            answer_language=answer_language,
         )
-        labels = CONTEXT_LABELS.get(dominant_language, CONTEXT_LABELS["en"])
-        context = _format_context(sources)
-        user_message = (
-            f"{labels['context']}:\n\n{context}\n\n{labels['question']}: {question}"
-        )
-        llm = self._llm_text_response(
-            provider=scoped_provider,
-            system_prompt=system_prompt,
-            user_message=user_message,
-            max_tokens=ASK_MAX_TOKENS,
-            temperature=ASK_TEMPERATURE,
-        )
-        answer = str(llm["text"]).strip()
+        if not evidence["sufficient"]:
+            return {
+                "status": "insufficient_evidence",
+                "answer": default_insufficient_answer(answer_language),
+                "confidence": "low",
+                "citations": [],
+                "retrieved_chunks": retrieved_chunks,
+                "warnings": list(evidence["warnings"]),
+                "sources": sources,
+                "provider": scoped_provider,
+                "model": selected_model,
+            }
 
+        system_prompt, user_message = build_grounded_answer_messages(
+            question=question,
+            citations=citations,
+            answer_language=answer_language,
+        )
+
+        try:
+            llm = self._llm_text_response(
+                provider=scoped_provider,
+                system_prompt=system_prompt,
+                user_message=user_message,
+                max_tokens=ASK_MAX_TOKENS,
+                temperature=ASK_TEMPERATURE,
+            )
+            parsed = _extract_json_payload(llm["text"])
+            if not isinstance(parsed, dict):
+                raise ValueError("Grounded answer response must be a JSON object.")
+            normalized = normalize_grounded_answer_payload(
+                raw_payload=parsed,
+                citations=citations,
+                answer_language=answer_language,
+            )
+            model_name = llm["model"]
+        except Exception as exc:
+            return {
+                "status": "error",
+                "answer": default_error_answer(answer_language),
+                "confidence": "low",
+                "citations": [],
+                "retrieved_chunks": retrieved_chunks,
+                "warnings": [str(exc)],
+                "sources": sources,
+                "provider": scoped_provider,
+                "model": selected_model,
+            }
+
+        warnings = list(evidence["warnings"])
+        warnings.extend(
+            warning for warning in normalized["warnings"] if warning not in warnings
+        )
+        confidence = cap_confidence(
+            normalized["confidence"], evidence["confidence_cap"]
+        )
+
+        # Keep `sources` for compatibility with the existing local preview UI and history.
         return {
-            "answer": answer,
+            "status": normalized["status"],
+            "answer": normalized["answer"],
+            "confidence": confidence
+            if confidence in ANSWER_CONFIDENCE_LEVELS
+            else "low",
+            "citations": normalized["citations"],
+            "retrieved_chunks": retrieved_chunks,
+            "warnings": warnings,
             "sources": sources,
             "provider": scoped_provider,
-            "model": llm["model"],
+            "model": model_name,
         }
 
     def ingest(self, *, url: str, mode: str, language: str, force: bool):
@@ -3545,7 +3691,11 @@ class Handler(BaseHTTPRequestHandler):
                 k = max(1, min(int(body.get("k", 5)), 12))
                 language = body.get("language")
                 result = SERVICE.search_with_chunking(
-                    video_id, strategy, params, query, k,
+                    video_id,
+                    strategy,
+                    params,
+                    query,
+                    k,
                     normalize_language(language) if language else None,
                 )
                 self._json({"ok": True, **result})
@@ -3601,8 +3751,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
-            if path == "/v1/ask":
-                question = (body.get("question") or "").strip()
+            if path in {"/v1/ask", "/v1/answer"}:
+                question = (body.get("question") or body.get("query") or "").strip()
                 if not question:
                     self._json(
                         {
@@ -3615,7 +3765,7 @@ class Handler(BaseHTTPRequestHandler):
                         400,
                     )
                     return
-                k = max(1, min(int(body.get("k", 5)), 12))
+                k = max(1, min(int(body.get("top_k", body.get("k", 5))), 12))
                 language = body.get("language")
                 video_id = str(body.get("video_id") or "").strip() or None
                 retrieval_mode = (
@@ -3658,7 +3808,10 @@ class Handler(BaseHTTPRequestHandler):
                     video_id=video_id,
                 )
                 result = SERVICE.ask_with_sources(
-                    question, retrieval["results"], provider=provider
+                    question,
+                    retrieval["results"],
+                    provider=provider,
+                    retrieval_mode=retrieval["retrieval_mode"],
                 )
                 if video_id:
                     SERVICE.save_ask_history(
@@ -3670,7 +3823,12 @@ class Handler(BaseHTTPRequestHandler):
                             "retrieval_mode": retrieval["retrieval_mode"],
                             "provider": result["provider"],
                             "model": result["model"],
+                            "status": result["status"],
+                            "confidence": result["confidence"],
                             "answer": result["answer"],
+                            "citations": result["citations"],
+                            "warnings": result["warnings"],
+                            "retrieved_chunks": result["retrieved_chunks"],
                             "sources": result["sources"],
                             "retrieval_details": retrieval["details"],
                         }
@@ -3678,9 +3836,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(
                     {
                         "ok": True,
+                        "question": question,
+                        "k": k,
                         "video_id": video_id,
                         "retrieval_mode": retrieval["retrieval_mode"],
                         "retrieval_details": retrieval["details"],
+                        "result_count": len(retrieval["results"]),
                         **result,
                     }
                 )
