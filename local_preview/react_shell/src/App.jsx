@@ -70,6 +70,12 @@ function formatSeconds(value) {
   return `${minutes}:${String(remaining).padStart(2, "0")}`;
 }
 
+function formatRange(startValue, endValue) {
+  const start = Number(startValue || 0);
+  const end = Number(endValue ?? startValue ?? 0);
+  return `${formatSeconds(start)} - ${formatSeconds(end)}`;
+}
+
 function extractVideoId(value) {
   const raw = String(value || "").trim();
   if (/^[a-zA-Z0-9_-]{11}$/.test(raw)) {
@@ -87,6 +93,29 @@ function extractVideoId(value) {
     }
   }
   return null;
+}
+
+function answerStatusLabel(status) {
+  if (status === "answered") {
+    return "Answered from evidence";
+  }
+  if (status === "insufficient_evidence") {
+    return "Insufficient evidence";
+  }
+  if (status === "error") {
+    return "Answer unavailable";
+  }
+  return "Answer";
+}
+
+function answerStatusTone(status) {
+  if (status === "answered") {
+    return "ok";
+  }
+  if (status === "error") {
+    return "error";
+  }
+  return "pending";
 }
 
 function prefersReducedMotion() {
@@ -463,6 +492,7 @@ function QAStudioPage() {
   const [askLoading, setAskLoading] = useState(false);
   const [askResponse, setAskResponse] = useState(null);
   const [askError, setAskError] = useState("");
+  const [showEvidence, setShowEvidence] = useState(true);
   const [reviewStateByKey, setReviewStateByKey] = useState({});
   const [reviewPendingByKey, setReviewPendingByKey] = useState({});
 
@@ -484,8 +514,8 @@ function QAStudioPage() {
         return `${videoId}:${Math.trunc(parsed)}`;
       }
     }
-    const start = Number(row?.start || 0);
-    const end = Number(row?.end || 0);
+    const start = Number((row?.start_seconds ?? row?.start) || 0);
+    const end = Number((row?.end_seconds ?? row?.end ?? row?.start_seconds ?? row?.start) || 0);
     return `${videoId}:${start.toFixed(3)}-${end.toFixed(3)}`;
   }
 
@@ -500,7 +530,7 @@ function QAStudioPage() {
     }
     setPlayerState({
       videoId,
-      start: Number(row?.start || 0),
+      start: Number((row?.start_seconds ?? row?.start) || 0),
       title: row?.video_title || videoId,
     });
   }
@@ -531,8 +561,8 @@ function QAStudioPage() {
           label,
           video_id: videoId,
           chunk_index: row?.chunk_index ?? null,
-          start: Number(row?.start || 0),
-          end: Number(row?.end || 0),
+          start: Number((row?.start_seconds ?? row?.start) || 0),
+          end: Number((row?.end_seconds ?? row?.end ?? row?.start_seconds ?? row?.start) || 0),
           url: row?.url || "",
           video_title: row?.video_title || "",
           language: row?.language || "",
@@ -615,12 +645,22 @@ function QAStudioPage() {
         },
       });
       setAskResponse(payload);
+      setShowEvidence(true);
     } catch (error) {
       setAskError(String(error?.message || error));
     } finally {
       setAskLoading(false);
     }
   }
+
+  const answerStatus = String(askResponse?.status || "").trim();
+  const answerTone = answerStatusTone(answerStatus);
+  const answerEvidence = Array.isArray(askResponse?.citations) && askResponse.citations.length
+    ? askResponse.citations
+    : Array.isArray(askResponse?.retrieved_chunks)
+      ? askResponse.retrieved_chunks
+      : [];
+  const answerWarnings = Array.isArray(askResponse?.warnings) ? askResponse.warnings : [];
 
   return (
     <>
@@ -774,12 +814,45 @@ function QAStudioPage() {
         {askError ? <div className="search-summary">Ask failed: {askError}</div> : null}
         {askResponse ? (
           <>
-            <div className="search-summary">
-              {(askResponse.sources || []).length} source chunk(s), provider: {askResponse.provider}, model: {askResponse.model}
+            <div className="search-summary ask-summary-row">
+              <span className={`ask-status-pill ${answerTone}`} data-testid="answer-status">
+                {answerStatusLabel(answerStatus)}
+              </span>
+              <span>{(askResponse.citations || []).length} citation(s)</span>
+              <span>confidence: {askResponse.confidence || "low"}</span>
+              <span>provider: {askResponse.provider}</span>
+              <span>model: {askResponse.model}</span>
             </div>
-            <article className="ask-answer">{askResponse.answer || "-"}</article>
-            <div className="search-cards">
-              {(askResponse.sources || []).map((row, index) => {
+            <div className="ask-trust-note">
+              Answer generated from retrieved transcript evidence. May be incomplete if transcript coverage is limited.
+            </div>
+            <article
+              className={`ask-answer ask-answer-${answerStatus || "default"}`}
+              data-testid="answer-panel"
+            >
+              {askResponse.answer || "-"}
+            </article>
+            {answerWarnings.length ? (
+              <div className="ask-warning-list">
+                {answerWarnings.map((warning, index) => (
+                  <div className="ask-warning" key={`warning-${index}`}>{warning}</div>
+                ))}
+              </div>
+            ) : null}
+            <div className="ask-evidence-header">
+              <h3 className="ask-evidence-title">Supporting evidence</h3>
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={() => setShowEvidence((current) => !current)}
+                data-testid="answer-evidence-toggle"
+              >
+                {showEvidence ? "Hide supporting evidence" : "Show supporting evidence"}
+              </button>
+            </div>
+            {showEvidence ? (
+              <div className="search-cards">
+                {answerEvidence.map((row, index) => {
                 const key = resultIdentity(row);
                 const reviewState = key ? reviewStateByKey[key] : null;
                 const pending = !!(key && reviewPendingByKey[key]);
@@ -787,21 +860,33 @@ function QAStudioPage() {
                 const statusClass = reviewState?.tone ? `review-status ${reviewState.tone}` : "review-status";
 
                 return (
-                  <article className="search-card" key={`${row.video_id}-${row.chunk_index}-${index}`}>
+                  <article
+                    className="search-card answer-citation-card"
+                    key={`${row.video_id}-${row.chunk_index}-${row.citation_id || index}`}
+                    data-testid="answer-citation-card"
+                  >
                     <div className="search-card-head">
-                      <div className="search-rank">#{row.rank ?? index + 1}</div>
+                      <div className="search-rank">[{row.citation_id ?? row.rank ?? index + 1}]</div>
                       <div className="search-title">{row.video_title || row.video_id}</div>
                       <div className="search-lang">{row.language || "-"}</div>
                     </div>
                     <div className="search-meta">
-                      <span>{formatSeconds(row.start)} - {formatSeconds(row.end)}</span>
-                      <span>score {Number(row.score || 0).toFixed(4)}</span>
+                      <span>{row.timestamp_range_label || formatRange(row.start_seconds ?? row.start, row.end_seconds ?? row.end)}</span>
+                      {row.score !== undefined && row.score !== null ? (
+                        <span>score {Number(row.score || 0).toFixed(4)}</span>
+                      ) : null}
                     </div>
-                    <p className="search-snippet">{row.text}</p>
+                    <p className="search-snippet">{row.snippet || row.text}</p>
+                    {row.reason ? <p className="citation-reason">{row.reason}</p> : null}
                     <div className="search-actions">
                       <button className="btn search-link-btn" type="button" onClick={() => playFromResult(row)}>
                         Play at timestamp
                       </button>
+                      {row.url ? (
+                        <a className="citation-link" href={row.url} target="_blank" rel="noreferrer">
+                          Open source
+                        </a>
+                      ) : null}
                       <div className="review-group">
                         <button
                           className={`btn secondary review-btn ${active === "relevant" ? "active relevant" : ""}`}
@@ -830,8 +915,14 @@ function QAStudioPage() {
                     </div>
                   </article>
                 );
-              })}
-            </div>
+                })}
+                {!answerEvidence.length ? (
+                  <div className="search-empty">
+                    No supporting evidence is available for this answer.
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </>
         ) : null}
       </section>
