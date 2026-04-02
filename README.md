@@ -2,7 +2,7 @@
 
 Local-first YouTube transcript retrieval and evaluation platform.
 
-This project lets you ingest YouTube transcripts, run semantic retrieval (`hybrid` / `dense` / `lexical`), and evaluate ranking quality with a dedicated local Evaluation workspace. It currently supports English (EN-US) and Japanese (JP) only, with a built-in UI Language switch for EN/JP.
+This project lets you ingest YouTube transcripts, run semantic retrieval (`hybrid` / `dense` / `lexical`), ask grounded questions with citation-backed evidence, and evaluate ranking quality with a dedicated local Evaluation workspace. It currently supports English (EN-US) and Japanese (JP) only, with a built-in UI Language switch for EN/JP.
 
 ## Language Support
 
@@ -15,6 +15,7 @@ This project lets you ingest YouTube transcripts, run semantic retrieval (`hybri
 - **Theme TLDR + Timestamp Quality Update:** moved TLDR generation onto persisted full transcripts with per-video caching, improved theme ranking and timestamp mapping, strengthened theme summaries/context, and improved ingest-side video management.
 - **March 7, 2026:** added TLDR fallback retry metadata, aligned cross-page header navigation, simplified the ingest hero, and expanded regression coverage for fallback and navigation behavior.
 - **March 13, 2026:** added the Chunking Lab with preview/search comparison routes, side-by-side chunking strategy analysis, evaluation export, persisted transcript requirements, and chunking-related regression coverage.
+- **April 1, 2026:** added grounded answer mode polish for citation-backed Q&A, restored EN/JP support in the new answer UI, added a targeted frontend CI gate, and added a local agent-review workflow for batching live `/v1/search` results and POSTing approved labels back into search feedback.
 
 ## Quick Start
 
@@ -70,10 +71,11 @@ Open:
 
 1. Ingest one or more videos/playlists.
 2. Run Search in `hybrid` mode and inspect ranked chunks.
-3. Open Evaluation page and create/import a query set.
-4. Execute a full run, label results, and inspect quality metrics.
-5. Compare two runs to show regression/lift.
-6. Export run bundle JSON for reproducibility.
+3. Ask a question in Q&A Studio and inspect the grounded answer, citations, and supporting evidence.
+4. Open Evaluation page and create/import a query set.
+5. Execute a full run, label results, and inspect quality metrics.
+6. Compare two runs to show regression/lift.
+7. Export run bundle JSON for reproducibility.
 
 ## Screenshots
 
@@ -127,6 +129,32 @@ local files:
 - Inter-rater agreement/adjudication workflow is not implemented yet.
 - Retrieval quality depends on transcript availability from YouTube.
 - Chunking Lab works on already ingested videos and needs a stored `full_transcript`; legacy videos without that artifact must be re-ingested before preview/search comparison works.
+
+## Agent Review Workflow
+
+The local preview now includes `local_preview/review_agent_workflow.py` for agent-assisted review of search-result labels. It reuses the live `/v1/search` and `/v1/feedback/search-review` endpoints instead of introducing a separate review store.
+Use it after manual search or Q&A testing when you want reviewer agents to recommend labels while the existing feedback API remains the single source of truth.
+
+Typical flow:
+
+```bash
+python local_preview/review_agent_workflow.py build-batch \
+  --query-file local_preview/examples/review_queries.example.json \
+  --include-existing-feedback
+
+python local_preview/review_agent_workflow.py render-prompt \
+  --kind reviewer \
+  --input data/runtime/review_batches/<batch>.json \
+  --shard-id shard-001
+
+python local_preview/review_agent_workflow.py build-adjudication \
+  --input data/runtime/review_recommendations/<recommendations>.json
+
+python local_preview/review_agent_workflow.py apply \
+  --input data/runtime/review_recommendations/<approved>.json
+```
+
+The checked-in example query file is intentionally Japanese and aligned to the current `葬送のフリーレン` transcript library in local preview. If you are reviewing a different set of videos, copy that file and replace the queries with library-specific prompts before building a batch.
 
 ## Tests
 

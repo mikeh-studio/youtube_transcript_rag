@@ -18,6 +18,60 @@ const NAV_ITEMS = [
   { key: "evaluation", label: "Evaluation", icon: "/icons/icon-jobs.svg", href: "/evaluation.html", requiresUnlock: true },
   { key: "chunking", label: "Chunking", icon: "/icons/icon-jobs.svg", href: "/chunking.html", requiresUnlock: true },
 ];
+const QA_ANSWER_I18N = {
+  "en-US": {
+    answerStatusAnswered: "Answered from evidence",
+    answerStatusInsufficient: "Insufficient evidence",
+    answerStatusError: "Answer unavailable",
+    answerStatusDefault: "Answer",
+    answerCitationCount: "{count} citation(s)",
+    answerConfidence: "confidence: {value}",
+    answerConfidenceHigh: "high",
+    answerConfidenceMedium: "medium",
+    answerConfidenceLow: "low",
+    answerProvider: "provider: {value}",
+    answerModel: "model: {value}",
+    answerTrustNote: "Answer generated from retrieved transcript evidence. May be incomplete if transcript coverage is limited.",
+    answerSupportingEvidence: "Supporting evidence",
+    answerHideEvidence: "Hide supporting evidence",
+    answerShowEvidence: "Show supporting evidence",
+    answerOpenSource: "Open source",
+    answerPlayAtTimestamp: "Play at timestamp",
+    answerRelevant: "Relevant",
+    answerNotRelevant: "Not Relevant",
+    answerNoEvidence: "No supporting evidence is available for this answer.",
+    reviewSaving: "Saving...",
+    reviewSaved: "Saved",
+    reviewSaveFailed: "Save failed: {message}",
+    askFailed: "Ask failed: {message}",
+  },
+  "ja-JP": {
+    answerStatusAnswered: "根拠付きで回答",
+    answerStatusInsufficient: "根拠が不十分",
+    answerStatusError: "回答を生成できません",
+    answerStatusDefault: "回答",
+    answerCitationCount: "引用 {count} 件",
+    answerConfidence: "信頼度: {value}",
+    answerConfidenceHigh: "高",
+    answerConfidenceMedium: "中",
+    answerConfidenceLow: "低",
+    answerProvider: "プロバイダー: {value}",
+    answerModel: "モデル: {value}",
+    answerTrustNote: "取得した書き起こしの根拠から生成した回答です。書き起こしの範囲次第で不完全な場合があります。",
+    answerSupportingEvidence: "根拠チャンク",
+    answerHideEvidence: "根拠を隠す",
+    answerShowEvidence: "根拠を表示",
+    answerOpenSource: "ソースを開く",
+    answerPlayAtTimestamp: "この位置から再生",
+    answerRelevant: "関連あり",
+    answerNotRelevant: "関連なし",
+    answerNoEvidence: "この回答に表示できる根拠チャンクはありません。",
+    reviewSaving: "保存中...",
+    reviewSaved: "保存しました",
+    reviewSaveFailed: "保存に失敗しました: {message}",
+    askFailed: "回答生成に失敗しました: {message}",
+  },
+};
 
 function readHashRoute() {
   const raw = String(window.location.hash || "").replace(/^#/, "").trim();
@@ -95,17 +149,34 @@ function extractVideoId(value) {
   return null;
 }
 
-function answerStatusLabel(status) {
+function qaAnswerText(locale, key, vars = {}) {
+  const dictionary = QA_ANSWER_I18N[locale] || QA_ANSWER_I18N["en-US"];
+  const template = dictionary[key] || QA_ANSWER_I18N["en-US"][key] || key;
+  return template.replace(/\{(\w+)\}/g, (_, token) => String(vars[token] ?? ""));
+}
+
+function answerStatusLabel(status, locale) {
   if (status === "answered") {
-    return "Answered from evidence";
+    return qaAnswerText(locale, "answerStatusAnswered");
   }
   if (status === "insufficient_evidence") {
-    return "Insufficient evidence";
+    return qaAnswerText(locale, "answerStatusInsufficient");
   }
   if (status === "error") {
-    return "Answer unavailable";
+    return qaAnswerText(locale, "answerStatusError");
   }
-  return "Answer";
+  return qaAnswerText(locale, "answerStatusDefault");
+}
+
+function answerConfidenceLabel(confidence, locale) {
+  const scopedConfidence = String(confidence || "low").trim().toLowerCase();
+  if (scopedConfidence === "high") {
+    return qaAnswerText(locale, "answerConfidenceHigh");
+  }
+  if (scopedConfidence === "medium") {
+    return qaAnswerText(locale, "answerConfidenceMedium");
+  }
+  return qaAnswerText(locale, "answerConfidenceLow");
 }
 
 function answerStatusTone(status) {
@@ -477,7 +548,7 @@ function PlayerPanel({ videoId, startSeconds, title }) {
   );
 }
 
-function QAStudioPage() {
+function QAStudioPage({ locale }) {
   const [query, setQuery] = useState("");
   const [kSearch, setKSearch] = useState(5);
   const [searchMode, setSearchMode] = useState("hybrid");
@@ -547,7 +618,7 @@ function QAStudioPage() {
       ...prev,
       [key]: {
         label: prev[key]?.label || null,
-        message: "Saving...",
+        message: qaAnswerText(locale, "reviewSaving"),
         tone: "pending",
       },
     }));
@@ -578,7 +649,7 @@ function QAStudioPage() {
         ...prev,
         [key]: {
           label,
-          message: "Saved",
+          message: qaAnswerText(locale, "reviewSaved"),
           tone: "ok",
         },
       }));
@@ -588,7 +659,9 @@ function QAStudioPage() {
         ...prev,
         [key]: {
           label: prev[key]?.label || null,
-          message: `Save failed: ${String(error?.message || error)}`,
+          message: qaAnswerText(locale, "reviewSaveFailed", {
+            message: String(error?.message || error),
+          }),
           tone: "error",
         },
       }));
@@ -655,12 +728,27 @@ function QAStudioPage() {
 
   const answerStatus = String(askResponse?.status || "").trim();
   const answerTone = answerStatusTone(answerStatus);
+  const answerCitationCount = Array.isArray(askResponse?.citations)
+    ? askResponse.citations.length
+    : 0;
   const answerEvidence = Array.isArray(askResponse?.citations) && askResponse.citations.length
     ? askResponse.citations
     : Array.isArray(askResponse?.retrieved_chunks)
       ? askResponse.retrieved_chunks
       : [];
   const answerWarnings = Array.isArray(askResponse?.warnings) ? askResponse.warnings : [];
+  const answerSummaryFields = [
+    qaAnswerText(locale, "answerCitationCount", { count: answerCitationCount }),
+    qaAnswerText(locale, "answerConfidence", {
+      value: answerConfidenceLabel(askResponse?.confidence, locale),
+    }),
+    qaAnswerText(locale, "answerProvider", {
+      value: askResponse?.provider || "-",
+    }),
+    qaAnswerText(locale, "answerModel", {
+      value: askResponse?.model || "-",
+    }),
+  ];
 
   return (
     <>
@@ -811,21 +899,22 @@ function QAStudioPage() {
           </button>
         </form>
 
-        {askError ? <div className="search-summary">Ask failed: {askError}</div> : null}
+        {askError ? (
+          <div className="search-summary">
+            {qaAnswerText(locale, "askFailed", { message: askError })}
+          </div>
+        ) : null}
         {askResponse ? (
           <>
             <div className="search-summary ask-summary-row">
               <span className={`ask-status-pill ${answerTone}`} data-testid="answer-status">
-                {answerStatusLabel(answerStatus)}
+                {answerStatusLabel(answerStatus, locale)}
               </span>
-              <span>{(askResponse.citations || []).length} citation(s)</span>
-              <span>confidence: {askResponse.confidence || "low"}</span>
-              <span>provider: {askResponse.provider}</span>
-              <span>model: {askResponse.model}</span>
+              {answerSummaryFields.map((value) => (
+                <span key={value}>{value}</span>
+              ))}
             </div>
-            <div className="ask-trust-note">
-              Answer generated from retrieved transcript evidence. May be incomplete if transcript coverage is limited.
-            </div>
+            <div className="ask-trust-note">{qaAnswerText(locale, "answerTrustNote")}</div>
             <article
               className={`ask-answer ask-answer-${answerStatus || "default"}`}
               data-testid="answer-panel"
@@ -840,86 +929,90 @@ function QAStudioPage() {
               </div>
             ) : null}
             <div className="ask-evidence-header">
-              <h3 className="ask-evidence-title">Supporting evidence</h3>
+              <h3 className="ask-evidence-title">{qaAnswerText(locale, "answerSupportingEvidence")}</h3>
               <button
                 className="btn secondary"
                 type="button"
                 onClick={() => setShowEvidence((current) => !current)}
                 data-testid="answer-evidence-toggle"
               >
-                {showEvidence ? "Hide supporting evidence" : "Show supporting evidence"}
+                {showEvidence
+                  ? qaAnswerText(locale, "answerHideEvidence")
+                  : qaAnswerText(locale, "answerShowEvidence")}
               </button>
             </div>
             {showEvidence ? (
               <div className="search-cards">
                 {answerEvidence.map((row, index) => {
-                const key = resultIdentity(row);
-                const reviewState = key ? reviewStateByKey[key] : null;
-                const pending = !!(key && reviewPendingByKey[key]);
-                const active = reviewState?.label || null;
-                const statusClass = reviewState?.tone ? `review-status ${reviewState.tone}` : "review-status";
+                  const key = resultIdentity(row);
+                  const reviewState = key ? reviewStateByKey[key] : null;
+                  const pending = !!(key && reviewPendingByKey[key]);
+                  const active = reviewState?.label || null;
+                  const statusClass = reviewState?.tone
+                    ? `review-status ${reviewState.tone}`
+                    : "review-status";
 
-                return (
-                  <article
-                    className="search-card answer-citation-card"
-                    key={`${row.video_id}-${row.chunk_index}-${row.citation_id || index}`}
-                    data-testid="answer-citation-card"
-                  >
-                    <div className="search-card-head">
-                      <div className="search-rank">[{row.citation_id ?? row.rank ?? index + 1}]</div>
-                      <div className="search-title">{row.video_title || row.video_id}</div>
-                      <div className="search-lang">{row.language || "-"}</div>
-                    </div>
-                    <div className="search-meta">
-                      <span>{row.timestamp_range_label || formatRange(row.start_seconds ?? row.start, row.end_seconds ?? row.end)}</span>
-                      {row.score !== undefined && row.score !== null ? (
-                        <span>score {Number(row.score || 0).toFixed(4)}</span>
-                      ) : null}
-                    </div>
-                    <p className="search-snippet">{row.snippet || row.text}</p>
-                    {row.reason ? <p className="citation-reason">{row.reason}</p> : null}
-                    <div className="search-actions">
-                      <button className="btn search-link-btn" type="button" onClick={() => playFromResult(row)}>
-                        Play at timestamp
-                      </button>
-                      {row.url ? (
-                        <a className="citation-link" href={row.url} target="_blank" rel="noreferrer">
-                          Open source
-                        </a>
-                      ) : null}
-                      <div className="review-group">
-                        <button
-                          className={`btn secondary review-btn ${active === "relevant" ? "active relevant" : ""}`}
-                          type="button"
-                          disabled={pending}
-                          onClick={() => saveReviewForRow(row, "relevant", {
-                            query: question,
-                            retrievalMode: askMode,
-                          })}
-                        >
-                          Relevant
-                        </button>
-                        <button
-                          className={`btn secondary review-btn ${active === "not_relevant" ? "active not-relevant" : ""}`}
-                          type="button"
-                          disabled={pending}
-                          onClick={() => saveReviewForRow(row, "not_relevant", {
-                            query: question,
-                            retrievalMode: askMode,
-                          })}
-                        >
-                          Not Relevant
-                        </button>
+                  return (
+                    <article
+                      className="search-card answer-citation-card"
+                      key={`${row.video_id}-${row.chunk_index}-${row.citation_id || index}`}
+                      data-testid="answer-citation-card"
+                    >
+                      <div className="search-card-head">
+                        <div className="search-rank">[{row.citation_id ?? row.rank ?? index + 1}]</div>
+                        <div className="search-title">{row.video_title || row.video_id}</div>
+                        <div className="search-lang">{row.language || "-"}</div>
                       </div>
-                      {reviewState?.message ? <span className={statusClass}>{reviewState.message}</span> : null}
-                    </div>
-                  </article>
-                );
+                      <div className="search-meta">
+                        <span>
+                          {row.timestamp_range_label || formatRange(row.start_seconds ?? row.start, row.end_seconds ?? row.end)}
+                        </span>
+                        {row.score !== undefined && row.score !== null ? (
+                          <span>score {Number(row.score || 0).toFixed(4)}</span>
+                        ) : null}
+                      </div>
+                      <p className="search-snippet">{row.snippet || row.text}</p>
+                      {row.reason ? <p className="citation-reason">{row.reason}</p> : null}
+                      <div className="search-actions">
+                        <button className="btn search-link-btn" type="button" onClick={() => playFromResult(row)}>
+                          {qaAnswerText(locale, "answerPlayAtTimestamp")}
+                        </button>
+                        {row.url ? (
+                          <a className="citation-link" href={row.url} target="_blank" rel="noreferrer">
+                            {qaAnswerText(locale, "answerOpenSource")}
+                          </a>
+                        ) : null}
+                        <div className="review-group">
+                          <button
+                            className={`btn secondary review-btn ${active === "relevant" ? "active relevant" : ""}`}
+                            type="button"
+                            disabled={pending}
+                            onClick={() => saveReviewForRow(row, "relevant", {
+                              query: question,
+                              retrievalMode: askMode,
+                            })}
+                          >
+                            {qaAnswerText(locale, "answerRelevant")}
+                          </button>
+                          <button
+                            className={`btn secondary review-btn ${active === "not_relevant" ? "active not-relevant" : ""}`}
+                            type="button"
+                            disabled={pending}
+                            onClick={() => saveReviewForRow(row, "not_relevant", {
+                              query: question,
+                              retrievalMode: askMode,
+                            })}
+                          >
+                            {qaAnswerText(locale, "answerNotRelevant")}
+                          </button>
+                        </div>
+                        {reviewState?.message ? <span className={statusClass}>{reviewState.message}</span> : null}
+                      </div>
+                    </article>
+                  );
                 })}
                 {!answerEvidence.length ? (
-                  <div className="search-empty">
-                    No supporting evidence is available for this answer.
-                  </div>
+                  <div className="search-empty">{qaAnswerText(locale, "answerNoEvidence")}</div>
                 ) : null}
               </div>
             ) : null}
@@ -1284,7 +1377,7 @@ function App() {
         <div className="route-scene" key={`scene-${route}-${routeAnimationKey}`}>
           {route === ROUTES.INGEST ? <IngestPage onSuccess={handleIngestSuccess} /> : null}
           {route === ROUTES.TLDR && unlocked ? <TLDRStudioPage /> : null}
-          {route === ROUTES.QA && unlocked ? <QAStudioPage /> : null}
+          {route === ROUTES.QA && unlocked ? <QAStudioPage locale={locale} /> : null}
         </div>
       </main>
 
