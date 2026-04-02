@@ -22,7 +22,9 @@ Open:
 - Local UI + API in one process
 - Ingest videos/playlists and index transcript chunks
 - Retrieval modes: `hybrid`, `dense`, `lexical`
+- Grounded answer mode with citation-backed evidence and fallback warnings
 - Search result review (`relevant` / `not_relevant`)
+- Agent-review workflow helpers for batching search results and applying approved labels
 - Reviewed chunks analytics page
 - Chunking Lab for side-by-side strategy preview/search comparison
 - Dedicated Evaluation workspace:
@@ -47,6 +49,12 @@ Open:
 - Chunking Lab can export the latest comparison into the browser-local Evaluation workspace as run snapshots.
 - Chunk comparison requires ingested videos with persisted `full_transcript` data; re-ingest older videos if the lab reports that transcript data is missing.
 
+## Update (April 1, 2026)
+
+- Q&A answer mode now shows grounded answer status, trust copy, and supporting evidence with EN/JP-safe answer-panel strings.
+- Fallback evidence cards keep source links visible in insufficient-evidence and provider-error states.
+- Local preview includes `review_agent_workflow.py` for building review batches from live search results and posting approved labels back into `/v1/feedback/search-review`.
+
 ## Safety Mode (Evaluation)
 
 - Evaluation data is browser-local (`localStorage`) by design.
@@ -60,3 +68,40 @@ Open:
 - Library persistence is split across `data/library/` (manifest + per-video records) and `data/index/` (FAISS index).
 - Chunking Lab uses the stored `full_transcript` artifact from ingest and does not mutate the saved library/index during preview/search comparison.
 - Cloudflare production stack remains in `production_cloudflare/` for later.
+
+## Agent Review Workflow
+
+Use `local_preview/review_agent_workflow.py` to batch live `/v1/search` results for reviewer agents and to apply approved labels back through `/v1/feedback/search-review`.
+
+Example:
+
+```bash
+python local_preview/review_agent_workflow.py build-batch \
+  --query-file local_preview/examples/review_queries.example.json \
+  --include-existing-feedback
+```
+
+The checked-in example query file is tuned for the currently ingested `葬送のフリーレン` radio-style transcript library and uses Japanese queries. If your local library is different, copy the file and swap in queries that match your own transcripts.
+
+Render a reviewer prompt for one shard:
+
+```bash
+python local_preview/review_agent_workflow.py render-prompt \
+  --kind reviewer \
+  --input data/runtime/review_batches/<batch>.json \
+  --shard-id shard-001
+```
+
+Group reviewer outputs into consensus and disagreement buckets:
+
+```bash
+python local_preview/review_agent_workflow.py build-adjudication \
+  --input data/runtime/review_recommendations/<recommendations>.json
+```
+
+Apply only approved recommendations:
+
+```bash
+python local_preview/review_agent_workflow.py apply \
+  --input data/runtime/review_recommendations/<approved>.json
+```

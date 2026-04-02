@@ -26,3 +26,30 @@ jobs:
 
       - name: Run chunking regression suite
         run: HF_HUB_OFFLINE=1 pytest multilingual/tests/test_chunking_strategies.py -q
+
+  frontend-qa:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build local preview bundle
+        run: npm run build:web
+
+      - name: Verify checked-in bundle is current
+        run: git diff --exit-code -- local_preview/web/assets
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run answer-mode regression
+        run: npx playwright test e2e/qa-answer-mode.spec.ts

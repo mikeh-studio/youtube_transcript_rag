@@ -1,0 +1,32 @@
+[
+  {
+    "query": "指輪のシーンについて何と言っている？",
+    "retrieval_mode": "hybrid",
+    "k": 5,
+    "language": "ja"
+  },
+  {
+    "query": "一級魔法使い試験編の話題はどこ？",
+    "retrieval_mode": "hybrid",
+    "k": 5,
+    "language": "ja"
+  },
+  {
+    "query": "フィルムスコアリングの話をしている箇所は？",
+    "retrieval_mode": "hybrid",
+    "k": 5,
+    "language": "ja"
+  },
+  {
+    "query": "エバン・コールさんの音楽制作について話している箇所は？",
+    "retrieval_mode": "hybrid",
+    "k": 5,
+    "language": "ja"
+  },
+  {
+    "query": "第2期の感想を話している箇所は？",
+    "retrieval_mode": "hybrid",
+    "k": 5,
+    "language": "ja"
+  }
+]
