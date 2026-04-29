@@ -21,6 +21,7 @@ Open:
 
 - Local UI + API in one process
 - Ingest videos/playlists and index transcript chunks
+- Local/permissioned video OCR jobs for timestamped frame evidence
 - Retrieval modes: `hybrid`, `dense`, `lexical`
 - Grounded answer mode with citation-backed evidence and fallback warnings
 - Search result review (`relevant` / `not_relevant`)
@@ -54,6 +55,12 @@ Open:
 - Q&A answer mode now shows grounded answer status, trust copy, and supporting evidence with EN/JP-safe answer-panel strings.
 - Fallback evidence cards keep source links visible in insufficient-evidence and provider-error states.
 - Local preview includes `review_agent_workflow.py` for building review batches from live search results and posting approved labels back into `/v1/feedback/search-review`.
+
+## Update (April 28, 2026)
+
+- Ingest Gateway includes a Local Video OCR panel for local or permissioned `.mp4`, `.m4v`, `.mov`, `.mkv`, and `.webm` files.
+- Q&A Studio can search transcript evidence, OCR evidence, or a merged transcript + OCR evidence list.
+- New local endpoints: `POST /v1/local-video-ocr/jobs`, `GET /v1/local-video-ocr/jobs`, `GET /v1/local-video-ocr/videos/{video_id}`, `POST /v1/search-multimodal`, and `POST /v1/ask-multimodal`.
 
 ## Safety Mode (Evaluation)
 
