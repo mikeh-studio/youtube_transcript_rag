@@ -392,6 +392,41 @@ body {
   margin: 0 auto;
 }
 
+.local-ocr-panel {
+  width: min(980px, 100%);
+  margin: 0 auto;
+}
+
+.local-ocr-grid {
+  grid-template-columns: minmax(140px, 0.8fr) minmax(0, 2fr) minmax(120px, 0.55fr) auto;
+  align-items: end;
+}
+
+.ocr-job-grid {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.7rem;
+}
+
+.ocr-job-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.72rem;
+  background: var(--surface-2);
+}
+
+.frame-path {
+  margin: 0.35rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+  word-break: break-all;
+}
+
+.error-text {
+  color: #ffc1c1;
+}
+
 .ingest-carousel-controls {
   display: inline-flex;
   gap: 0.45rem;
@@ -970,6 +1005,16 @@ th {
   text-transform: uppercase;
 }
 
+.source-badge.transcript {
+  border-color: #4db3ff;
+  color: #d8efff;
+}
+
+.source-badge.ocr {
+  border-color: #a1d76a;
+  color: #dff8bf;
+}
+
 .search-meta {
   margin-top: 0.34rem;
   display: flex;
@@ -1249,12 +1294,12 @@ th {
 }
 
 .qa-grid {
-  grid-template-columns: minmax(0, 2.4fr) repeat(2, minmax(0, 0.8fr)) auto;
+  grid-template-columns: minmax(0, 2.4fr) repeat(3, minmax(0, 0.8fr)) auto;
   align-items: end;
 }
 
 .ask-grid {
-  grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 0.8fr)) auto;
+  grid-template-columns: minmax(0, 2fr) repeat(4, minmax(0, 0.8fr)) auto;
 }
 
 .tldr-grid {
@@ -1451,7 +1496,8 @@ th {
 
   .qa-grid,
   .ask-grid,
-  .tldr-grid {
+  .tldr-grid,
+  .local-ocr-grid {
     grid-template-columns: 1fr;
   }
 

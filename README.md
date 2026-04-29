@@ -50,6 +50,65 @@ Open:
 Note:
 - If model download/network is unavailable, the app falls back to local hashing embeddings in local preview mode.
 
+## Multimodal Local Video OCR Mode
+
+This mode adds a first multimodal path for local video files that you own or have permission to process. It extracts timestamped frames, runs Japanese/English OCR over visible text, embeds the OCR text with the existing embedding approach, and lets you search OCR evidence alongside transcript evidence.
+
+Legal/platform note: public YouTube videos continue to use transcript, metadata, and timestamp-link workflows. Full frame extraction and OCR processing is for local or permissioned video files only. This project does not add public YouTube video downloading, YouTube page scraping, or blocking bypass logic for OCR.
+
+Setup requirements:
+
+- `ffmpeg` and `ffprobe` available on `PATH`
+- Python dependencies from `pip install -r requirements.txt` (includes EasyOCR)
+- Local video containers accepted by the local API: `.mp4`, `.m4v`, `.mov`, `.mkv`, `.webm`
+
+Local UI flow:
+
+1. Start the local preview: `python local_preview/local_api.py`
+2. Open `http://127.0.0.1:8000/index.html`.
+3. In Ingest Gateway, use **Local Video OCR** with a local file path and a stable `video_id`.
+4. In Q&A Studio, set Evidence to **Transcript + OCR** or **OCR only** before searching or asking.
+
+The local API routes are:
+
+- `POST /v1/local-video-ocr/jobs`
+- `GET /v1/local-video-ocr/jobs`
+- `GET /v1/local-video-ocr/jobs/{job_id}`
+- `GET /v1/local-video-ocr/videos/{video_id}`
+- `POST /v1/search-multimodal`
+- `POST /v1/ask-multimodal`
+
+Example local-video flow:
+
+```bash
+python pipelines/extract_frames.py \
+  --video-id demo_001 \
+  --video-path data/raw/demo_001.mp4 \
+  --interval-sec 10
+
+python pipelines/run_ocr.py --video-id demo_001
+python pipelines/embed_ocr.py --video-id demo_001
+
+python retrieval/search_multimodal.py \
+  --query "what does the slide say about inflation?" \
+  --video-id demo_001 \
+  --top-k 5
+```
+
+Frame metadata is written to `data/processed/{video_id}/frames.jsonl`:
+
+```json
+{"video_id":"demo_001","frame_id":"frame_000010","timestamp_sec":10,"timestamp_hhmmss":"00:00:10","frame_path":"data/frames/demo_001/frame_000010.jpg","extraction_method":"ffmpeg","created_at":"..."}
+```
+
+OCR metadata is written to `data/processed/{video_id}/frame_ocr.jsonl`:
+
+```json
+{"video_id":"demo_001","frame_id":"frame_000010","timestamp_sec":10,"timestamp_hhmmss":"00:00:10","frame_path":"data/frames/demo_001/frame_000010.jpg","ocr_text":"Inflation expectations","ocr_confidence":0.91,"ocr_engine":"easyocr","created_at":"..."}
+```
+
+OCR vectors are stored separately from transcript vectors at `data/index/ocr/{video_id}.faiss` with metadata in `data/index/ocr/{video_id}.jsonl`. Merged search evidence uses `source_type` (`transcript` or `ocr`), `video_id`, timestamp fields, `text`, `score`, and `metadata`.
+
 ## Run In 60 Seconds
 
 From the repository root:
@@ -110,6 +169,8 @@ multilingual/*  (retrieval pipeline: chunking, embeddings, hybrid search)
 local files:
   - data/library/ (library manifest + per-video records)
   - data/index/ (FAISS index artifacts)
+  - data/index/ocr/ (local-video OCR FAISS indexes)
+  - data/frames/ and data/processed/ (local-video OCR outputs)
   - data/runtime/ (feedback, ask history, ingest logs)
   - data/cache/summaries/ (per-video TLDR cache files)
   - browser localStorage (evaluation query sets/runs/labels)
@@ -119,7 +180,9 @@ local files:
 
 - `local_preview/` - local web UI + API for development and demos
 - `multilingual/` - retrieval engine, multilingual tokenization, transcript processing
+- `pipelines/` - local, permissioned video frame/OCR/embedding scripts
 - `production_cloudflare/` - Cloudflare deployment stack (separate from local preview)
+- `retrieval/` - OCR and multimodal evidence search helpers
 - `tests/` - unit/integration tests for core behavior
 
 ## Known Limitations

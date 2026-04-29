@@ -31,7 +31,7 @@ const QA_ANSWER_I18N = {
     answerConfidenceLow: "low",
     answerProvider: "provider: {value}",
     answerModel: "model: {value}",
-    answerTrustNote: "Answer generated from retrieved transcript evidence. May be incomplete if transcript coverage is limited.",
+    answerTrustNote: "Answer generated from retrieved evidence. May be incomplete if source coverage is limited.",
     answerSupportingEvidence: "Supporting evidence",
     answerHideEvidence: "Hide supporting evidence",
     answerShowEvidence: "Show supporting evidence",
@@ -57,7 +57,7 @@ const QA_ANSWER_I18N = {
     answerConfidenceLow: "低",
     answerProvider: "プロバイダー: {value}",
     answerModel: "モデル: {value}",
-    answerTrustNote: "取得した書き起こしの根拠から生成した回答です。書き起こしの範囲次第で不完全な場合があります。",
+    answerTrustNote: "取得した根拠から生成した回答です。ソースの範囲次第で不完全な場合があります。",
     answerSupportingEvidence: "根拠チャンク",
     answerHideEvidence: "根拠を隠す",
     answerShowEvidence: "根拠を表示",
@@ -128,6 +128,28 @@ function formatRange(startValue, endValue) {
   const start = Number(startValue || 0);
   const end = Number(endValue ?? startValue ?? 0);
   return `${formatSeconds(start)} - ${formatSeconds(end)}`;
+}
+
+function evidenceTimestamp(row) {
+  if (row?.timestamp_hhmmss) {
+    return row.timestamp_hhmmss;
+  }
+  if (row?.source_type === "ocr") {
+    return formatSeconds(row.timestamp_sec ?? row.start);
+  }
+  return formatRange(row?.start_sec ?? row?.start_seconds ?? row?.start, row?.end_sec ?? row?.end_seconds ?? row?.end);
+}
+
+function evidenceTitle(row) {
+  return row?.video_title || row?.metadata?.video_title || row?.video_id || "-";
+}
+
+function evidenceLanguage(row) {
+  return row?.source_type === "ocr" ? "OCR" : row?.language || row?.metadata?.language || "-";
+}
+
+function evidenceFramePath(row) {
+  return row?.frame_path || row?.metadata?.frame_path || "";
 }
 
 function extractVideoId(value) {
@@ -208,6 +230,14 @@ function IngestPage({ onSuccess }) {
   const [isLoadingVideos, setIsLoadingVideos] = useState(true);
   const [videosError, setVideosError] = useState("");
   const [deletingVideoId, setDeletingVideoId] = useState("");
+  const [ocrVideoId, setOcrVideoId] = useState("");
+  const [ocrVideoPath, setOcrVideoPath] = useState("");
+  const [ocrIntervalSec, setOcrIntervalSec] = useState(10);
+  const [ocrSubmitting, setOcrSubmitting] = useState(false);
+  const [ocrStatus, setOcrStatus] = useState("Process a local .mp4 you own or have permission to analyze.");
+  const [ocrRawResponse, setOcrRawResponse] = useState("");
+  const [ocrJobs, setOcrJobs] = useState([]);
+  const [ocrJobsError, setOcrJobsError] = useState("");
   const carouselRef = useRef(null);
 
   async function loadIngestedVideos({ silent = false } = {}) {
@@ -258,6 +288,37 @@ function IngestPage({ onSuccess }) {
 
   useEffect(() => {
     loadIngestedVideos().catch(() => {});
+  }, []);
+
+  async function loadOcrJobs({ silent = false } = {}) {
+    if (!silent) {
+      setOcrJobsError("");
+    }
+    try {
+      const payload = await apiRequest("/v1/local-video-ocr/jobs");
+      setOcrJobs(Array.isArray(payload?.jobs) ? payload.jobs : []);
+    } catch (error) {
+      if (!silent) {
+        setOcrJobsError(String(error?.message || error));
+      }
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadInitial() {
+      if (!cancelled) {
+        await loadOcrJobs({ silent: true });
+      }
+    }
+    loadInitial().catch(() => {});
+    const intervalId = window.setInterval(() => {
+      loadOcrJobs({ silent: true }).catch(() => {});
+    }, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
   }, []);
 
   async function handleSubmit(event) {
@@ -360,6 +421,37 @@ function IngestPage({ onSuccess }) {
     }
   }
 
+  async function handleOcrSubmit(event) {
+    event.preventDefault();
+    const scopedVideoId = ocrVideoId.trim();
+    const scopedPath = ocrVideoPath.trim();
+    if (!scopedVideoId || !scopedPath) {
+      return;
+    }
+    setOcrSubmitting(true);
+    setOcrStatus("Starting local video OCR job...");
+    setOcrRawResponse("");
+    try {
+      const payload = await apiRequest("/v1/local-video-ocr/jobs", {
+        method: "POST",
+        body: {
+          video_id: scopedVideoId,
+          video_path: scopedPath,
+          interval_sec: Number(ocrIntervalSec || 10),
+        },
+      });
+      setOcrRawResponse(JSON.stringify(payload, null, 2));
+      setOcrStatus(`OCR job ${payload?.job?.job_id || ""} queued. Status updates below.`);
+      onSuccess(scopedVideoId);
+      await loadOcrJobs();
+    } catch (error) {
+      setOcrStatus(`OCR job failed to start: ${String(error?.message || error)}`);
+      setOcrRawResponse(String(error?.message || error));
+    } finally {
+      setOcrSubmitting(false);
+    }
+  }
+
   function scrollCarousel(direction) {
     if (!carouselRef.current) {
       return;
@@ -427,6 +519,75 @@ function IngestPage({ onSuccess }) {
         <details className="raw-json">
           <summary>Raw JSON</summary>
           <pre className="output">{rawResponse}</pre>
+        </details>
+      </section>
+
+      <section className="panel local-ocr-panel">
+        <h2 className="section-title">
+          <img src="/icons/icon-search.svg" alt="" aria-hidden="true" />
+          <span>Local Video OCR</span>
+        </h2>
+        <p className="section-desc">
+          Extract frames and OCR visible text from local or permissioned video files only.
+        </p>
+        <form className="grid local-ocr-grid" onSubmit={handleOcrSubmit}>
+          <label>
+            <span>Video ID</span>
+            <input
+              required
+              value={ocrVideoId}
+              onChange={(event) => setOcrVideoId(event.target.value)}
+              placeholder="demo_001"
+            />
+          </label>
+          <label>
+            <span>Local video path</span>
+            <input
+              required
+              value={ocrVideoPath}
+              onChange={(event) => setOcrVideoPath(event.target.value)}
+              placeholder="data/raw/demo_001.mp4"
+            />
+          </label>
+          <label>
+            <span>Frame interval</span>
+            <input
+              type="number"
+              min="1"
+              max="120"
+              value={ocrIntervalSec}
+              onChange={(event) => setOcrIntervalSec(event.target.value)}
+            />
+          </label>
+          <button className="btn" type="submit" disabled={ocrSubmitting}>
+            {ocrSubmitting ? "Queueing..." : "Run OCR"}
+          </button>
+        </form>
+        <div className="search-summary">{ocrStatus}</div>
+        <div className="ocr-job-grid">
+          {ocrJobs.map((job) => (
+            <article className="ocr-job-card" key={job.job_id}>
+              <div className="search-card-head">
+                <div className="search-rank">{job.status}</div>
+                <div className="search-title">{job.video_id}</div>
+                <div className="search-lang">{job.step}</div>
+              </div>
+              <div className="search-meta">
+                <span>frames {Number(job.frame_count || 0)}</span>
+                <span>ocr {Number(job.ocr_count || 0)}</span>
+                <span>vectors {Number(job.vector_count || 0)}</span>
+                <span>interval {Number(job.interval_sec || 0)}s</span>
+              </div>
+              {job.error_message ? <p className="search-snippet error-text">{job.error_message}</p> : null}
+              <p className="frame-path">{job.video_path}</p>
+            </article>
+          ))}
+          {!ocrJobs.length ? <div className="search-empty">No local OCR jobs yet.</div> : null}
+        </div>
+        {ocrJobsError ? <div className="search-summary">OCR jobs failed to load: {ocrJobsError}</div> : null}
+        <details className="raw-json">
+          <summary>OCR Raw JSON</summary>
+          <pre className="output">{ocrRawResponse}</pre>
         </details>
       </section>
 
@@ -552,6 +713,7 @@ function QAStudioPage({ locale }) {
   const [query, setQuery] = useState("");
   const [kSearch, setKSearch] = useState(5);
   const [searchMode, setSearchMode] = useState("hybrid");
+  const [searchSourceMode, setSearchSourceMode] = useState("transcript");
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchResponse, setSearchResponse] = useState(null);
   const [searchError, setSearchError] = useState("");
@@ -559,6 +721,7 @@ function QAStudioPage({ locale }) {
   const [question, setQuestion] = useState("");
   const [kAsk, setKAsk] = useState(5);
   const [askMode, setAskMode] = useState("hybrid");
+  const [askSourceMode, setAskSourceMode] = useState("transcript");
   const [provider, setProvider] = useState("chatgpt");
   const [askLoading, setAskLoading] = useState(false);
   const [askResponse, setAskResponse] = useState(null);
@@ -574,9 +737,12 @@ function QAStudioPage({ locale }) {
   });
 
   function resultIdentity(row) {
-    const videoId = extractVideoId(row?.video_id) || extractVideoId(row?.url) || extractVideoId(row?.video_url);
+    const videoId = String(row?.video_id || "").trim() || extractVideoId(row?.url) || extractVideoId(row?.video_url);
     if (!videoId) {
       return "";
+    }
+    if (row?.source_type === "ocr") {
+      return `${videoId}:ocr:${row?.frame_id || row?.timestamp_sec || row?.start || 0}`;
     }
     const chunkIndex = row?.chunk_index;
     if (chunkIndex !== undefined && chunkIndex !== null && chunkIndex !== "") {
@@ -591,10 +757,13 @@ function QAStudioPage({ locale }) {
   }
 
   function videoIdFromRow(row) {
-    return extractVideoId(row?.video_id) || extractVideoId(row?.url) || extractVideoId(row?.video_url) || "";
+    return String(row?.video_id || "").trim() || extractVideoId(row?.url) || extractVideoId(row?.video_url) || "";
   }
 
   function playFromResult(row) {
+    if (row?.source_type === "ocr") {
+      return;
+    }
     const videoId = videoIdFromRow(row);
     if (!videoId) {
       return;
@@ -683,12 +852,14 @@ function QAStudioPage({ locale }) {
     setSearchError("");
     setSearchResponse(null);
     try {
-      const payload = await apiRequest("/v1/search", {
+      const endpoint = searchSourceMode === "transcript" ? "/v1/search" : "/v1/search-multimodal";
+      const payload = await apiRequest(endpoint, {
         method: "POST",
         body: {
           query: query.trim(),
           k: Number(kSearch || 5),
           retrieval_mode: searchMode,
+          source_mode: searchSourceMode,
         },
       });
       setSearchResponse(payload);
@@ -708,12 +879,14 @@ function QAStudioPage({ locale }) {
     setAskError("");
     setAskResponse(null);
     try {
-      const payload = await apiRequest("/v1/ask", {
+      const endpoint = askSourceMode === "transcript" ? "/v1/ask" : "/v1/ask-multimodal";
+      const payload = await apiRequest(endpoint, {
         method: "POST",
         body: {
           question: question.trim(),
           k: Number(kAsk || 5),
           retrieval_mode: askMode,
+          source_mode: askSourceMode,
           provider,
         },
       });
@@ -765,7 +938,7 @@ function QAStudioPage({ locale }) {
         <form className="grid qa-grid" onSubmit={runSearch}>
           <label>
             <span>Query</span>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search transcript chunks" />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search transcript and OCR evidence" />
           </label>
           <label>
             <span>Top K</span>
@@ -783,6 +956,14 @@ function QAStudioPage({ locale }) {
               <option value="hybrid">hybrid</option>
               <option value="dense">dense</option>
               <option value="lexical">lexical</option>
+            </select>
+          </label>
+          <label>
+            <span>Evidence</span>
+            <select value={searchSourceMode} onChange={(event) => setSearchSourceMode(event.target.value)}>
+              <option value="transcript">Transcript</option>
+              <option value="both">Transcript + OCR</option>
+              <option value="ocr">OCR only</option>
             </select>
           </label>
           <button className="btn" type="submit" disabled={searchLoading}>
@@ -805,46 +986,53 @@ function QAStudioPage({ locale }) {
             const statusClass = reviewState?.tone ? `review-status ${reviewState.tone}` : "review-status";
 
             return (
-              <article className="search-card" key={`${row.video_id}-${row.chunk_index}-${index}`}>
+              <article className="search-card" key={`${row.video_id}-${row.chunk_index || row.frame_id || row.timestamp_sec}-${index}`}>
                 <div className="search-card-head">
                   <div className="search-rank">#{row.rank ?? index + 1}</div>
-                  <div className="search-title">{row.video_title || row.video_id}</div>
-                  <div className="search-lang">{row.language || "-"}</div>
+                  <div className="search-title">{evidenceTitle(row)}</div>
+                  <div className={`search-lang source-badge ${row.source_type === "ocr" ? "ocr" : "transcript"}`}>
+                    {row.source_type || evidenceLanguage(row)}
+                  </div>
                 </div>
                 <div className="search-meta">
-                  <span>{formatSeconds(row.start)} - {formatSeconds(row.end)}</span>
+                  <span>{evidenceTimestamp(row)}</span>
                   <span>score {Number(row.score || 0).toFixed(4)}</span>
                 </div>
                 <p className="search-snippet">{row.text}</p>
+                {evidenceFramePath(row) ? <p className="frame-path">{evidenceFramePath(row)}</p> : null}
                 <div className="search-actions">
-                  <button className="btn search-link-btn" type="button" onClick={() => playFromResult(row)}>
-                    Play at timestamp
-                  </button>
-                  <div className="review-group">
-                    <button
-                      className={`btn secondary review-btn ${active === "relevant" ? "active relevant" : ""}`}
-                      type="button"
-                      disabled={pending}
-                      onClick={() => saveReviewForRow(row, "relevant", {
-                        query,
-                        retrievalMode: searchMode,
-                      })}
-                    >
-                      Relevant
-                    </button>
-                    <button
-                      className={`btn secondary review-btn ${active === "not_relevant" ? "active not-relevant" : ""}`}
-                      type="button"
-                      disabled={pending}
-                      onClick={() => saveReviewForRow(row, "not_relevant", {
-                        query,
-                        retrievalMode: searchMode,
-                      })}
-                    >
-                      Not Relevant
-                    </button>
-                  </div>
-                  {reviewState?.message ? <span className={statusClass}>{reviewState.message}</span> : null}
+                  {row.source_type === "ocr" ? null : (
+                    <>
+                      <button className="btn search-link-btn" type="button" onClick={() => playFromResult(row)}>
+                        Play at timestamp
+                      </button>
+                      <div className="review-group">
+                        <button
+                          className={`btn secondary review-btn ${active === "relevant" ? "active relevant" : ""}`}
+                          type="button"
+                          disabled={pending}
+                          onClick={() => saveReviewForRow(row, "relevant", {
+                            query,
+                            retrievalMode: searchMode,
+                          })}
+                        >
+                          Relevant
+                        </button>
+                        <button
+                          className={`btn secondary review-btn ${active === "not_relevant" ? "active not-relevant" : ""}`}
+                          type="button"
+                          disabled={pending}
+                          onClick={() => saveReviewForRow(row, "not_relevant", {
+                            query,
+                            retrievalMode: searchMode,
+                          })}
+                        >
+                          Not Relevant
+                        </button>
+                      </div>
+                      {reviewState?.message ? <span className={statusClass}>{reviewState.message}</span> : null}
+                    </>
+                  )}
                 </div>
               </article>
             );
@@ -885,6 +1073,14 @@ function QAStudioPage({ locale }) {
               <option value="hybrid">hybrid</option>
               <option value="dense">dense</option>
               <option value="lexical">lexical</option>
+            </select>
+          </label>
+          <label>
+            <span>Evidence</span>
+            <select value={askSourceMode} onChange={(event) => setAskSourceMode(event.target.value)}>
+              <option value="transcript">Transcript</option>
+              <option value="both">Transcript + OCR</option>
+              <option value="ocr">OCR only</option>
             </select>
           </label>
           <label>
@@ -960,53 +1156,62 @@ function QAStudioPage({ locale }) {
                     >
                       <div className="search-card-head">
                         <div className="search-rank">[{row.citation_id ?? row.rank ?? index + 1}]</div>
-                        <div className="search-title">{row.video_title || row.video_id}</div>
-                        <div className="search-lang">{row.language || "-"}</div>
+                        <div className="search-title">{evidenceTitle(row)}</div>
+                        <div className={`search-lang source-badge ${row.source_type === "ocr" ? "ocr" : "transcript"}`}>
+                          {row.source_type || evidenceLanguage(row)}
+                        </div>
                       </div>
                       <div className="search-meta">
                         <span>
-                          {row.timestamp_range_label || formatRange(row.start_seconds ?? row.start, row.end_seconds ?? row.end)}
+                          {row.timestamp_range_label || evidenceTimestamp(row)}
                         </span>
                         {row.score !== undefined && row.score !== null ? (
                           <span>score {Number(row.score || 0).toFixed(4)}</span>
                         ) : null}
                       </div>
                       <p className="search-snippet">{row.snippet || row.text}</p>
+                      {evidenceFramePath(row) ? <p className="frame-path">{evidenceFramePath(row)}</p> : null}
                       {row.reason ? <p className="citation-reason">{row.reason}</p> : null}
                       <div className="search-actions">
-                        <button className="btn search-link-btn" type="button" onClick={() => playFromResult(row)}>
-                          {qaAnswerText(locale, "answerPlayAtTimestamp")}
-                        </button>
+                        {row.source_type === "ocr" ? null : (
+                          <button className="btn search-link-btn" type="button" onClick={() => playFromResult(row)}>
+                            {qaAnswerText(locale, "answerPlayAtTimestamp")}
+                          </button>
+                        )}
                         {row.url ? (
                           <a className="citation-link" href={row.url} target="_blank" rel="noreferrer">
                             {qaAnswerText(locale, "answerOpenSource")}
                           </a>
                         ) : null}
-                        <div className="review-group">
-                          <button
-                            className={`btn secondary review-btn ${active === "relevant" ? "active relevant" : ""}`}
-                            type="button"
-                            disabled={pending}
-                            onClick={() => saveReviewForRow(row, "relevant", {
-                              query: question,
-                              retrievalMode: askMode,
-                            })}
-                          >
-                            {qaAnswerText(locale, "answerRelevant")}
-                          </button>
-                          <button
-                            className={`btn secondary review-btn ${active === "not_relevant" ? "active not-relevant" : ""}`}
-                            type="button"
-                            disabled={pending}
-                            onClick={() => saveReviewForRow(row, "not_relevant", {
-                              query: question,
-                              retrievalMode: askMode,
-                            })}
-                          >
-                            {qaAnswerText(locale, "answerNotRelevant")}
-                          </button>
-                        </div>
-                        {reviewState?.message ? <span className={statusClass}>{reviewState.message}</span> : null}
+                        {row.source_type === "ocr" ? null : (
+                          <>
+                            <div className="review-group">
+                              <button
+                                className={`btn secondary review-btn ${active === "relevant" ? "active relevant" : ""}`}
+                                type="button"
+                                disabled={pending}
+                                onClick={() => saveReviewForRow(row, "relevant", {
+                                  query: question,
+                                  retrievalMode: askMode,
+                                })}
+                              >
+                                {qaAnswerText(locale, "answerRelevant")}
+                              </button>
+                              <button
+                                className={`btn secondary review-btn ${active === "not_relevant" ? "active not-relevant" : ""}`}
+                                type="button"
+                                disabled={pending}
+                                onClick={() => saveReviewForRow(row, "not_relevant", {
+                                  query: question,
+                                  retrievalMode: askMode,
+                                })}
+                              >
+                                {qaAnswerText(locale, "answerNotRelevant")}
+                              </button>
+                            </div>
+                            {reviewState?.message ? <span className={statusClass}>{reviewState.message}</span> : null}
+                          </>
+                        )}
                       </div>
                     </article>
                   );

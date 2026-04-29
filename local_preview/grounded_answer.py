@@ -84,41 +84,57 @@ def cap_confidence(confidence: str, confidence_cap: str) -> str:
 
 
 def build_citation_catalog(rows: List[dict]) -> List[dict]:
-    """Map retrieved transcript rows into stable citation payloads."""
+    """Map retrieved evidence rows into stable citation payloads."""
     citations: List[dict] = []
     for citation_id, row in enumerate(rows or [], start=1):
         video_id = str(row.get("video_id") or "").strip()
         if not video_id:
             continue
+        source_type = str(row.get("source_type") or "transcript").strip().lower()
         start_seconds = float(row.get("start", 0.0))
         end_seconds = float(row.get("end", start_seconds))
-        url = str(
-            row.get("url")
-            or f"{_canonical_video_url(video_id)}&t={int(max(0.0, start_seconds))}s"
-        ).strip()
+        if source_type == "ocr":
+            end_seconds = start_seconds
+            video_url = str(row.get("video_url") or "").strip()
+            url = str(row.get("url") or "").strip()
+            timestamp_range_label = str(
+                row.get("timestamp_hhmmss") or format_timestamp_label(start_seconds)
+            )
+            reason = f"Retrieved OCR frame #{int(row.get('rank') or citation_id)} for the question."
+        else:
+            video_url = str(
+                row.get("video_url") or _canonical_video_url(video_id)
+            ).strip()
+            url = str(
+                row.get("url")
+                or f"{_canonical_video_url(video_id)}&t={int(max(0.0, start_seconds))}s"
+            ).strip()
+            timestamp_range_label = format_timestamp_range_label(
+                start_seconds, end_seconds
+            )
+            reason = f"Retrieved chunk #{int(row.get('rank') or citation_id)} for the question."
         citations.append(
             {
                 "citation_id": citation_id,
+                "source_type": source_type,
                 "video_id": video_id,
                 "video_title": str(row.get("video_title") or video_id).strip(),
-                "video_url": str(
-                    row.get("video_url") or _canonical_video_url(video_id)
-                ).strip(),
+                "video_url": video_url,
                 "chunk_id": (
                     f"{video_id}:{int(row['chunk_index'])}"
                     if row.get("chunk_index") is not None
-                    else f"{video_id}:{int(start_seconds * 1000)}:{int(end_seconds * 1000)}"
+                    else f"{video_id}:{source_type}:{int(start_seconds * 1000)}:{int(end_seconds * 1000)}"
                 ),
                 "chunk_index": row.get("chunk_index"),
+                "frame_id": row.get("frame_id"),
+                "frame_path": row.get("frame_path") or (row.get("metadata") or {}).get("frame_path"),
                 "language": str(row.get("language") or "").strip(),
                 "start_seconds": start_seconds,
                 "end_seconds": end_seconds,
                 "timestamp_label": format_timestamp_label(start_seconds),
-                "timestamp_range_label": format_timestamp_range_label(
-                    start_seconds, end_seconds
-                ),
+                "timestamp_range_label": timestamp_range_label,
                 "snippet": _truncate_snippet(row.get("text") or ""),
-                "reason": f"Retrieved chunk #{int(row.get('rank') or citation_id)} for the question.",
+                "reason": reason,
                 "url": url,
                 "rank": int(row.get("rank") or citation_id),
                 "score": row.get("score"),
@@ -135,22 +151,34 @@ def build_retrieved_chunks_payload(rows: List[dict]) -> List[dict]:
     """Return a lightweight debug payload derived from retrieved rows."""
     return [
         {
+            "source_type": str(row.get("source_type") or "transcript").strip().lower(),
             "video_id": video_id,
             "video_title": str(row.get("video_title") or "").strip(),
             "video_url": str(
-                row.get("video_url") or _canonical_video_url(video_id)
+                row.get("video_url")
+                or ("" if str(row.get("source_type") or "").lower() == "ocr" else _canonical_video_url(video_id))
             ).strip(),
             "language": str(row.get("language") or "").strip(),
             "chunk_index": row.get("chunk_index"),
+            "frame_id": row.get("frame_id"),
+            "frame_path": row.get("frame_path") or (row.get("metadata") or {}).get("frame_path"),
             "start_seconds": float(row.get("start", 0.0)),
             "end_seconds": float(row.get("end", row.get("start", 0.0))),
             "timestamp_label": format_timestamp_label(row.get("start", 0.0)),
-            "timestamp_range_label": format_timestamp_range_label(
-                row.get("start", 0.0), row.get("end", row.get("start", 0.0))
+            "timestamp_range_label": (
+                str(row.get("timestamp_hhmmss") or format_timestamp_label(row.get("start", 0.0)))
+                if str(row.get("source_type") or "").lower() == "ocr"
+                else format_timestamp_range_label(
+                    row.get("start", 0.0), row.get("end", row.get("start", 0.0))
+                )
             ),
             "url": str(
                 row.get("url")
-                or f"{_canonical_video_url(video_id)}&t={int(max(0.0, float(row.get('start', 0.0))))}s"
+                or (
+                    ""
+                    if str(row.get("source_type") or "").lower() == "ocr"
+                    else f"{_canonical_video_url(video_id)}&t={int(max(0.0, float(row.get('start', 0.0))))}s"
+                )
             ).strip(),
             "rank": int(row.get("rank") or 0) or None,
             "score": row.get("score"),
@@ -171,18 +199,21 @@ def build_grounded_answer_messages(
     )
     evidence_lines = []
     for citation in citations:
+        source_label = "OCR" if citation.get("source_type") == "ocr" else "Transcript"
+        locator_label = "Frame" if citation.get("source_type") == "ocr" else "URL"
+        locator_value = citation.get("frame_path") or citation.get("url") or "-"
         evidence_lines.append(
             "\n".join(
                 [
                     f"[{citation['citation_id']}] {citation['video_title']} | {citation['timestamp_range_label']}",
-                    f"URL: {citation['url']}",
-                    f"Transcript: {citation['text']}",
+                    f"{locator_label}: {locator_value}",
+                    f"{source_label}: {citation['text']}",
                 ]
             )
         )
 
     system_prompt = (
-        "You answer questions only from transcript evidence.\n"
+        "You answer questions only from the provided transcript and OCR evidence.\n"
         f"{language_instruction}\n"
         "Use only the provided evidence excerpts.\n"
         "Do not invent facts, names, dates, or conclusions.\n"

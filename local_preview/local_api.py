@@ -52,6 +52,18 @@ if load_dotenv is not None:
 
 from multilingual.rag_engine import RAGEngine  # noqa: E402
 from multilingual.text_processing import LANGUAGE_CONFIG  # noqa: E402
+from pipelines.embed_ocr import embed_ocr  # noqa: E402
+from pipelines.extract_frames import extract_frames  # noqa: E402
+from pipelines.run_ocr import run_ocr  # noqa: E402
+from pipelines.video_ocr_common import (  # noqa: E402
+    ocr_index_metadata_path,
+    ocr_index_path,
+    ocr_output_path,
+    frames_metadata_path,
+    validate_video_id as validate_local_video_id,
+)
+from retrieval.ocr_retriever import OCREvidenceRetriever  # noqa: E402
+from retrieval.search_multimodal import merge_evidence  # noqa: E402
 from grounded_answer import (  # noqa: E402
     ANSWER_CONFIDENCE_LEVELS,
     ANSWER_STATUSES,
@@ -102,6 +114,7 @@ SUMMARY_CACHE_VERSION = 1
 ASK_HISTORY_LIMIT_PER_VIDEO = 20
 ASK_HISTORY_LIST_LIMIT_MAX = 100
 LOCALHOST_CORS_HOSTS = {"127.0.0.1", "localhost", "::1"}
+LOCAL_VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov", ".mkv", ".webm"}
 
 
 def now_iso() -> str:
@@ -277,6 +290,24 @@ class IngestJob:
     updated_at: str
 
 
+@dataclass
+class LocalVideoOCRJob:
+    job_id: str
+    video_id: str
+    video_path: str
+    interval_sec: int
+    status: str
+    step: str
+    frame_count: int
+    ocr_count: int
+    vector_count: int
+    error_code: Optional[str]
+    error_message: Optional[str]
+    created_at: str
+    updated_at: str
+    completed_at: Optional[str] = None
+
+
 class LocalRAGService:
     def __init__(self):
         self.lock = threading.Lock()
@@ -287,6 +318,8 @@ class LocalRAGService:
         )
         self._openai_client = None
         self.jobs: Dict[str, IngestJob] = {}
+        self.ocr_jobs: Dict[str, LocalVideoOCRJob] = {}
+        self.ocr_lock = threading.Lock()
         self.title_cache: Dict[str, str] = {}
         self.feedback_lock = threading.Lock()
         self.runtime_data_dir = ROOT_DIR / "data" / "runtime"
@@ -342,6 +375,39 @@ class LocalRAGService:
     def _update_job(self, job_id: str, **updates) -> None:
         with self.lock:
             job = self.jobs[job_id]
+            for key, value in updates.items():
+                setattr(job, key, value)
+            job.updated_at = now_iso()
+
+    def _ensure_ocr_job_state(self) -> None:
+        if not hasattr(self, "ocr_lock"):
+            self.ocr_lock = threading.Lock()
+        if not hasattr(self, "ocr_jobs") or not isinstance(self.ocr_jobs, dict):
+            self.ocr_jobs = {}
+
+    def list_ocr_jobs(self) -> List[LocalVideoOCRJob]:
+        self._ensure_ocr_job_state()
+        with self.ocr_lock:
+            return sorted(
+                self.ocr_jobs.values(),
+                key=lambda job: job.created_at,
+                reverse=True,
+            )
+
+    def get_ocr_job(self, job_id: str) -> Optional[LocalVideoOCRJob]:
+        self._ensure_ocr_job_state()
+        with self.ocr_lock:
+            return self.ocr_jobs.get(job_id)
+
+    def _store_ocr_job(self, job: LocalVideoOCRJob) -> None:
+        self._ensure_ocr_job_state()
+        with self.ocr_lock:
+            self.ocr_jobs[job.job_id] = job
+
+    def _update_ocr_job(self, job_id: str, **updates) -> None:
+        self._ensure_ocr_job_state()
+        with self.ocr_lock:
+            job = self.ocr_jobs[job_id]
             for key, value in updates.items():
                 setattr(job, key, value)
             job.updated_at = now_iso()
@@ -404,6 +470,246 @@ class LocalRAGService:
     def delete_video(self, video_id: str):
         self.engine.library.remove_video(video_id)
         self._delete_ask_history(video_id)
+
+    @staticmethod
+    def _normalize_local_video_path(video_path: str) -> Path:
+        raw = str(video_path or "").strip()
+        if not raw:
+            raise ValueError("video_path is required")
+        parsed = urlparse(raw)
+        if parsed.scheme in {"http", "https"}:
+            raise ValueError(
+                "Local video OCR accepts local files only; do not provide public video URLs."
+            )
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = ROOT_DIR / path
+        path = path.resolve()
+        if not path.exists():
+            raise ValueError(f"video_path does not exist: {path}")
+        if not path.is_file():
+            raise ValueError(f"video_path must be a file: {path}")
+        if path.suffix.lower() not in LOCAL_VIDEO_EXTENSIONS:
+            extensions = ", ".join(sorted(LOCAL_VIDEO_EXTENSIONS))
+            raise ValueError(f"video_path must be a supported video file: {extensions}")
+        return path
+
+    def _local_ocr_data_dir(self) -> Path:
+        return ROOT_DIR / "data"
+
+    def start_local_video_ocr_job(
+        self,
+        *,
+        video_id: str,
+        video_path: str,
+        interval_sec: int = 10,
+    ) -> dict:
+        scoped_video_id = validate_local_video_id(video_id)
+        scoped_path = self._normalize_local_video_path(video_path)
+        interval = max(1, int(interval_sec or 10))
+        job_id = f"ocr_{uuid.uuid4()}"
+        job = LocalVideoOCRJob(
+            job_id=job_id,
+            video_id=scoped_video_id,
+            video_path=str(scoped_path),
+            interval_sec=interval,
+            status="queued",
+            step="queued",
+            frame_count=0,
+            ocr_count=0,
+            vector_count=0,
+            error_code=None,
+            error_message=None,
+            created_at=now_iso(),
+            updated_at=now_iso(),
+        )
+        self._store_ocr_job(job)
+        self._append_ingest_log(
+            level="info",
+            event="local_ocr.job.created",
+            message="local video OCR job created",
+            job_id=job_id,
+            video_id=scoped_video_id,
+            interval_sec=interval,
+        )
+
+        thread = threading.Thread(
+            target=self._run_local_video_ocr_job,
+            args=(job_id,),
+            daemon=True,
+        )
+        thread.start()
+        return {"job": asdict(job)}
+
+    def _run_local_video_ocr_job(self, job_id: str) -> None:
+        job = self.get_ocr_job(job_id)
+        if not job:
+            return
+        data_dir = self._local_ocr_data_dir()
+        started_at = time.time()
+        try:
+            self._update_ocr_job(job_id, status="running", step="extract_frames")
+            frames = extract_frames(
+                video_path=job.video_path,
+                video_id=job.video_id,
+                interval_sec=job.interval_sec,
+                data_dir=data_dir,
+            )
+            self._update_ocr_job(
+                job_id,
+                frame_count=len(frames),
+                step="run_ocr",
+            )
+
+            ocr_rows = run_ocr(
+                frames_path=frames_metadata_path(data_dir, job.video_id),
+                output_path=ocr_output_path(data_dir, job.video_id),
+            )
+            self._update_ocr_job(
+                job_id,
+                ocr_count=len(ocr_rows),
+                step="embed_ocr",
+            )
+
+            records = embed_ocr(
+                video_id=job.video_id,
+                ocr_path=ocr_output_path(data_dir, job.video_id),
+                index_path=ocr_index_path(data_dir, job.video_id),
+                metadata_path=ocr_index_metadata_path(data_dir, job.video_id),
+                processor=self.engine.library.processor,
+            )
+            completed_at = now_iso()
+            self._update_ocr_job(
+                job_id,
+                status="completed",
+                step="completed",
+                vector_count=len(records),
+                completed_at=completed_at,
+            )
+            self._append_ingest_log(
+                level="info",
+                event="local_ocr.job.completed",
+                message="local video OCR job completed",
+                job_id=job_id,
+                video_id=job.video_id,
+                frame_count=len(frames),
+                ocr_count=len(ocr_rows),
+                vector_count=len(records),
+                duration_ms=int((time.time() - started_at) * 1000),
+            )
+        except Exception as exc:
+            self._update_ocr_job(
+                job_id,
+                status="failed",
+                step="failed",
+                error_code="LOCAL_VIDEO_OCR_FAILED",
+                error_message=str(exc)[:500],
+                completed_at=now_iso(),
+            )
+            self._append_ingest_log(
+                level="error",
+                event="local_ocr.job.failed",
+                message="local video OCR job failed",
+                job_id=job_id,
+                video_id=job.video_id,
+                error_code="LOCAL_VIDEO_OCR_FAILED",
+                error_message=str(exc)[:500],
+                duration_ms=int((time.time() - started_at) * 1000),
+            )
+
+    def local_video_ocr_summary(self, video_id: str) -> dict:
+        scoped_video_id = validate_local_video_id(video_id)
+        data_dir = self._local_ocr_data_dir()
+
+        def _count_jsonl(path: Path) -> int:
+            if not path.exists():
+                return 0
+            return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+        frame_meta = frames_metadata_path(data_dir, scoped_video_id)
+        ocr_meta = ocr_output_path(data_dir, scoped_video_id)
+        index_meta = ocr_index_metadata_path(data_dir, scoped_video_id)
+        index_file = ocr_index_path(data_dir, scoped_video_id)
+        return {
+            "video_id": scoped_video_id,
+            "frames_metadata_path": str(frame_meta),
+            "ocr_metadata_path": str(ocr_meta),
+            "ocr_index_path": str(index_file),
+            "ocr_index_metadata_path": str(index_meta),
+            "frame_count": _count_jsonl(frame_meta),
+            "ocr_count": _count_jsonl(ocr_meta),
+            "vector_count": _count_jsonl(index_meta),
+            "index_exists": index_file.exists(),
+        }
+
+    def search_multimodal(
+        self,
+        *,
+        query: str,
+        k: int = 5,
+        language: Optional[str] = None,
+        retrieval_mode: str = "hybrid",
+        video_id: Optional[str] = None,
+        source_mode: str = "both",
+    ) -> dict:
+        scoped_source = str(source_mode or "both").strip().lower()
+        if scoped_source not in {"both", "transcript", "ocr"}:
+            raise ValueError("source_mode must be one of: both, transcript, ocr")
+
+        top_k = max(1, min(int(k), 12))
+        candidate_k = max(30, top_k * 8)
+        transcript_results: List[dict] = []
+        ocr_results: List[dict] = []
+        retrieval_details = {}
+
+        if scoped_source in {"both", "transcript"}:
+            try:
+                retrieval = self.retrieve(
+                    query,
+                    k=candidate_k,
+                    language=language,
+                    retrieval_mode=retrieval_mode,
+                    video_id=video_id,
+                )
+                transcript_results = retrieval["results"]
+                retrieval_details = retrieval["details"]
+            except KeyError:
+                if scoped_source == "transcript":
+                    raise
+                transcript_results = []
+
+        if scoped_source in {"both", "ocr"}:
+            retriever = OCREvidenceRetriever(
+                data_dir=self._local_ocr_data_dir(),
+                processor=self.engine.library.processor,
+            )
+            ocr_results = retriever.search(
+                query,
+                video_id=video_id,
+                top_k=candidate_k,
+                language=language,
+            )
+
+        evidence = merge_evidence(
+            transcript_results=transcript_results,
+            ocr_results=ocr_results,
+            top_k=top_k,
+        )
+        return {
+            "query": query,
+            "k": top_k,
+            "source_mode": scoped_source,
+            "retrieval_mode": retrieval_mode,
+            "video_id_filter": video_id,
+            "result_count": len(evidence),
+            "results": evidence,
+            "evidence": evidence,
+            "details": {
+                "transcript_candidates": len(transcript_results),
+                "ocr_candidates": len(ocr_results),
+                "transcript_retrieval": retrieval_details,
+            },
+        }
 
     def _ensure_ask_history_state(self) -> None:
         if not hasattr(self, "ask_history_lock"):
@@ -3397,6 +3703,35 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if path == "/v1/local-video-ocr/jobs":
+                jobs = [asdict(j) for j in SERVICE.list_ocr_jobs()[:100]]
+                self._json({"ok": True, "jobs": jobs})
+                return
+
+            if path.startswith("/v1/local-video-ocr/jobs/"):
+                job_id = unquote(path.rsplit("/", 1)[-1])
+                job = SERVICE.get_ocr_job(job_id)
+                if not job:
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "JOB_NOT_FOUND",
+                                "message": "OCR job not found",
+                            },
+                        },
+                        404,
+                    )
+                    return
+                self._json({"ok": True, "job": asdict(job)})
+                return
+
+            if path.startswith("/v1/local-video-ocr/videos/"):
+                video_id = unquote(path.rsplit("/", 1)[-1])
+                summary = SERVICE.local_video_ocr_summary(video_id)
+                self._json({"ok": True, "summary": summary})
+                return
+
             if path == "/v1/ingest/jobs":
                 jobs = [asdict(j) for j in SERVICE.list_jobs()[:100]]
                 SERVICE._append_ingest_log(
@@ -3615,6 +3950,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, **result})
                 return
 
+            if path == "/v1/local-video-ocr/jobs":
+                result = SERVICE.start_local_video_ocr_job(
+                    video_id=str(body.get("video_id") or "").strip(),
+                    video_path=str(body.get("video_path") or "").strip(),
+                    interval_sec=int(body.get("interval_sec") or 10),
+                )
+                self._json({"ok": True, **result})
+                return
+
             if path == "/v1/feedback/search-review":
                 feedback = SERVICE.save_search_feedback(body)
                 self._json({"ok": True, "feedback": feedback})
@@ -3699,6 +4043,133 @@ class Handler(BaseHTTPRequestHandler):
                     normalize_language(language) if language else None,
                 )
                 self._json({"ok": True, **result})
+                return
+
+            if path == "/v1/search-multimodal":
+                query = (body.get("query") or "").strip()
+                if not query:
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "INVALID_QUERY",
+                                "message": "query is required",
+                            },
+                        },
+                        400,
+                    )
+                    return
+                k = max(1, min(int(body.get("k", 5)), 12))
+                language = body.get("language")
+                retrieval_mode = (
+                    str(body.get("retrieval_mode") or "hybrid").strip().lower()
+                )
+                source_mode = str(body.get("source_mode") or "both").strip().lower()
+                if retrieval_mode not in RETRIEVAL_MODES:
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "INVALID_INPUT",
+                                "message": "retrieval_mode must be one of: dense, hybrid, lexical",
+                            },
+                        },
+                        400,
+                    )
+                    return
+                result = SERVICE.search_multimodal(
+                    query=query,
+                    k=k,
+                    language=normalize_language(language) if language else None,
+                    retrieval_mode=retrieval_mode,
+                    video_id=str(body.get("video_id") or "").strip() or None,
+                    source_mode=source_mode,
+                )
+                self._json({"ok": True, **result})
+                return
+
+            if path in {"/v1/ask-multimodal", "/v1/answer-multimodal"}:
+                question = (body.get("question") or body.get("query") or "").strip()
+                if not question:
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "INVALID_QUESTION",
+                                "message": "question is required",
+                            },
+                        },
+                        400,
+                    )
+                    return
+                k = max(1, min(int(body.get("top_k", body.get("k", 5))), 12))
+                language = body.get("language")
+                retrieval_mode = (
+                    str(body.get("retrieval_mode") or "hybrid").strip().lower()
+                )
+                source_mode = str(body.get("source_mode") or "both").strip().lower()
+                provider = (
+                    str(body.get("provider") or DEFAULT_ASK_PROVIDER).strip().lower()
+                )
+                if retrieval_mode not in RETRIEVAL_MODES:
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "INVALID_INPUT",
+                                "message": "retrieval_mode must be one of: dense, hybrid, lexical",
+                            },
+                        },
+                        400,
+                    )
+                    return
+                if provider not in ASK_PROVIDERS:
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "INVALID_INPUT",
+                                "message": "provider must be one of: chatgpt, claude",
+                            },
+                        },
+                        400,
+                    )
+                    return
+
+                retrieval = SERVICE.search_multimodal(
+                    query=question,
+                    k=k,
+                    language=normalize_language(language) if language else None,
+                    retrieval_mode=retrieval_mode,
+                    video_id=str(body.get("video_id") or "").strip() or None,
+                    source_mode=source_mode,
+                )
+                result = SERVICE.ask_with_sources(
+                    question,
+                    retrieval["results"],
+                    provider=provider,
+                    retrieval_mode=retrieval["retrieval_mode"],
+                )
+                if source_mode != "transcript" and not retrieval["results"]:
+                    result["answer"] = (
+                        "Insufficient evidence to answer confidently from the retrieved excerpts."
+                    )
+                    result["warnings"] = [
+                        "No matching transcript or OCR evidence was found for the question."
+                    ]
+                self._json(
+                    {
+                        "ok": True,
+                        "question": question,
+                        "k": k,
+                        "video_id": str(body.get("video_id") or "").strip() or None,
+                        "source_mode": retrieval["source_mode"],
+                        "retrieval_mode": retrieval["retrieval_mode"],
+                        "retrieval_details": retrieval["details"],
+                        "result_count": len(retrieval["results"]),
+                        **result,
+                    }
+                )
                 return
 
             if path == "/v1/search":
