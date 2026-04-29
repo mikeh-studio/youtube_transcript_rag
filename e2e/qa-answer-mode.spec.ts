@@ -77,7 +77,11 @@ test("renders citation-backed answer state and evidence toggle in Q&A studio", a
 
   await expect(page.getByTestId("answer-status")).toHaveText("Answered from evidence");
   await expect(page.getByTestId("answer-panel")).toContainText("local-first, explainable demo [1] [2]");
-  await expect(page.getByText("Answer generated from retrieved transcript evidence.")).toBeVisible();
+  await expect(
+    page.getByText(
+      "Answer generated from retrieved evidence. May be incomplete if source coverage is limited.",
+    ),
+  ).toBeVisible();
   await expect(page.getByTestId("answer-citation-card")).toHaveCount(2);
 
   await page.getByTestId("answer-evidence-toggle").click();
@@ -171,7 +175,9 @@ test("renders localized answer panel copy in Japanese locale", async ({ page }) 
   await page.getByRole("button", { name: "Generate Answer" }).click();
 
   await expect(page.getByTestId("answer-status")).toHaveText("根拠付きで回答");
-  await expect(page.getByText("取得した書き起こしの根拠から生成した回答です。")).toBeVisible();
+  await expect(
+    page.getByText("取得した根拠から生成した回答です。ソースの範囲次第で不完全な場合があります。"),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "根拠を隠す" })).toBeVisible();
   await expect(page.getByRole("button", { name: "この位置から再生" })).toBeVisible();
   await expect(page.getByRole("link", { name: "ソースを開く" })).toHaveAttribute(
