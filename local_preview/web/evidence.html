@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>YouTube Transcript RAG | Chunking</title>
+    <title>YouTube Transcript RAG | Evidence</title>
     <link rel="icon" type="image/svg+xml" href="./icons/favicon-ytrag.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -16,7 +16,7 @@
         <img src="./icons/icon-play.svg" alt="" aria-hidden="true" />
         <div>
           <p id="eyebrowText" class="eyebrow">YouTube Transcript RAG</p>
-          <p class="brand-sub">Chunking Lab</p>
+          <p class="brand-sub">Evidence Workspace</p>
         </div>
       </a>
       <div class="appbar-actions">
@@ -37,7 +37,7 @@
             <img class="nav-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
             <span class="nav-label nav-label-text">Reviews</span>
           </a>
-          <a id="evidenceNavLink" class="app-nav-link" href="./evidence.html">
+          <a id="evidenceNavLink" class="app-nav-link nav-btn active" href="./evidence.html">
             <img class="nav-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
             <span class="nav-label nav-label-text">Evidence</span>
           </a>
@@ -45,7 +45,7 @@
             <img class="nav-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
             <span class="nav-label nav-label-text">Evaluation</span>
           </a>
-          <a id="chunkingNavLink" class="app-nav-link nav-btn active" href="./chunking.html">
+          <a id="chunkingNavLink" class="app-nav-link" href="./chunking.html">
             <img class="nav-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
             <span class="nav-label nav-label-text">Chunking</span>
           </a>
@@ -62,111 +62,143 @@
 
     <main class="shell">
       <header class="hero">
-        <h1 id="heroTitle">Chunking Strategy Comparison</h1>
-        <p id="heroSubtitle" class="subtitle">Compare chunking strategies side-by-side and measure their effect on search results.</p>
+        <h1 id="heroTitle">Evidence Curation</h1>
+        <p id="heroSubtitle" class="subtitle">Review curated transcript evidence, eligibility decisions, and pipeline run metadata.</p>
       </header>
 
-      <section class="panel">
+      <section id="emptyStatePanel" class="panel" hidden>
         <h2 class="section-title">
-          <img src="./icons/icon-library.svg" alt="" aria-hidden="true" />
-          <span id="videoHeading">Video &amp; Strategy Selection</span>
+          <img src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+          <span id="emptyStateHeading">No curation artifacts found</span>
         </h2>
-        <form class="grid eval-grid-two" onsubmit="return false;">
-          <label>
-            <span id="videoSelectLabel">Video</span>
-            <select id="videoSelect" disabled></select>
-          </label>
-        </form>
-        <div class="split" style="gap:1.5rem;margin-top:1rem;">
-          <fieldset class="panel" style="flex:1;">
-            <legend id="strategyALegend"><strong>Strategy A</strong></legend>
-            <label>
-              <span id="strategyALabel">Strategy</span>
-              <select id="strategyASelect">
-                <option value="time">Time Window</option>
-                <option value="sentence">Sentence Boundary</option>
-                <option value="token">Token Count</option>
-              </select>
-            </label>
-            <div id="strategyAParams"></div>
-          </fieldset>
-          <fieldset class="panel" style="flex:1;">
-            <legend id="strategyBLegend"><strong>Strategy B</strong></legend>
-            <label>
-              <span id="strategyBLabel">Strategy</span>
-              <select id="strategyBSelect">
-                <option value="time">Time Window</option>
-                <option value="sentence" selected>Sentence Boundary</option>
-                <option value="token">Token Count</option>
-              </select>
-            </label>
-            <div id="strategyBParams"></div>
-          </fieldset>
-        </div>
-        <div style="margin-top:1rem;">
-          <button id="previewBtn" class="btn" type="button" disabled>Preview Chunks</button>
-        </div>
-        <pre id="previewStatus" class="output" style="margin-top:0.5rem;"></pre>
+        <p id="emptyStateText" class="section-desc"></p>
+        <pre id="emptyStateCommand" class="output"></pre>
       </section>
 
       <section class="panel">
-        <h2 class="section-title">
-          <img src="./icons/icon-search.svg" alt="" aria-hidden="true" />
-          <span id="previewHeading">Side-by-Side Chunk Preview</span>
-        </h2>
-        <div class="split" style="gap:1.5rem;">
-          <div style="flex:1;">
-            <h3 id="colAHeading" class="chart-heading">Strategy A</h3>
-            <p id="colAStats" class="search-summary"></p>
-            <div id="colAChunks" class="search-cards" style="max-height:500px;overflow-y:auto;"></div>
-          </div>
-          <div style="flex:1;">
-            <h3 id="colBHeading" class="chart-heading">Strategy B</h3>
-            <p id="colBStats" class="search-summary"></p>
-            <div id="colBChunks" class="search-cards" style="max-height:500px;overflow-y:auto;"></div>
-          </div>
+        <div class="section-head">
+          <h2 class="section-title">
+            <img src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+            <span id="runHeading">Latest Curation Run</span>
+          </h2>
+          <button id="refreshBtn" class="btn secondary" type="button">Refresh</button>
         </div>
+        <div id="runMeta" class="evidence-run-meta"></div>
+        <p id="loadStatus" class="section-desc"></p>
       </section>
 
       <section class="panel">
         <h2 class="section-title">
           <img src="./icons/icon-chat.svg" alt="" aria-hidden="true" />
-          <span id="searchHeading">Search Comparison</span>
+          <span id="metricsHeading">Evidence Quality</span>
         </h2>
-        <form class="grid eval-grid-three" onsubmit="return false;">
+        <div class="split eval-metric-cards">
+          <article class="chart-panel">
+            <h3 id="metricTotalLabel" class="chart-heading">Total Records</h3>
+            <p id="metricTotal" class="metric-value">-</p>
+          </article>
+          <article class="chart-panel">
+            <h3 id="metricEligibleLabel" class="chart-heading">Eligible Records</h3>
+            <p id="metricEligible" class="metric-value">-</p>
+          </article>
+          <article class="chart-panel">
+            <h3 id="metricRateLabel" class="chart-heading">Eligibility Rate</h3>
+            <p id="metricRate" class="metric-value">-</p>
+          </article>
+          <article class="chart-panel">
+            <h3 id="metricScoreLabel" class="chart-heading">Avg Quality Score</h3>
+            <p id="metricScore" class="metric-value">-</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel split">
+        <article class="chart-panel">
+          <h3 id="qualityDistHeading" class="chart-heading">Quality Labels</h3>
+          <div id="qualityBars" class="bar-list"></div>
+        </article>
+        <article class="chart-panel">
+          <h3 id="topicDistHeading" class="chart-heading">Topic Tags</h3>
+          <div id="topicBars" class="bar-list"></div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2 class="section-title">
+          <img src="./icons/icon-search.svg" alt="" aria-hidden="true" />
+          <span id="filtersHeading">Filters</span>
+        </h2>
+        <form class="grid evidence-filter-grid" onsubmit="return false;">
           <label>
-            <span id="searchQueryLabel">Query</span>
-            <input id="searchQuery" placeholder="Enter a search query" />
+            <span id="filterVideoLabel">Video</span>
+            <select id="filterVideo"></select>
           </label>
           <label>
-            <span id="searchKLabel">Top K</span>
-            <input id="searchK" type="number" min="1" max="12" value="5" />
+            <span id="filterQualityLabel">Quality</span>
+            <select id="filterQuality"></select>
           </label>
-          <button id="searchBtn" class="btn" type="button" disabled>Search Both</button>
+          <label>
+            <span id="filterIncludedLabel">Included</span>
+            <select id="filterIncluded"></select>
+          </label>
+          <label>
+            <span id="filterTopicLabel">Topic</span>
+            <select id="filterTopic"></select>
+          </label>
+          <label>
+            <span id="filterSearchLabel">Search</span>
+            <input id="filterSearch" />
+          </label>
+          <button id="exportCsvBtn" class="btn secondary" type="button">Export CSV</button>
         </form>
-        <pre id="searchStatus" class="output" style="margin-top:0.5rem;"></pre>
-        <div class="split" style="gap:1.5rem;margin-top:1rem;">
-          <div style="flex:1;">
-            <h3 id="searchColAHeading" class="chart-heading">Strategy A Results</h3>
-            <p id="searchColAMeta" class="search-summary"></p>
-            <div id="searchColAResults" class="search-cards"></div>
-          </div>
-          <div style="flex:1;">
-            <h3 id="searchColBHeading" class="chart-heading">Strategy B Results</h3>
-            <p id="searchColBMeta" class="search-summary"></p>
-            <div id="searchColBResults" class="search-cards"></div>
-          </div>
+        <p id="evidenceCountText" class="section-desc"></p>
+      </section>
+
+      <section class="panel">
+        <h2 class="section-title">
+          <img src="./icons/icon-library.svg" alt="" aria-hidden="true" />
+          <span id="evidenceListHeading">Curated Evidence</span>
+        </h2>
+        <div class="table-wrap evidence-table-wrap">
+          <table class="reviews-table evidence-table">
+            <thead>
+              <tr>
+                <th id="thVideo">video</th>
+                <th id="thTime">time</th>
+                <th id="thQuality">quality</th>
+                <th id="thScore">score</th>
+                <th id="thTopics">topics</th>
+                <th id="thIncluded">included</th>
+                <th id="thReason">reason</th>
+                <th id="thText">text</th>
+                <th id="thAction">action</th>
+              </tr>
+            </thead>
+            <tbody id="evidenceTableBody"></tbody>
+          </table>
         </div>
       </section>
 
       <section class="panel">
         <h2 class="section-title">
           <img src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
-          <span id="exportHeading">Export to Evaluation</span>
+          <span id="runsListHeading">Recent Pipeline Runs</span>
         </h2>
-        <p id="exportDesc" class="section-desc">Export the most recent search comparison as an evaluation run snapshot.</p>
-        <button id="exportBtn" class="btn secondary" type="button" disabled>Export to Evaluation</button>
-        <pre id="exportStatus" class="output" style="margin-top:0.5rem;"></pre>
+        <div class="table-wrap">
+          <table class="reviews-table">
+            <thead>
+              <tr>
+                <th id="thRunStarted">started_at</th>
+                <th id="thRunDataset">dataset</th>
+                <th id="thRunStatus">status</th>
+                <th id="thRunInput">input</th>
+                <th id="thRunEligible">eligible</th>
+                <th id="thRunDuration">duration_ms</th>
+              </tr>
+            </thead>
+            <tbody id="runsTableBody"></tbody>
+          </table>
+        </div>
       </section>
     </main>
 
@@ -187,7 +219,7 @@
         <img class="bottom-tab-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
         <span id="mobileReviewsNavText" class="bottom-tab-label">Reviews</span>
       </a>
-      <a id="mobileEvidenceNavLink" class="bottom-tab-link" href="./evidence.html">
+      <a id="mobileEvidenceNavLink" class="bottom-tab-link active" href="./evidence.html">
         <img class="bottom-tab-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
         <span id="mobileEvidenceNavText" class="bottom-tab-label">Evidence</span>
       </a>
@@ -195,12 +227,12 @@
         <img class="bottom-tab-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
         <span id="mobileEvaluationNavText" class="bottom-tab-label">Evaluation</span>
       </a>
-      <a id="mobileChunkingNavLink" class="bottom-tab-link active" href="./chunking.html">
+      <a id="mobileChunkingNavLink" class="bottom-tab-link" href="./chunking.html">
         <img class="bottom-tab-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
         <span id="mobileChunkingNavText" class="bottom-tab-label">Chunking</span>
       </a>
     </nav>
 
-    <script type="module" src="./chunking.js"></script>
+    <script type="module" src="./evidence.js"></script>
   </body>
 </html>

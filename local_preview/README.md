@@ -10,10 +10,17 @@ From `youtube_rag_v2_portfolio`:
 python local_preview/local_api.py
 ```
 
+For fully offline startup without loading the embedding model:
+
+```bash
+YT_RAG_FORCE_HASH_EMBEDDINGS=1 python local_preview/local_api.py
+```
+
 Open:
 
 - `http://127.0.0.1:8000/`
 - `http://127.0.0.1:8000/reviews.html`
+- `http://127.0.0.1:8000/evidence.html`
 - `http://127.0.0.1:8000/evaluation.html`
 - `http://127.0.0.1:8000/chunking.html`
 
@@ -27,6 +34,7 @@ Open:
 - Search result review (`relevant` / `not_relevant`)
 - Agent-review workflow helpers for batching search results and applying approved labels
 - Reviewed chunks analytics page
+- Read-only Evidence Curation page for pipeline quality signals and curated transcript evidence
 - Chunking Lab for side-by-side strategy preview/search comparison
 - Dedicated Evaluation workspace:
   - query sets
@@ -61,6 +69,10 @@ Open:
 - Ingest Gateway includes a Local Video OCR panel for local or permissioned `.mp4`, `.m4v`, `.mov`, `.mkv`, and `.webm` files.
 - Q&A Studio can search transcript evidence, OCR evidence, or a merged transcript + OCR evidence list.
 - New local endpoints: `POST /v1/local-video-ocr/jobs`, `GET /v1/local-video-ocr/jobs`, `GET /v1/local-video-ocr/videos/{video_id}`, `POST /v1/search-multimodal`, and `POST /v1/ask-multimodal`.
+
+## Update (April 30, 2026)
+
+- Added a read-only Evidence Curation workspace for transcript quality signals, eligibility decisions, topic tags, and pipeline run metadata generated under `data/runtime/`.
 
 ## Safety Mode (Evaluation)
 
