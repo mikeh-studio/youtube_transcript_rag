@@ -123,6 +123,15 @@ class TextProcessor:
             except Exception as e:
                 print(f"  Warning: could not load {lang} tokenizer: {e}")
 
+        if str(os.environ.get("YT_RAG_FORCE_HASH_EMBEDDINGS", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            print("Using local hashing embeddings; embedding model startup skipped.")
+            return
+
         print("Loading embedding model (this may take a moment)...")
         try:
             self.embed_model = SentenceTransformer("intfloat/multilingual-e5-base")

@@ -44,11 +44,13 @@ Open:
 
 - `http://127.0.0.1:8000/` (Main Console)
 - `http://127.0.0.1:8000/reviews.html` (Reviewed Chunks)
+- `http://127.0.0.1:8000/evidence.html` (Evidence Curation)
 - `http://127.0.0.1:8000/evaluation.html` (Evaluation Workspace)
 - `http://127.0.0.1:8000/chunking.html` (Chunking Lab)
 
 Note:
 - If model download/network is unavailable, the app falls back to local hashing embeddings in local preview mode.
+- For fully offline local-preview startup, run `YT_RAG_FORCE_HASH_EMBEDDINGS=1 python local_preview/local_api.py`.
 
 ## Multimodal Local Video OCR Mode
 
@@ -109,6 +111,31 @@ OCR metadata is written to `data/processed/{video_id}/frame_ocr.jsonl`:
 
 OCR vectors are stored separately from transcript vectors at `data/index/ocr/{video_id}.faiss` with metadata in `data/index/ocr/{video_id}.jsonl`. Merged search evidence uses `source_type` (`transcript` or `ocr`), `video_id`, timestamp fields, `text`, `score`, and `metadata`.
 
+## AI-Augmented Evidence Curation Pipeline
+
+`pipelines/curate_evidence.py` turns already-ingested transcript chunks into a curated local evidence dataset. Version 1A is deterministic and local-first: it reuses the stored transcript library, adds heuristic quality signals and topic tags, marks retrieval eligibility, and records reproducible pipeline run metadata without calling OpenAI, Anthropic, or any external service.
+
+Example:
+
+```bash
+python pipelines/curate_evidence.py \
+  --dataset-id demo_transcript_evidence \
+  --dataset-version v1 \
+  --language ja \
+  --limit 200
+```
+
+Outputs are written under `data/runtime/`:
+
+- `pipeline_runs.jsonl` - append-only run metadata with dataset/version, filters, counts, status, duration, and config.
+- `model_inference_results.jsonl` - append-only heuristic scoring results using `heuristic_quality_scorer` `v1`.
+- `curated_evidence_manifest.jsonl` - current curated transcript evidence rows with full text, quality labels, topic tags, and inclusion/exclusion decisions.
+- `evidence_quality_report.json` - summary quality report with eligibility rate, label counts, topic counts, score range, and timestamp/text validation counts.
+
+Open `http://127.0.0.1:8000/evidence.html` to inspect the generated artifacts in the local review UI. The Evidence workspace is read-only in Version 1A; generate or refresh artifacts with the CLI command above.
+
+This maps to AI-augmented data pipeline work even before optional LLM orchestration: model-derived quality signals are represented as inference records, curation decisions are captured in the manifest, each run is reproducible and traceable by `pipeline_run_id`, retrieval eligibility is explicit, and the quality report validates evidence/data readiness before downstream search or answer generation.
+
 ## Run In 60 Seconds
 
 From the repository root:
@@ -123,6 +150,7 @@ Open:
 
 - `http://127.0.0.1:8000/`
 - `http://127.0.0.1:8000/reviews.html`
+- `http://127.0.0.1:8000/evidence.html`
 - `http://127.0.0.1:8000/evaluation.html`
 - `http://127.0.0.1:8000/chunking.html`
 
@@ -150,6 +178,10 @@ Open:
 
 ![Run Comparison](docs/media/03-run-comparison.png)
 
+### Evidence Curation
+
+![Evidence Curation](docs/media/04-evidence-curation.png)
+
 ### UI Language Toggle (EN/JP)
 
 ![Main Console (JP)](docs/media/01-main-console-jp.png)
@@ -157,7 +189,7 @@ Open:
 ## Architecture
 
 ```text
-Browser UI (index / reviews / evaluation / chunking)
+Browser UI (index / reviews / evidence / evaluation / chunking)
           |
           v
 local_preview/local_api.py  (local HTTP API + static files)
@@ -171,7 +203,7 @@ local files:
   - data/index/ (FAISS index artifacts)
   - data/index/ocr/ (local-video OCR FAISS indexes)
   - data/frames/ and data/processed/ (local-video OCR outputs)
-  - data/runtime/ (feedback, ask history, ingest logs)
+  - data/runtime/ (feedback, ask history, ingest logs, evidence curation artifacts)
   - data/cache/summaries/ (per-video TLDR cache files)
   - browser localStorage (evaluation query sets/runs/labels)
 ```
@@ -180,7 +212,7 @@ local files:
 
 - `local_preview/` - local web UI + API for development and demos
 - `multilingual/` - retrieval engine, multilingual tokenization, transcript processing
-- `pipelines/` - local, permissioned video frame/OCR/embedding scripts
+- `pipelines/` - local, permissioned video frame/OCR/embedding scripts and evidence curation
 - `production_cloudflare/` - Cloudflare deployment stack (separate from local preview)
 - `retrieval/` - OCR and multimodal evidence search helpers
 - `tests/` - unit/integration tests for core behavior

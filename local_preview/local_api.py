@@ -115,6 +115,8 @@ ASK_HISTORY_LIMIT_PER_VIDEO = 20
 ASK_HISTORY_LIST_LIMIT_MAX = 100
 LOCALHOST_CORS_HOSTS = {"127.0.0.1", "localhost", "::1"}
 LOCAL_VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov", ".mkv", ".webm"}
+EVIDENCE_INCLUDED_TRUE = {"1", "true", "yes", "included", "eligible"}
+EVIDENCE_INCLUDED_FALSE = {"0", "false", "no", "excluded", "ineligible"}
 
 
 def now_iso() -> str:
@@ -1368,6 +1370,194 @@ class LocalRAGService:
                     rows.append(row)
 
         rows.sort(key=lambda row: str(row.get("ts") or ""), reverse=True)
+        return rows[:safe_limit]
+
+    # ------------------------------------------------------------------
+    # Evidence curation artifacts (read-only)
+    # ------------------------------------------------------------------
+
+    def _evidence_artifact_paths(self) -> Dict[str, Path]:
+        return {
+            "pipeline_runs": self.runtime_data_dir / "pipeline_runs.jsonl",
+            "model_inference_results": self.runtime_data_dir
+            / "model_inference_results.jsonl",
+            "manifest": self.runtime_data_dir / "curated_evidence_manifest.jsonl",
+            "quality_report": self.runtime_data_dir / "evidence_quality_report.json",
+        }
+
+    @staticmethod
+    def _read_jsonl_file(path: Path) -> List[dict]:
+        if not path.exists():
+            return []
+        rows: List[dict] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                row = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows
+
+    @staticmethod
+    def _count_jsonl_file(path: Path) -> int:
+        if not path.exists():
+            return 0
+        return sum(
+            1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+        )
+
+    @staticmethod
+    def _read_json_file(path: Path) -> Optional[dict]:
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _coerce_evidence_bool_filter(value: Optional[str]) -> Optional[bool]:
+        scoped = str(value or "").strip().lower()
+        if not scoped:
+            return None
+        if scoped in EVIDENCE_INCLUDED_TRUE:
+            return True
+        if scoped in EVIDENCE_INCLUDED_FALSE:
+            return False
+        raise ValueError("included must be one of: true, false, included, excluded")
+
+    def evidence_curation_summary(self) -> dict:
+        paths = self._evidence_artifact_paths()
+        report = self._read_json_file(paths["quality_report"]) or {}
+        runs = self._read_jsonl_file(paths["pipeline_runs"])
+        latest_run = runs[-1] if runs else None
+        artifacts = {
+            name: {
+                "path": str(path),
+                "exists": path.exists(),
+                "row_count": self._count_jsonl_file(path)
+                if path.suffix == ".jsonl"
+                else (1 if path.exists() else 0),
+            }
+            for name, path in paths.items()
+        }
+        return {
+            "available": bool(report or artifacts["manifest"]["row_count"]),
+            "report": report,
+            "latest_run": latest_run,
+            "artifacts": artifacts,
+        }
+
+    def list_evidence_curation_runs(self, *, limit: int = 25) -> List[dict]:
+        safe_limit = max(1, min(int(limit), 500))
+        rows = self._read_jsonl_file(self._evidence_artifact_paths()["pipeline_runs"])
+        rows.sort(key=lambda row: str(row.get("started_at") or ""), reverse=True)
+        return rows[:safe_limit]
+
+    def list_evidence_manifest(
+        self,
+        *,
+        video_id: Optional[str] = None,
+        quality_label: Optional[str] = None,
+        included: Optional[str] = None,
+        topic: Optional[str] = None,
+        q: Optional[str] = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> dict:
+        safe_limit = max(1, min(int(limit), 5000))
+        safe_offset = max(0, int(offset))
+        scoped_video = str(video_id or "").strip()
+        scoped_quality = str(quality_label or "").strip()
+        scoped_topic = str(topic or "").strip().lower()
+        scoped_query = str(q or "").strip().lower()
+        scoped_included = self._coerce_evidence_bool_filter(included)
+
+        rows = self._read_jsonl_file(self._evidence_artifact_paths()["manifest"])
+        if scoped_video:
+            rows = [
+                row for row in rows if str(row.get("video_id") or "") == scoped_video
+            ]
+        if scoped_quality:
+            rows = [
+                row
+                for row in rows
+                if str(row.get("quality_label") or "") == scoped_quality
+            ]
+        if scoped_included is not None:
+            rows = [
+                row
+                for row in rows
+                if bool(
+                    row.get("included")
+                    if "included" in row
+                    else row.get("retrieval_eligible")
+                )
+                is scoped_included
+            ]
+        if scoped_topic:
+            rows = [
+                row
+                for row in rows
+                if scoped_topic
+                in {str(tag).lower() for tag in row.get("topic_tags") or []}
+            ]
+        if scoped_query:
+            rows = [
+                row
+                for row in rows
+                if scoped_query
+                in " ".join(
+                    [
+                        str(row.get("evidence_id") or ""),
+                        str(row.get("video_id") or ""),
+                        str(row.get("video_title") or ""),
+                        str(row.get("text") or ""),
+                    ]
+                ).lower()
+            ]
+
+        total = len(rows)
+        paged_rows = rows[safe_offset : safe_offset + safe_limit]
+        return {
+            "count": len(paged_rows),
+            "total": total,
+            "limit": safe_limit,
+            "offset": safe_offset,
+            "rows": paged_rows,
+        }
+
+    def list_evidence_inferences(
+        self,
+        *,
+        evidence_id: Optional[str] = None,
+        pipeline_run_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[dict]:
+        safe_limit = max(1, min(int(limit), 1000))
+        scoped_evidence_id = str(evidence_id or "").strip()
+        scoped_pipeline_run_id = str(pipeline_run_id or "").strip()
+        rows = self._read_jsonl_file(
+            self._evidence_artifact_paths()["model_inference_results"]
+        )
+        if scoped_evidence_id:
+            rows = [
+                row
+                for row in rows
+                if str(row.get("evidence_id") or "") == scoped_evidence_id
+            ]
+        if scoped_pipeline_run_id:
+            rows = [
+                row
+                for row in rows
+                if str(row.get("pipeline_run_id") or "") == scoped_pipeline_run_id
+            ]
+        rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
         return rows[:safe_limit]
 
     # ------------------------------------------------------------------
@@ -3824,6 +4014,85 @@ class Handler(BaseHTTPRequestHandler):
                     since=since,
                 )
                 self._json({"ok": True, "count": len(rows), "logs": rows})
+                return
+
+            if path == "/v1/evidence-curation/summary":
+                summary = SERVICE.evidence_curation_summary()
+                self._json({"ok": True, **summary})
+                return
+
+            if path == "/v1/evidence-curation/runs":
+                params = parse_qs(parsed.query or "")
+                limit_raw = (params.get("limit") or [25])[0]
+                try:
+                    limit = int(limit_raw)
+                except (TypeError, ValueError):
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "INVALID_INPUT",
+                                "message": "limit must be an integer",
+                            },
+                        },
+                        400,
+                    )
+                    return
+                runs = SERVICE.list_evidence_curation_runs(limit=limit)
+                self._json({"ok": True, "count": len(runs), "runs": runs})
+                return
+
+            if path == "/v1/evidence-curation/manifest":
+                params = parse_qs(parsed.query or "")
+                try:
+                    limit = int((params.get("limit") or [500])[0])
+                    offset = int((params.get("offset") or [0])[0])
+                    result = SERVICE.list_evidence_manifest(
+                        video_id=(params.get("video_id") or [None])[0],
+                        quality_label=(params.get("quality_label") or [None])[0],
+                        included=(params.get("included") or [None])[0],
+                        topic=(params.get("topic") or [None])[0],
+                        q=(params.get("q") or [None])[0],
+                        limit=limit,
+                        offset=offset,
+                    )
+                except (TypeError, ValueError) as exc:
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "INVALID_INPUT",
+                                "message": str(exc),
+                            },
+                        },
+                        400,
+                    )
+                    return
+                self._json({"ok": True, **result})
+                return
+
+            if path == "/v1/evidence-curation/inferences":
+                params = parse_qs(parsed.query or "")
+                try:
+                    limit = int((params.get("limit") or [100])[0])
+                except (TypeError, ValueError):
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "INVALID_INPUT",
+                                "message": "limit must be an integer",
+                            },
+                        },
+                        400,
+                    )
+                    return
+                rows = SERVICE.list_evidence_inferences(
+                    evidence_id=(params.get("evidence_id") or [None])[0],
+                    pipeline_run_id=(params.get("pipeline_run_id") or [None])[0],
+                    limit=limit,
+                )
+                self._json({"ok": True, "count": len(rows), "inferences": rows})
                 return
 
             if path == "/v1/feedback/search-review":

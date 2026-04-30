@@ -16,12 +16,14 @@ const els = {
   tldrNavLink: document.getElementById("tldrNavLink"),
   qaNavLink: document.getElementById("qaNavLink"),
   reviewsNavLink: document.getElementById("reviewsNavLink"),
+  evidenceNavLink: document.getElementById("evidenceNavLink"),
   evaluationNavLink: document.getElementById("evaluationNavLink"),
   chunkingNavLink: document.getElementById("chunkingNavLink"),
   mobileHomeNavText: document.getElementById("mobileHomeNavText"),
   mobileTldrNavText: document.getElementById("mobileTldrNavText"),
   mobileQaNavText: document.getElementById("mobileQaNavText"),
   mobileReviewsNavText: document.getElementById("mobileReviewsNavText"),
+  mobileEvidenceNavText: document.getElementById("mobileEvidenceNavText"),
   mobileEvaluationNavText: document.getElementById("mobileEvaluationNavText"),
   mobileChunkingNavText: document.getElementById("mobileChunkingNavText"),
   heroTitle: document.getElementById("heroTitle"),
@@ -65,6 +67,7 @@ const I18N = {
     navTLDR: "TLDR Studio",
     navQA: "Q&A Studio",
     navReviews: "Reviews",
+    navEvidence: "Evidence",
     eyebrowText: "YouTube Transcript RAG",
     navEvaluation: "Evaluation",
     navChunking: "Chunking",
@@ -108,6 +111,7 @@ const I18N = {
     navTLDR: "TLDR Studio",
     navQA: "Q&A Studio",
     navReviews: "レビュー",
+    navEvidence: "エビデンス",
     eyebrowText: "YouTube Transcript RAG",
     navEvaluation: "評価",
     navChunking: "チャンキング",
@@ -441,6 +445,7 @@ function applyLocale(locale) {
   setNavLabel(els.tldrNavLink, t("navTLDR"));
   setNavLabel(els.qaNavLink, t("navQA"));
   setNavLabel(els.reviewsNavLink, t("navReviews"));
+  setNavLabel(els.evidenceNavLink, t("navEvidence"));
   setNavLabel(els.evaluationNavLink, t("navEvaluation"));
   setNavLabel(els.chunkingNavLink, t("navChunking"));
   if (els.mobileHomeNavText) {
@@ -454,6 +459,9 @@ function applyLocale(locale) {
   }
   if (els.mobileReviewsNavText) {
     els.mobileReviewsNavText.textContent = t("navReviews");
+  }
+  if (els.mobileEvidenceNavText) {
+    els.mobileEvidenceNavText.textContent = t("navEvidence");
   }
   if (els.mobileEvaluationNavText) {
     els.mobileEvaluationNavText.textContent = t("navEvaluation");
