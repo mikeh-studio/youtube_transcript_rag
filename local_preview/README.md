@@ -1,10 +1,10 @@
 # Local Preview (No Cloudflare)
 
-Run and evaluate YouTube Transcript RAG locally.
+Run the local retrieval evaluation workbench for YouTube transcripts.
 
 ## Start
 
-From `youtube_rag_v2_portfolio`:
+From the repository root:
 
 ```bash
 python local_preview/local_api.py
@@ -30,12 +30,12 @@ Open:
 - Ingest videos/playlists and index transcript chunks
 - Local/permissioned video OCR jobs for timestamped frame evidence
 - Retrieval modes: `hybrid`, `dense`, `lexical`
-- Grounded answer mode with citation-backed evidence and fallback warnings
+- Citation-backed Q&A with grounded evidence and fallback warnings
 - Search result review (`relevant` / `not_relevant`)
-- Agent-review workflow helpers for batching search results and applying approved labels
+- Assisted labeling workflow helpers for batching search results and applying approved labels
 - Reviewed chunks analytics page
-- Read-only Evidence Curation page for pipeline quality signals and curated transcript evidence
-- Chunking Lab for side-by-side strategy preview/search comparison
+- Read-only Evidence Curation workspace for pipeline quality signals and curated transcript evidence
+- Chunking Lab for chunking strategy preview/search comparison
 - Dedicated Evaluation workspace:
   - query sets
   - run snapshots
@@ -53,16 +53,16 @@ Open:
 
 ## Update (March 13, 2026)
 
-- Added `chunking.html`, a local Chunking Lab for comparing `time`, `sentence`, and `token` strategies against the same video.
+- Added `chunking.html`, a local Chunking Lab for chunking strategy comparison across `time`, `sentence`, and `token` strategies against the same video.
 - Added `POST /v1/chunking/preview` for chunk previews and `POST /v1/chunking/search` for search comparison over ephemeral re-chunked content.
 - Chunking Lab can export the latest comparison into the browser-local Evaluation workspace as run snapshots.
 - Chunk comparison requires ingested videos with persisted `full_transcript` data; re-ingest older videos if the lab reports that transcript data is missing.
 
 ## Update (April 1, 2026)
 
-- Q&A answer mode now shows grounded answer status, trust copy, and supporting evidence with EN/JP-safe answer-panel strings.
+- Citation-backed Q&A now shows grounded answer status, trust copy, and supporting evidence with EN/JP-safe answer-panel strings.
 - Fallback evidence cards keep source links visible in insufficient-evidence and provider-error states.
-- Local preview includes `review_agent_workflow.py` for building review batches from live search results and posting approved labels back into `/v1/feedback/search-review`.
+- Local preview includes `review_agent_workflow.py` for building assisted labeling batches from live search results and posting approved labels back into `/v1/feedback/search-review`.
 
 ## Update (April 28, 2026)
 
@@ -88,9 +88,9 @@ Open:
 - Chunking Lab uses the stored `full_transcript` artifact from ingest and does not mutate the saved library/index during preview/search comparison.
 - Cloudflare production stack remains in `production_cloudflare/` for later.
 
-## Agent Review Workflow
+## Assisted Labeling Workflow
 
-Use `local_preview/review_agent_workflow.py` to batch live `/v1/search` results for reviewer agents and to apply approved labels back through `/v1/feedback/search-review`.
+Use `local_preview/review_agent_workflow.py` to batch live `/v1/search` results for assisted review and to apply approved labels back through `/v1/feedback/search-review`.
 
 Example:
 

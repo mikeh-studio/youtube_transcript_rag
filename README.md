@@ -1,21 +1,8 @@
-# YouTube Transcript RAG
+# YouTube Transcript Retrieval Evaluation Workbench
 
-Local-first YouTube transcript retrieval and evaluation platform.
+Local-first retrieval and evaluation workbench for English and Japanese YouTube transcripts.
 
-This project lets you ingest YouTube transcripts, run semantic retrieval (`hybrid` / `dense` / `lexical`), ask grounded questions with citation-backed evidence, and evaluate ranking quality with a dedicated local Evaluation workspace. It currently supports English (EN-US) and Japanese (JP) only, with a built-in UI Language switch for EN/JP.
-
-## Language Support
-
-- Current support is **English (EN-US)** and **Japanese (JP)** only.
-- The UI includes a **Language** selector to switch between **EN** and **JP**.
-
-## What's New
-
-- **v2 Local Eval Release:** added the Evaluation workspace with query set management, run snapshots, local labels, core ranking metrics, and run-to-run comparison.
-- **Theme TLDR + Timestamp Quality Update:** moved TLDR generation onto persisted full transcripts with per-video caching, improved theme ranking and timestamp mapping, strengthened theme summaries/context, and improved ingest-side video management.
-- **March 7, 2026:** added TLDR fallback retry metadata, aligned cross-page header navigation, simplified the ingest hero, and expanded regression coverage for fallback and navigation behavior.
-- **March 13, 2026:** added the Chunking Lab with preview/search comparison routes, side-by-side chunking strategy analysis, evaluation export, persisted transcript requirements, and chunking-related regression coverage.
-- **April 1, 2026:** added grounded answer mode polish for citation-backed Q&A, restored EN/JP support in the new answer UI, added a targeted frontend CI gate, and added a local agent-review workflow for batching live `/v1/search` results and POSTing approved labels back into search feedback.
+This project started as transcript search/RAG and evolved into a retrieval-quality workbench. It supports transcript ingestion, timestamped multilingual chunking, local FAISS indexing, dense / lexical / hybrid retrieval, local result labeling, ranking metrics, run comparison, citation-backed Q&A, and optional OCR evidence search for local or permissioned video files.
 
 ## Quick Start
 
@@ -52,9 +39,43 @@ Note:
 - If model download/network is unavailable, the app falls back to local hashing embeddings in local preview mode.
 - For fully offline local-preview startup, run `YT_RAG_FORCE_HASH_EMBEDDINGS=1 python local_preview/local_api.py`.
 
-## Multimodal Local Video OCR Mode
+## Portfolio Summary
 
-This mode adds a first multimodal path for local video files that you own or have permission to process. It extracts timestamped frames, runs Japanese/English OCR over visible text, embeds the OCR text with the existing embedding approach, and lets you search OCR evidence alongside transcript evidence.
+Built a local-first retrieval evaluation workbench for English/Japanese YouTube transcripts. The system supports transcript ingestion, multilingual chunking, FAISS search, hybrid retrieval, local labeling, ranking metrics, run comparison, citation-backed Q&A, and OCR evidence search for local video files.
+
+## What This Project Solves
+
+Most RAG demos stop after retrieving chunks and sending them to an LLM. This project focuses on whether retrieval is actually good: it gives you a local workflow for labeling retrieved results, running repeatable evaluations, tracking ranking metrics, and comparing retrieval runs before using the evidence in downstream answers.
+
+The Q&A and OCR features are extensions on top of that retrieval layer. Citation-backed Q&A shows how retrieved transcript evidence can support answers, while local-video OCR adds another evidence source for visible text in files you own or have permission to process.
+
+## System Flow
+
+1. Ingest YouTube transcript
+2. Normalize and chunk transcript with timestamp metadata
+3. Generate embeddings and build local FAISS index
+4. Retrieve chunks using dense, lexical, or hybrid search
+5. Label retrieved results in the Evaluation workspace
+6. Compare retrieval runs using ranking metrics
+7. Generate grounded answers from retrieved evidence
+8. Optionally merge transcript evidence with OCR evidence from local video frames
+
+## Language Support
+
+- Current support is **English (EN-US)** and **Japanese (JP)** only.
+- The UI includes a **Language** selector to switch between **EN** and **JP**.
+
+## What's New
+
+- **v2 Local Eval Release:** added the Evaluation workspace with query set management, run snapshots, local labels, core ranking metrics, and run-to-run comparison.
+- **Theme TLDR + Timestamp Quality Update:** moved TLDR generation onto persisted full transcripts with per-video caching, improved theme ranking and timestamp mapping, strengthened theme summaries/context, and improved ingest-side video management.
+- **March 7, 2026:** added TLDR fallback retry metadata, aligned cross-page header navigation, simplified the ingest hero, and expanded regression coverage for fallback and navigation behavior.
+- **March 13, 2026:** added the Chunking Lab for chunking strategy comparison, including preview/search comparison routes, evaluation export, persisted transcript requirements, and chunking-related regression coverage.
+- **April 1, 2026:** added citation-backed Q&A polish, restored EN/JP support in the new answer UI, added a targeted frontend CI gate, and added an assisted labeling workflow for batching live `/v1/search` results and POSTing approved labels back into search feedback.
+
+## OCR Evidence Search for Local Videos
+
+This extension handles local video files that you own or have permission to process. It extracts timestamped frames, runs Japanese/English OCR over visible text, embeds the OCR text with the existing embedding approach, and lets you search OCR evidence alongside transcript evidence.
 
 Legal/platform note: public YouTube videos continue to use transcript, metadata, and timestamp-link workflows. Full frame extraction and OCR processing is for local or permissioned video files only. This project does not add public YouTube video downloading, YouTube page scraping, or blocking bypass logic for OCR.
 
@@ -111,7 +132,7 @@ OCR metadata is written to `data/processed/{video_id}/frame_ocr.jsonl`:
 
 OCR vectors are stored separately from transcript vectors at `data/index/ocr/{video_id}.faiss` with metadata in `data/index/ocr/{video_id}.jsonl`. Merged search evidence uses `source_type` (`transcript` or `ocr`), `video_id`, timestamp fields, `text`, `score`, and `metadata`.
 
-## AI-Augmented Evidence Curation Pipeline
+## Evidence Curation Workflow
 
 `pipelines/curate_evidence.py` turns already-ingested transcript chunks into a curated local evidence dataset. Version 1A is deterministic and local-first: it reuses the stored transcript library, adds heuristic quality signals and topic tags, marks retrieval eligibility, and records reproducible pipeline run metadata without calling OpenAI, Anthropic, or any external service.
 
@@ -134,7 +155,7 @@ Outputs are written under `data/runtime/`:
 
 Open `http://127.0.0.1:8000/evidence.html` to inspect the generated artifacts in the local review UI. The Evidence workspace is read-only in Version 1A; generate or refresh artifacts with the CLI command above.
 
-This maps to AI-augmented data pipeline work even before optional LLM orchestration: model-derived quality signals are represented as inference records, curation decisions are captured in the manifest, each run is reproducible and traceable by `pipeline_run_id`, retrieval eligibility is explicit, and the quality report validates evidence/data readiness before downstream search or answer generation.
+This is a local data curation workflow for retrieval evidence: quality signals are represented as inference records, curation decisions are captured in the manifest, each run is traceable by `pipeline_run_id`, retrieval eligibility is explicit, and the quality report checks evidence/data readiness before downstream search or answer generation.
 
 ## Run In 60 Seconds
 
@@ -158,7 +179,7 @@ Open:
 
 1. Ingest one or more videos/playlists.
 2. Run Search in `hybrid` mode and inspect ranked chunks.
-3. Ask a question in Q&A Studio and inspect the grounded answer, citations, and supporting evidence.
+3. Ask a question in Q&A Studio and inspect the citation-backed answer and supporting evidence.
 4. Open Evaluation page and create/import a query set.
 5. Execute a full run, label results, and inspect quality metrics.
 6. Compare two runs to show regression/lift.
@@ -223,12 +244,12 @@ local files:
 - Evaluation labels are **browser-local** (not shared across devices by default).
 - Inter-rater agreement/adjudication workflow is not implemented yet.
 - Retrieval quality depends on transcript availability from YouTube.
-- Chunking Lab works on already ingested videos and needs a stored `full_transcript`; legacy videos without that artifact must be re-ingested before preview/search comparison works.
+- Chunking Lab compares chunking strategies on already ingested videos and needs a stored `full_transcript`; legacy videos without that artifact must be re-ingested before preview/search comparison works.
 
-## Agent Review Workflow
+## Assisted Labeling Workflow
 
-The local preview now includes `local_preview/review_agent_workflow.py` for agent-assisted review of search-result labels. It reuses the live `/v1/search` and `/v1/feedback/search-review` endpoints instead of introducing a separate review store.
-Use it after manual search or Q&A testing when you want reviewer agents to recommend labels while the existing feedback API remains the single source of truth.
+The local preview includes `local_preview/review_agent_workflow.py` for assisted review of search-result labels. It reuses the live `/v1/search` and `/v1/feedback/search-review` endpoints instead of introducing a separate review store.
+Use it after manual search or Q&A testing when you want label recommendations while the existing feedback API remains the single source of truth.
 
 Typical flow:
 
