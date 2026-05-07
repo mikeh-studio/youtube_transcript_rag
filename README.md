@@ -72,6 +72,7 @@ The Q&A and OCR features are extensions on top of that retrieval layer. Citation
 - **March 7, 2026:** added TLDR fallback retry metadata, aligned cross-page header navigation, simplified the ingest hero, and expanded regression coverage for fallback and navigation behavior.
 - **March 13, 2026:** added the Chunking Lab for chunking strategy comparison, including preview/search comparison routes, evaluation export, persisted transcript requirements, and chunking-related regression coverage.
 - **April 1, 2026:** added citation-backed Q&A polish, restored EN/JP support in the new answer UI, added a targeted frontend CI gate, and added an assisted labeling workflow for batching live `/v1/search` results and POSTing approved labels back into search feedback.
+- **May 7, 2026:** streamlined local preview navigation, made YouTube ingest the primary first-run flow, moved local OCR behind an advanced disclosure, added ingested-video thumbnails, improved backend error copy, and combined Q&A Search/Ask into a tabbed workbench.
 
 ## OCR Evidence Search for Local Videos
 
@@ -89,8 +90,8 @@ Local UI flow:
 
 1. Start the local preview: `python local_preview/local_api.py`
 2. Open `http://127.0.0.1:8000/index.html`.
-3. In Ingest Gateway, use **Local Video OCR** with a local file path and a stable `video_id`.
-4. In Q&A Studio, set Evidence to **Transcript + OCR** or **OCR only** before searching or asking.
+3. In Ingest Gateway, use **Local Video (Advanced)** with a local file path and a stable `video_id`.
+4. In Q&A Studio, choose **Ask** or **Search**, then set Evidence to **Transcript + OCR** or **OCR only** as needed.
 
 The local API routes are:
 
@@ -178,8 +179,8 @@ Open:
 ## Demo Flow (Portfolio-Friendly)
 
 1. Ingest one or more videos/playlists.
-2. Run Search in `hybrid` mode and inspect ranked chunks.
-3. Ask a question in Q&A Studio and inspect the citation-backed answer and supporting evidence.
+2. Ask a question in Q&A Studio and inspect the citation-backed answer and supporting evidence.
+3. Switch to Search in `hybrid` mode and inspect ranked chunks.
 4. Open Evaluation page and create/import a query set.
 5. Execute a full run, label results, and inspect quality metrics.
 6. Compare two runs to show regression/lift.

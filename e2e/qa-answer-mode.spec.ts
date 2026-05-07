@@ -171,7 +171,7 @@ test("renders localized answer panel copy in Japanese locale", async ({ page }) 
   });
   await prepareQAStudio(page, { locale: "ja-JP" });
 
-  await page.locator('input[placeholder="Ask with citations"]').fill("指輪のシーンについて何と言っている？");
+  await page.getByLabel("Question").fill("指輪のシーンについて何と言っている？");
   await page.getByRole("button", { name: "Generate Answer" }).click();
 
   await expect(page.getByTestId("answer-status")).toHaveText("根拠付きで回答");

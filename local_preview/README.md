@@ -44,6 +44,14 @@ Open:
   - run comparison
 - UI language switch: `English (US)` / `日本語`
 
+## Update (May 7, 2026)
+
+- Primary navigation now keeps the core flow visible as Ingest, TLDR Studio, and Q&A Studio, with Reviews, Evidence, Evaluation, and Chunking grouped under Tools.
+- Ingest Gateway now centers the YouTube URL workflow, keeps Local Video OCR collapsed under **Local Video (Advanced)**, and shows thumbnails in the ingested-video carousel.
+- Backend connection and non-JSON response failures now show friendly retryable messages with collapsible debug details.
+- Q&A Studio now defaults to a tabbed **Ask | Search** workbench, with Ask presented as the primary grounded-answer flow.
+- Empty YouTube player panels are hidden until a timestamp is selected.
+
 ## Update (March 7, 2026)
 
 - TLDR summary generation now has a relaxed fallback path for long transcripts when strict compact/map-reduce validation fails.
