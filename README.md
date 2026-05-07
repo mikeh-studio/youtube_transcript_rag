@@ -188,9 +188,9 @@ Open:
 
 ## Screenshots
 
-### TLDR Studio
+### Ingest Gateway
 
-![TLDR Studio](docs/media/01-main-console.png)
+![Ingest Gateway](docs/media/01-main-console.png)
 
 ### Evaluation Metrics
 
@@ -204,9 +204,9 @@ Open:
 
 ![Evidence Curation](docs/media/04-evidence-curation.png)
 
-### UI Language Toggle (EN/JP)
+### Q&A Studio (JP)
 
-![Main Console (JP)](docs/media/01-main-console-jp.png)
+![Q&A Studio Japanese locale](docs/media/01-main-console-jp.png)
 
 ## Architecture
 
