@@ -33,22 +33,30 @@
             <img class="nav-icon" src="./icons/icon-search.svg" alt="" aria-hidden="true" />
             <span class="nav-label nav-label-text">Q&amp;A Studio</span>
           </a>
-          <a id="reviewsNavLink" class="app-nav-link" href="./reviews.html">
-            <img class="nav-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
-            <span class="nav-label nav-label-text">Reviews</span>
-          </a>
-          <a id="evidenceNavLink" class="app-nav-link" href="./evidence.html">
-            <img class="nav-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
-            <span class="nav-label nav-label-text">Evidence</span>
-          </a>
-          <a id="evaluationNavLink" class="app-nav-link" href="./evaluation.html">
-            <img class="nav-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
-            <span class="nav-label nav-label-text">Evaluation</span>
-          </a>
-          <a id="chunkingNavLink" class="app-nav-link nav-btn active" href="./chunking.html">
-            <img class="nav-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
-            <span class="nav-label nav-label-text">Chunking</span>
-          </a>
+          <details class="nav-tools-menu">
+            <summary class="app-nav-link nav-btn nav-tools-summary active">
+              <img class="nav-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
+              <span class="nav-label">Tools</span>
+            </summary>
+            <div class="nav-tools-panel">
+              <a id="reviewsNavLink" class="nav-tools-link" href="./reviews.html">
+                <img class="nav-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
+                <span class="nav-label-text">Reviews</span>
+              </a>
+              <a id="evidenceNavLink" class="nav-tools-link" href="./evidence.html">
+                <img class="nav-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
+                <span class="nav-label-text">Evidence</span>
+              </a>
+              <a id="evaluationNavLink" class="nav-tools-link" href="./evaluation.html">
+                <img class="nav-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+                <span class="nav-label-text">Evaluation</span>
+              </a>
+              <a id="chunkingNavLink" class="nav-tools-link active" href="./chunking.html">
+                <img class="nav-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+                <span class="nav-label-text">Chunking</span>
+              </a>
+            </div>
+          </details>
         </nav>
         <label class="locale-switch">
           <span id="localeLabel">Language</span>
@@ -183,22 +191,30 @@
         <img class="bottom-tab-icon" src="./icons/icon-search.svg" alt="" aria-hidden="true" />
         <span id="mobileQaNavText" class="bottom-tab-label">Q&amp;A Studio</span>
       </a>
-      <a id="mobileReviewsNavLink" class="bottom-tab-link" href="./reviews.html">
-        <img class="bottom-tab-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
-        <span id="mobileReviewsNavText" class="bottom-tab-label">Reviews</span>
-      </a>
-      <a id="mobileEvidenceNavLink" class="bottom-tab-link" href="./evidence.html">
-        <img class="bottom-tab-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
-        <span id="mobileEvidenceNavText" class="bottom-tab-label">Evidence</span>
-      </a>
-      <a id="mobileEvaluationNavLink" class="bottom-tab-link" href="./evaluation.html">
-        <img class="bottom-tab-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
-        <span id="mobileEvaluationNavText" class="bottom-tab-label">Evaluation</span>
-      </a>
-      <a id="mobileChunkingNavLink" class="bottom-tab-link active" href="./chunking.html">
-        <img class="bottom-tab-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
-        <span id="mobileChunkingNavText" class="bottom-tab-label">Chunking</span>
-      </a>
+      <details class="bottom-tools-menu">
+        <summary class="bottom-tab-link active">
+          <img class="bottom-tab-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
+          <span class="bottom-tab-label">Tools</span>
+        </summary>
+        <div class="bottom-tools-panel">
+          <a id="mobileReviewsNavLink" class="bottom-tools-link" href="./reviews.html">
+            <img class="bottom-tab-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
+            <span id="mobileReviewsNavText">Reviews</span>
+          </a>
+          <a id="mobileEvidenceNavLink" class="bottom-tools-link" href="./evidence.html">
+            <img class="bottom-tab-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
+            <span id="mobileEvidenceNavText">Evidence</span>
+          </a>
+          <a id="mobileEvaluationNavLink" class="bottom-tools-link" href="./evaluation.html">
+            <img class="bottom-tab-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+            <span id="mobileEvaluationNavText">Evaluation</span>
+          </a>
+          <a id="mobileChunkingNavLink" class="bottom-tools-link active" href="./chunking.html">
+            <img class="bottom-tab-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+            <span id="mobileChunkingNavText">Chunking</span>
+          </a>
+        </div>
+      </details>
     </nav>
 
     <script type="module" src="./chunking.js"></script>

@@ -36,7 +36,7 @@ The local preview keeps OCR behind an explicit local-file workflow:
 - `POST /v1/search-multimodal` returns transcript, OCR, or merged evidence.
 - `POST /v1/ask-multimodal` builds grounded answers from the selected evidence mode.
 
-The UI exposes this in Ingest Gateway as Local Video OCR and in Q&A Studio as an Evidence selector. OCR-only cards show frame paths and timestamp labels instead of YouTube playback/review controls.
+The UI exposes this in Ingest Gateway under **Local Video (Advanced)** and in Q&A Studio as an Evidence selector inside the Ask/Search workbench. OCR-only cards show frame paths and timestamp labels instead of YouTube playback/review controls.
 
 ## Evidence Merge
 

@@ -23,7 +23,7 @@ test.describe("mobile bottom tabs", () => {
 
     const tabBar = page.locator(".bottom-tabbar");
     await expect(tabBar).toBeVisible();
-    await expect(tabBar.locator(".bottom-tab-link")).toHaveCount(5);
+    await expect(tabBar.locator(".bottom-tab-link")).toHaveCount(4);
 
     await tabBar.getByRole("button", { name: "TLDR Studio" }).click();
     await expect(page).toHaveURL(/#\/tldr$/);
@@ -32,30 +32,33 @@ test.describe("mobile bottom tabs", () => {
 });
 
 test("header menu labels are consistent across pages", async ({ page }) => {
-  const expectedLabels = ["Ingest", "TLDR Studio", "Q&A Studio", "Reviews", "Evaluation"];
+  const expectedPrimaryLabels = ["Ingest", "TLDR Studio", "Q&A Studio", "Tools"];
+  const expectedToolLabels = ["Reviews", "Evidence", "Evaluation", "Chunking"];
+
+  async function expectGroupedNav(nav) {
+    const directItems = nav.locator(":scope > .app-nav-link, :scope > .nav-tools-menu > summary");
+    await expect(directItems).toHaveCount(4);
+    for (const label of expectedPrimaryLabels) {
+      await expect(directItems.getByText(label, { exact: true })).toBeVisible();
+    }
+
+    const toolsMenu = nav.locator(".nav-tools-menu");
+    await toolsMenu.evaluate((element) => element.setAttribute("open", ""));
+    for (const label of expectedToolLabels) {
+      await expect(toolsMenu.getByText(label, { exact: true })).toBeVisible();
+    }
+  }
 
   await page.addInitScript(() => {
     localStorage.setItem("yt_rag_ingest_unlocked", "1");
   });
 
   await page.goto("/index.html#/ingest");
-  const indexNav = page.locator(".appbar-nav");
-  await expect(indexNav.locator(".nav-icon")).toHaveCount(5);
-  for (const label of expectedLabels) {
-    await expect(indexNav.getByText(label, { exact: true })).toBeVisible();
-  }
+  await expectGroupedNav(page.locator(".appbar-nav"));
 
   await page.goto("/reviews.html");
-  const reviewsNav = page.locator(".appbar-nav");
-  await expect(reviewsNav.locator(".nav-icon")).toHaveCount(5);
-  for (const label of expectedLabels) {
-    await expect(reviewsNav.getByText(label, { exact: true })).toBeVisible();
-  }
+  await expectGroupedNav(page.locator(".appbar-nav"));
 
   await page.goto("/evaluation.html");
-  const evalNav = page.locator(".appbar-nav");
-  await expect(evalNav.locator(".nav-icon")).toHaveCount(5);
-  for (const label of expectedLabels) {
-    await expect(evalNav.getByText(label, { exact: true })).toBeVisible();
-  }
+  await expectGroupedNav(page.locator(".appbar-nav"));
 });

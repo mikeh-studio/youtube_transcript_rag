@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('navigates from home poster to detail page and preserves title', async ({ page }) => {
+test('renders ingested video thumbnails and review links', async ({ page }) => {
   const mockVideos = [
     {
       video_id: 'TWbQXYQMCxg',
@@ -18,18 +18,19 @@ test('navigates from home poster to detail page and preserves title', async ({ p
     });
   });
 
-  await page.goto('/index.html');
+  await page.goto('/index.html#/ingest');
 
-  const posterCard = page.locator('[data-testid="poster-card"]').first();
-  await expect(posterCard).toBeVisible();
+  const videoCard = page.locator('.ingest-video-card').first();
+  await expect(videoCard).toBeVisible();
 
-  const homeTitle = (await posterCard.locator('[data-testid="poster-title"]').innerText()).trim();
-  await posterCard.click();
+  await expect(videoCard.locator('.ingest-video-title')).toHaveText('Frieren Radio Episode 3');
+  await expect(videoCard.locator('.ingest-video-thumb > img')).toHaveAttribute(
+    'src',
+    /https:\/\/i\.ytimg\.com\/vi\/TWbQXYQMCxg\/hqdefault\.jpg/,
+  );
 
-  await expect(page).toHaveURL(/video_detail\.html\?video_id=/);
-
-  const detailTitleLocator = page.locator('[data-testid="detail-title"]');
-  await expect(detailTitleLocator).toHaveText(homeTitle);
-  const detailTitle = (await detailTitleLocator.innerText()).trim();
-  await expect(detailTitle).toBe(homeTitle);
+  await expect(videoCard.getByRole('link', { name: 'Review' })).toHaveAttribute(
+    'href',
+    /\/reviews\.html\?video_id=TWbQXYQMCxg$/,
+  );
 });
