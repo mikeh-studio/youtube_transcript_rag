@@ -14,6 +14,13 @@ from typing import Callable, Dict, Iterable, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from feedback_keys import (
+    feedback_chunk_key,
+    feedback_query_hash,
+    feedback_record_key,
+    normalize_feedback_query as _shared_normalize_feedback_query,
+)
+
 
 DEFAULT_SERVER_URL = "http://127.0.0.1:8000"
 DEFAULT_BATCH_DIR = Path("data/runtime/review_batches")
@@ -103,12 +110,27 @@ def _coerce_search_top_k(value, default: int = DEFAULT_TOP_K) -> int:
 def build_feedback_identity(
     video_id: str, chunk_index: Optional[int], start: float, end: float
 ) -> str:
-    """Match the local preview feedback identity key format."""
-    if chunk_index is not None:
-        return f"{video_id}:{chunk_index}"
-    start_ms = int(max(0.0, float(start)) * 1000)
-    end_ms = int(max(0.0, float(end)) * 1000)
-    return f"{video_id}:{start_ms}:{end_ms}"
+    """Match the local preview chunk identity key format."""
+    return feedback_chunk_key(video_id, chunk_index, start, end)
+
+
+def normalize_feedback_query(query: str) -> str:
+    """Match the local preview feedback query normalization."""
+    return _shared_normalize_feedback_query(query)
+
+
+def build_feedback_query_hash(query: str, retrieval_mode: str) -> str:
+    """Match the local preview query-aware feedback hash."""
+    return feedback_query_hash(query, _normalize_retrieval_mode(retrieval_mode))
+
+
+def build_feedback_record_identity(
+    chunk_key: str, query: str, retrieval_mode: str
+) -> str:
+    """Build the query+chunk feedback record identity."""
+    return feedback_record_key(
+        chunk_key, build_feedback_query_hash(query, retrieval_mode)
+    )
 
 
 def build_review_item(
@@ -170,23 +192,33 @@ def _build_feedback_lookup(rows: Iterable[dict]) -> Dict[str, dict]:
         chunk_index = _coerce_optional_int(row.get("chunk_index"))
         start = _coerce_float(row.get("start", 0.0))
         end = _coerce_float(row.get("end", start))
-        key = build_feedback_identity(video_id, chunk_index, start, end)
+        chunk_key = (
+            _normalize_text(row.get("chunk_key"))
+            or _normalize_text(row.get("feedback_key"))
+            or build_feedback_identity(video_id, chunk_index, start, end)
+        )
+        query = _normalize_text(row.get("query"))
+        retrieval_mode = _normalize_retrieval_mode(row.get("retrieval_mode"))
+        key = _normalize_text(row.get("key"))
+        if not key or key == chunk_key:
+            key = build_feedback_record_identity(chunk_key, query, retrieval_mode)
         lookup[key] = row
     return lookup
 
 
 def _feedback_label_for_row(
-    feedback_lookup: Dict[str, dict], row: dict
+    feedback_lookup: Dict[str, dict], row: dict, query: str, retrieval_mode: str
 ) -> Optional[str]:
     video_id = _normalize_text(row.get("video_id"))
     if not video_id:
         return None
-    key = build_feedback_identity(
+    chunk_key = build_feedback_identity(
         video_id,
         _coerce_optional_int(row.get("chunk_index")),
         _coerce_float(row.get("start", 0.0)),
         _coerce_float(row.get("end", row.get("start", 0.0))),
     )
+    key = build_feedback_record_identity(chunk_key, query, retrieval_mode)
     return _normalize_label((feedback_lookup.get(key) or {}).get("label"))
 
 
@@ -285,13 +317,19 @@ def build_review_batch(
 
         response = search_runner(normalized_spec)
         for row in response.get("results", []) or []:
+            response_mode = _normalize_retrieval_mode(
+                response.get("retrieval_mode"), normalized_spec["retrieval_mode"]
+            )
             item = build_review_item(
                 query=normalized_spec["query"],
-                retrieval_mode=_normalize_retrieval_mode(
-                    response.get("retrieval_mode"), normalized_spec["retrieval_mode"]
-                ),
+                retrieval_mode=response_mode,
                 row=row,
-                current_label=_feedback_label_for_row(feedback_lookup, row),
+                current_label=_feedback_label_for_row(
+                    feedback_lookup,
+                    row,
+                    normalized_spec["query"],
+                    response_mode,
+                ),
             )
             if not item:
                 continue

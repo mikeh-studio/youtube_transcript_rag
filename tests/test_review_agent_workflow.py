@@ -70,6 +70,47 @@ def test_build_review_batch_shapes_items_and_backfills_current_label():
     assert batch["items"][0]["text"].startswith("Python lists")
 
 
+def test_build_review_batch_ignores_feedback_from_different_query():
+    def fake_search_runner(spec):
+        return {
+            "ok": True,
+            "retrieval_mode": "dense",
+            "results": [
+                {
+                    "video_id": "vid1",
+                    "video_title": "Video 1",
+                    "language": "en",
+                    "chunk_index": 2,
+                    "start": 12.0,
+                    "end": 25.0,
+                    "rank": 1,
+                    "score": 0.88,
+                    "text": "Python lists can be sorted in place with sort().",
+                }
+            ],
+        }
+
+    batch = workflow.build_review_batch(
+        [{"query": "python lists", "retrieval_mode": "dense", "k": 3}],
+        search_runner=fake_search_runner,
+        existing_feedback=[
+            {
+                "query": "soccer world cup",
+                "retrieval_mode": "dense",
+                "label": "not_relevant",
+                "video_id": "vid1",
+                "chunk_index": 2,
+                "start": 12.0,
+                "end": 25.0,
+            }
+        ],
+        shard_size=10,
+        overlap_ratio=0.0,
+    )
+
+    assert batch["items"][0]["current_label"] is None
+
+
 def test_assign_review_shards_adds_deterministic_overlap():
     items = [
         {
