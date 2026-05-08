@@ -353,9 +353,60 @@ class TestVideoLibraryPersistence:
         assert lib2.index.ntotal == 5
         assert len(lib2.chunk_map) == 5
         assert lib2.videos["abc12345678"]["full_transcript"]["segment_count"] == 5
-        assert "en:chatgpt:5" in lib2.videos["abc12345678"]["summary_cache"]
+        assert lib2.videos["abc12345678"]["summary_cache"] == {}
         assert lib2.videos["abc12345678"]["chunking"]["version"] == CHUNKING_VERSION
         assert lib2.video_chunking_is_stale("abc12345678") is False
+
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
+    def test_load_legacy_layout_preserves_summary_cache(
+        self, mock_api_cls, tmp_data_dir
+    ):
+        from multilingual.video_library import VideoLibrary
+
+        mock_api = MagicMock()
+        mock_api.fetch.return_value = _make_transcript(5)
+        mock_api_cls.return_value = mock_api
+
+        lib = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        lib.add_video("https://www.youtube.com/watch?v=abc12345678")
+        lib._rebuild_chunk_map()
+        embeddings = lib.processor.generate_embeddings(
+            lib.videos["abc12345678"]["chunks"]
+        )
+        index = faiss.IndexFlatIP(embeddings.shape[1])
+        index.add(embeddings)
+        faiss.write_index(index, os.path.join(tmp_data_dir, "library.faiss"))
+
+        legacy_meta = {
+            "library_metadata": {
+                "chunking": lib.current_chunking_metadata(),
+            },
+            "videos": {
+                "abc12345678": {
+                    "url": lib.videos["abc12345678"]["url"],
+                    "title": lib.videos["abc12345678"]["title"],
+                    "language": lib.videos["abc12345678"]["language"],
+                    "chunks": lib.videos["abc12345678"]["chunks"],
+                    "full_transcript": lib.videos["abc12345678"]["full_transcript"],
+                    "summary_cache": {
+                        "en:chatgpt:5": {
+                            "version": 1,
+                            "generated_at": "2026-01-01T00:00:00+00:00",
+                            "source_fingerprint": "abc123",
+                            "result": {"summary": []},
+                        }
+                    },
+                }
+            },
+            "chunk_map": lib.chunk_map,
+        }
+        with open(
+            os.path.join(tmp_data_dir, "library_meta.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump(legacy_meta, fh, ensure_ascii=False, indent=2)
+
+        loaded = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        assert "en:chatgpt:5" in loaded.videos["abc12345678"]["summary_cache"]
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_save_preserves_language(self, mock_api_cls, tmp_data_dir):
@@ -390,8 +441,17 @@ class TestVideoLibraryPersistence:
         lib.add_video("https://www.youtube.com/watch?v=abc12345678")
         lib.save()
 
-        assert os.path.exists(os.path.join(tmp_data_dir, "library_meta.json"))
-        assert os.path.exists(os.path.join(tmp_data_dir, "library.faiss"))
+        manifest_path = os.path.join(tmp_data_dir, "library", "library.json")
+        record_path = os.path.join(
+            tmp_data_dir, "library", "videos", "abc12345678", "record.json"
+        )
+        assert os.path.exists(manifest_path)
+        assert os.path.exists(record_path)
+        assert os.path.exists(os.path.join(tmp_data_dir, "index", "library.faiss"))
+        assert (os.stat(manifest_path).st_mode & 0o777) == 0o600
+        with open(record_path, "r", encoding="utf-8") as fh:
+            record = json.load(fh)
+        assert "summary_cache" not in record
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_load_backfills_missing_summary_cache(self, mock_api_cls, tmp_data_dir):
@@ -403,14 +463,32 @@ class TestVideoLibraryPersistence:
 
         lib = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
         lib.add_video("https://www.youtube.com/watch?v=abc12345678")
-        lib.save()
-
-        meta_path = os.path.join(tmp_data_dir, "library_meta.json")
-        with open(meta_path, "r", encoding="utf-8") as fh:
-            meta = json.load(fh)
-        meta["videos"]["abc12345678"].pop("summary_cache", None)
-        with open(meta_path, "w", encoding="utf-8") as fh:
-            json.dump(meta, fh, ensure_ascii=False, indent=2)
+        lib._rebuild_chunk_map()
+        embeddings = lib.processor.generate_embeddings(
+            lib.videos["abc12345678"]["chunks"]
+        )
+        index = faiss.IndexFlatIP(embeddings.shape[1])
+        index.add(embeddings)
+        faiss.write_index(index, os.path.join(tmp_data_dir, "library.faiss"))
+        legacy_meta = {
+            "library_metadata": {
+                "chunking": lib.current_chunking_metadata(),
+            },
+            "videos": {
+                "abc12345678": {
+                    "url": lib.videos["abc12345678"]["url"],
+                    "title": lib.videos["abc12345678"]["title"],
+                    "language": lib.videos["abc12345678"]["language"],
+                    "chunks": lib.videos["abc12345678"]["chunks"],
+                    "full_transcript": lib.videos["abc12345678"]["full_transcript"],
+                }
+            },
+            "chunk_map": lib.chunk_map,
+        }
+        with open(
+            os.path.join(tmp_data_dir, "library_meta.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump(legacy_meta, fh, ensure_ascii=False, indent=2)
 
         loaded = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
         assert loaded.videos["abc12345678"]["summary_cache"] == {}
@@ -429,13 +507,20 @@ class TestVideoLibraryPersistence:
         lib.add_video("https://www.youtube.com/watch?v=abc12345678")
         lib.save()
 
-        meta_path = os.path.join(tmp_data_dir, "library_meta.json")
-        with open(meta_path, "r", encoding="utf-8") as fh:
+        manifest_path = os.path.join(tmp_data_dir, "library", "library.json")
+        with open(manifest_path, "r", encoding="utf-8") as fh:
             meta = json.load(fh)
         meta.pop("library_metadata", None)
-        meta["videos"]["abc12345678"].pop("chunking", None)
-        with open(meta_path, "w", encoding="utf-8") as fh:
+        with open(manifest_path, "w", encoding="utf-8") as fh:
             json.dump(meta, fh, ensure_ascii=False, indent=2)
+        record_path = os.path.join(
+            tmp_data_dir, "library", "videos", "abc12345678", "record.json"
+        )
+        with open(record_path, "r", encoding="utf-8") as fh:
+            record = json.load(fh)
+        record.pop("chunking", None)
+        with open(record_path, "w", encoding="utf-8") as fh:
+            json.dump(record, fh, ensure_ascii=False, indent=2)
 
         loaded = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
         assert (
@@ -456,7 +541,7 @@ class TestVideoLibraryPersistence:
 
         lib = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
         lib.save()
-        assert os.path.exists(os.path.join(tmp_data_dir, "library_meta.json"))
+        assert os.path.exists(os.path.join(tmp_data_dir, "library", "library.json"))
 
 
 class TestDominantLanguage:

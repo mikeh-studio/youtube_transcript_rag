@@ -1018,6 +1018,16 @@ class LocalRAGService:
                 record = self._normalize_feedback_record(row)
                 if not record:
                     continue
+                existing = normalized.get(record["key"])
+                if existing:
+                    existing_dt = self._parse_iso_datetime(
+                        existing.get("updated_at")
+                    ) or self._parse_iso_datetime(existing.get("created_at"))
+                    record_dt = self._parse_iso_datetime(
+                        record.get("updated_at")
+                    ) or self._parse_iso_datetime(record.get("created_at"))
+                    if existing_dt and record_dt and existing_dt > record_dt:
+                        continue
                 normalized[record["key"]] = record
 
             self.feedback = normalized
@@ -1064,6 +1074,27 @@ class LocalRAGService:
         end_ms = int(max(0.0, float(end)) * 1000)
         return f"{video_id}:{start_ms}:{end_ms}"
 
+    @staticmethod
+    def _normalize_feedback_query(query: str) -> str:
+        return " ".join(str(query or "").strip().lower().split())
+
+    @classmethod
+    def _feedback_query_hash(cls, query: str, retrieval_mode: str) -> str:
+        payload = json.dumps(
+            {
+                "query": cls._normalize_feedback_query(query),
+                "retrieval_mode": str(retrieval_mode or "hybrid").strip().lower(),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _feedback_record_key(chunk_key: str, query_hash: str) -> str:
+        return f"{chunk_key}:{query_hash}"
+
     def _normalize_feedback_record(self, row: dict) -> Optional[dict]:
         if not isinstance(row, dict):
             return None
@@ -1083,12 +1114,19 @@ class LocalRAGService:
         except Exception:
             return None
 
-        key = str(row.get("key") or "").strip() or self._feedback_key(
-            video_id, chunk_index, start, end
-        )
+        chunk_key = str(
+            row.get("chunk_key") or row.get("feedback_key") or ""
+        ).strip() or self._feedback_key(video_id, chunk_index, start, end)
         created_at = str(row.get("created_at") or now_iso())
         updated_at = str(row.get("updated_at") or created_at)
         query = str(row.get("query") or "")
+        retrieval_mode = str(row.get("retrieval_mode") or "hybrid").strip().lower()
+        if retrieval_mode not in RETRIEVAL_MODES:
+            retrieval_mode = "hybrid"
+        query_hash = str(row.get("query_hash") or "").strip() or (
+            self._feedback_query_hash(query, retrieval_mode)
+        )
+        key = self._feedback_record_key(chunk_key, query_hash)
         query_language = normalize_language(
             row.get("query_language"),
             fallback=self._infer_query_language(query),
@@ -1106,10 +1144,12 @@ class LocalRAGService:
         return {
             "id": str(row.get("id") or f"fb_{uuid.uuid4().hex[:12]}"),
             "key": key,
+            "chunk_key": chunk_key,
+            "query_hash": query_hash,
             "query": query,
             "query_language": query_language,
             "query_tokens": normalized_tokens,
-            "retrieval_mode": str(row.get("retrieval_mode") or "hybrid"),
+            "retrieval_mode": retrieval_mode,
             "model": str(row.get("model") or row.get("retrieval_mode") or "hybrid"),
             "label": label,
             "video_id": video_id,
@@ -1147,7 +1187,7 @@ class LocalRAGService:
     def _rebuild_feedback_index(self) -> None:
         index: Dict[str, dict] = {}
         for record in self.feedback.values():
-            key = str(record.get("key") or "").strip()
+            key = str(record.get("chunk_key") or record.get("key") or "").strip()
             label = str(record.get("label") or "").strip().lower()
             if not key or label not in REVIEW_LABELS:
                 continue
@@ -1727,7 +1767,9 @@ class LocalRAGService:
         start = float(payload.get("start", 0.0))
         end = float(payload.get("end", start))
         rank = self._coerce_optional_int(payload.get("rank"))
-        identity = self._feedback_key(video_id, chunk_index, start, end)
+        chunk_key = self._feedback_key(video_id, chunk_index, start, end)
+        query_hash = self._feedback_query_hash(query, retrieval_mode)
+        identity = self._feedback_record_key(chunk_key, query_hash)
         now = now_iso()
         query_language = self._infer_query_language(query)
         query_tokens = self._tokenize_for_lexical(query, language=query_language)
@@ -1748,6 +1790,8 @@ class LocalRAGService:
                 if isinstance(existing, dict)
                 else f"fb_{uuid.uuid4().hex[:12]}",
                 "key": identity,
+                "chunk_key": chunk_key,
+                "query_hash": query_hash,
                 "query": query,
                 "query_language": query_language,
                 "query_tokens": query_tokens,

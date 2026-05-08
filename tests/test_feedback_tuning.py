@@ -1,8 +1,10 @@
 """Tests for feedback-adaptive retrieval tuning in local preview."""
 
 import importlib
+import json
 import os
 import sys
+import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -110,6 +112,77 @@ def test_global_feedback_prior_can_flip_ranking():
     assert ranked[1]["feedback_adjustment"] < 0
 
 
+def test_feedback_is_stored_per_query_chunk_pair():
+    service = _make_service(enabled=True)
+
+    first = service.save_search_feedback(
+        {
+            "query": "python list",
+            "retrieval_mode": "dense",
+            "label": "relevant",
+            "video_id": "vid1",
+            "chunk_index": 0,
+            "start": 0.0,
+            "end": 10.0,
+        }
+    )
+    second = service.save_search_feedback(
+        {
+            "query": "soccer world cup",
+            "retrieval_mode": "dense",
+            "label": "not_relevant",
+            "video_id": "vid1",
+            "chunk_index": 0,
+            "start": 0.0,
+            "end": 10.0,
+        }
+    )
+
+    assert len(service.feedback) == 2
+    assert first["chunk_key"] == "vid1:0"
+    assert second["chunk_key"] == "vid1:0"
+    assert first["key"] != second["key"]
+    assert first["query_hash"] != second["query_hash"]
+    assert service.feedback_index["vid1:0"]["relevant_count"] == 1
+    assert service.feedback_index["vid1:0"]["not_relevant_count"] == 1
+    assert len(service.feedback_index["vid1:0"]["entries"]) == 2
+
+
+def test_feedback_update_preserves_single_normalized_query_pair():
+    service = _make_service(enabled=True)
+
+    first = service.save_search_feedback(
+        {
+            "query": "  Python   LIST  ",
+            "retrieval_mode": "dense",
+            "label": "relevant",
+            "video_id": "vid1",
+            "chunk_index": 0,
+            "start": 0.0,
+            "end": 10.0,
+        }
+    )
+    second = service.save_search_feedback(
+        {
+            "query": "python list",
+            "retrieval_mode": "dense",
+            "label": "not_relevant",
+            "video_id": "vid1",
+            "chunk_index": 0,
+            "start": 0.0,
+            "end": 10.0,
+        }
+    )
+
+    assert len(service.feedback) == 1
+    assert second["id"] == first["id"]
+    assert second["key"] == first["key"]
+    assert second["created_at"] == first["created_at"]
+    assert second["label"] == "not_relevant"
+    assert service.feedback_index["vid1:0"]["relevant_count"] == 0
+    assert service.feedback_index["vid1:0"]["not_relevant_count"] == 1
+
+
 def test_query_similarity_gate_blocks_unrelated_query_boost():
     service = _make_service(enabled=True)
     service.save_search_feedback(
@@ -214,6 +287,46 @@ def test_normalize_feedback_backfills_query_tokens():
     assert isinstance(row["query_tokens"], list)
     assert row["query_tokens"]
     assert row["query_language"] == "en"
+    assert row["chunk_key"] == "vid1:0"
+    assert row["key"].startswith("vid1:0:")
+    assert row["key"] != "vid1:0"
+
+
+def test_load_feedback_migrates_legacy_rows_to_query_aware_keys():
+    service = _make_service(enabled=True)
+    runtime_dir = Path(tempfile.mkdtemp())
+    service.feedback_path = runtime_dir / "search_feedback.json"
+    service.legacy_feedback_path = runtime_dir / "legacy_feedback.json"
+    service.feedback_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "fb_old",
+                    "key": "vid1:0",
+                    "query": "python list",
+                    "retrieval_mode": "dense",
+                    "label": "relevant",
+                    "video_id": "vid1",
+                    "chunk_index": 0,
+                    "start": 0.0,
+                    "end": 10.0,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    LocalRAGService._load_feedback(service)
+
+    assert len(service.feedback) == 1
+    record = next(iter(service.feedback.values()))
+    assert record["id"] == "fb_old"
+    assert record["chunk_key"] == "vid1:0"
+    assert record["key"].startswith("vid1:0:")
+    assert record["key"] != "vid1:0"
+    assert service.feedback_index["vid1:0"]["relevant_count"] == 1
 
 
 def test_retrieve_adds_feedback_metadata():
