@@ -14,6 +14,13 @@ from typing import Callable, Dict, Iterable, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from feedback_keys import (
+    feedback_chunk_key,
+    feedback_query_hash,
+    feedback_record_key,
+    normalize_feedback_query as _shared_normalize_feedback_query,
+)
+
 
 DEFAULT_SERVER_URL = "http://127.0.0.1:8000"
 DEFAULT_BATCH_DIR = Path("data/runtime/review_batches")
@@ -104,37 +111,26 @@ def build_feedback_identity(
     video_id: str, chunk_index: Optional[int], start: float, end: float
 ) -> str:
     """Match the local preview chunk identity key format."""
-    if chunk_index is not None:
-        return f"{video_id}:{chunk_index}"
-    start_ms = int(max(0.0, float(start)) * 1000)
-    end_ms = int(max(0.0, float(end)) * 1000)
-    return f"{video_id}:{start_ms}:{end_ms}"
+    return feedback_chunk_key(video_id, chunk_index, start, end)
 
 
 def normalize_feedback_query(query: str) -> str:
     """Match the local preview feedback query normalization."""
-    return " ".join(_normalize_text(query).lower().split())
+    return _shared_normalize_feedback_query(query)
 
 
 def build_feedback_query_hash(query: str, retrieval_mode: str) -> str:
     """Match the local preview query-aware feedback hash."""
-    payload = json.dumps(
-        {
-            "query": normalize_feedback_query(query),
-            "retrieval_mode": _normalize_retrieval_mode(retrieval_mode),
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return feedback_query_hash(query, _normalize_retrieval_mode(retrieval_mode))
 
 
 def build_feedback_record_identity(
     chunk_key: str, query: str, retrieval_mode: str
 ) -> str:
     """Build the query+chunk feedback record identity."""
-    return f"{chunk_key}:{build_feedback_query_hash(query, retrieval_mode)}"
+    return feedback_record_key(
+        chunk_key, build_feedback_query_hash(query, retrieval_mode)
+    )
 
 
 def build_review_item(

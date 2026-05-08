@@ -329,6 +329,53 @@ def test_load_feedback_migrates_legacy_rows_to_query_aware_keys():
     assert service.feedback_index["vid1:0"]["relevant_count"] == 1
 
 
+def test_load_feedback_collapses_queryless_legacy_duplicates_to_latest():
+    service = _make_service(enabled=True)
+    runtime_dir = Path(tempfile.mkdtemp())
+    service.feedback_path = runtime_dir / "search_feedback.json"
+    service.legacy_feedback_path = runtime_dir / "legacy_feedback.json"
+    service.feedback_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "fb_old",
+                    "key": "vid1:0",
+                    "retrieval_mode": "dense",
+                    "label": "relevant",
+                    "video_id": "vid1",
+                    "chunk_index": 0,
+                    "start": 0.0,
+                    "end": 10.0,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                },
+                {
+                    "id": "fb_new",
+                    "key": "vid1:0",
+                    "retrieval_mode": "dense",
+                    "label": "not_relevant",
+                    "video_id": "vid1",
+                    "chunk_index": 0,
+                    "start": 0.0,
+                    "end": 10.0,
+                    "created_at": "2026-01-02T00:00:00+00:00",
+                    "updated_at": "2026-01-02T00:00:00+00:00",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    LocalRAGService._load_feedback(service)
+
+    assert len(service.feedback) == 1
+    record = next(iter(service.feedback.values()))
+    assert record["id"] == "fb_new"
+    assert record["query"] == ""
+    assert record["chunk_key"] == "vid1:0"
+    assert record["label"] == "not_relevant"
+
+
 def test_retrieve_adds_feedback_metadata():
     service = _make_service(enabled=True)
     service._dense_search = lambda query, k, language: [

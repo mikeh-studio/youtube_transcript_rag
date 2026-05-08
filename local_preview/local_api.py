@@ -64,6 +64,12 @@ from pipelines.video_ocr_common import (  # noqa: E402
 )
 from retrieval.ocr_retriever import OCREvidenceRetriever  # noqa: E402
 from retrieval.search_multimodal import merge_evidence  # noqa: E402
+from feedback_keys import (  # noqa: E402
+    feedback_chunk_key,
+    feedback_query_hash,
+    feedback_record_key,
+    normalize_feedback_query,
+)
 from grounded_answer import (  # noqa: E402
     ANSWER_CONFIDENCE_LEVELS,
     ANSWER_STATUSES,
@@ -1020,6 +1026,9 @@ class LocalRAGService:
                     continue
                 existing = normalized.get(record["key"])
                 if existing:
+                    # Query-less legacy rows for the same chunk/mode collapse to one
+                    # query-aware key. Keep the newest parseable timestamp; if both
+                    # timestamps are malformed, later file order intentionally wins.
                     existing_dt = self._parse_iso_datetime(
                         existing.get("updated_at")
                     ) or self._parse_iso_datetime(existing.get("created_at"))
@@ -1068,32 +1077,19 @@ class LocalRAGService:
     def _feedback_key(
         video_id: str, chunk_index: Optional[int], start: float, end: float
     ) -> str:
-        if chunk_index is not None:
-            return f"{video_id}:{chunk_index}"
-        start_ms = int(max(0.0, float(start)) * 1000)
-        end_ms = int(max(0.0, float(end)) * 1000)
-        return f"{video_id}:{start_ms}:{end_ms}"
+        return feedback_chunk_key(video_id, chunk_index, start, end)
 
     @staticmethod
     def _normalize_feedback_query(query: str) -> str:
-        return " ".join(str(query or "").strip().lower().split())
+        return normalize_feedback_query(query)
 
-    @classmethod
-    def _feedback_query_hash(cls, query: str, retrieval_mode: str) -> str:
-        payload = json.dumps(
-            {
-                "query": cls._normalize_feedback_query(query),
-                "retrieval_mode": str(retrieval_mode or "hybrid").strip().lower(),
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    @staticmethod
+    def _feedback_query_hash(query: str, retrieval_mode: str) -> str:
+        return feedback_query_hash(query, retrieval_mode)
 
     @staticmethod
     def _feedback_record_key(chunk_key: str, query_hash: str) -> str:
-        return f"{chunk_key}:{query_hash}"
+        return feedback_record_key(chunk_key, query_hash)
 
     def _normalize_feedback_record(self, row: dict) -> Optional[dict]:
         if not isinstance(row, dict):
