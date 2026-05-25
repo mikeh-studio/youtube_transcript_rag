@@ -1,6 +1,6 @@
-# Local Preview (No Cloudflare)
+# Local Preview
 
-Run the local retrieval evaluation workbench for YouTube transcripts.
+Run the local UI and API for transcript ingestion, retrieval testing, evidence review, and evaluation.
 
 ## Start
 
@@ -10,97 +10,87 @@ From the repository root:
 python local_preview/local_api.py
 ```
 
-For fully offline startup without loading the embedding model:
+Open:
+
+- `http://127.0.0.1:8000/index.html` - Main console
+- `http://127.0.0.1:8000/reviews.html` - Reviewed chunks
+- `http://127.0.0.1:8000/evidence.html` - Evidence curation
+- `http://127.0.0.1:8000/evaluation.html` - Evaluation workspace
+- `http://127.0.0.1:8000/chunking.html` - Chunking Lab
+
+Use this command for fully offline startup without loading the embedding model:
 
 ```bash
 YT_RAG_FORCE_HASH_EMBEDDINGS=1 python local_preview/local_api.py
 ```
 
-Open:
-
-- `http://127.0.0.1:8000/`
-- `http://127.0.0.1:8000/reviews.html`
-- `http://127.0.0.1:8000/evidence.html`
-- `http://127.0.0.1:8000/evaluation.html`
-- `http://127.0.0.1:8000/chunking.html`
-
 ## What This Includes
 
-- Local UI + API in one process
-- Ingest videos/playlists and index transcript chunks
-- Local/permissioned video OCR jobs for timestamped frame evidence
-- Retrieval modes: `hybrid`, `dense`, `lexical`
-- Citation-backed Q&A with grounded evidence and fallback warnings
-- Search result review (`relevant` / `not_relevant`)
-- Assisted labeling workflow helpers for batching search results and applying approved labels
-- Reviewed chunks analytics page
-- Read-only Evidence Curation workspace for pipeline quality signals and curated transcript evidence
-- Chunking Lab for chunking strategy preview/search comparison
-- Dedicated Evaluation workspace:
-  - query sets
-  - run snapshots
-  - local labeling + reason codes
-  - metrics (`P@K`, `Recall@K`, `MRR`, `nDCG@K`)
-  - run comparison
-- UI language switch: `English (US)` / `日本語`
+- One local process for the HTTP API and static UI.
+- YouTube video and playlist transcript ingestion.
+- Transcript search with `hybrid`, `dense`, and `lexical` modes.
+- Citation-backed Q&A with grounded evidence and fallback states.
+- Search-result review with `relevant` and `not_relevant` labels.
+- Reviewed-chunk analytics.
+- Evidence curation reports generated from local pipeline artifacts.
+- Evaluation query sets, labels, run snapshots, metrics, and run comparison.
+- Chunking Lab for comparing chunking strategies on stored transcripts.
+- Optional local-video OCR for files you own or have permission to process.
+- UI language switch for English and Japanese.
 
-## Update (May 7, 2026)
+## Runtime Data
 
-- Primary navigation now keeps the core flow visible as Ingest, TLDR Studio, and Q&A Studio, with Reviews, Evidence, Evaluation, and Chunking grouped under Tools.
-- Ingest Gateway now centers the YouTube URL workflow, keeps Local Video OCR collapsed under **Local Video (Advanced)**, and shows thumbnails in the ingested-video carousel.
-- Backend connection and non-JSON response failures now show friendly retryable messages with collapsible debug details.
-- Q&A Studio now defaults to a tabbed **Ask | Search** workbench, with Ask presented as the primary grounded-answer flow.
-- Empty YouTube player panels are hidden until a timestamp is selected.
+Local preview writes generated state under `data/`:
 
-## Update (March 7, 2026)
+- `data/library/` - library manifest and per-video records.
+- `data/index/` - transcript FAISS indexes.
+- `data/index/ocr/` - OCR FAISS indexes.
+- `data/runtime/` - feedback, ask history, ingest logs, review batches, and curation artifacts.
+- `data/cache/summaries/` - TLDR cache files.
 
-- TLDR summary generation now has a relaxed fallback path for long transcripts when strict compact/map-reduce validation fails.
-- TLDR API responses now include strategy/fallback metadata to make summary generation diagnostics clearer.
-- Header menu rendering is now aligned across main shell, Reviews, and Evaluation pages (icon + label parity and locale-safe labels).
-- Ingest hero styling was simplified by removing the decorative boxed background.
+Evaluation query sets, labels, and run snapshots are stored in browser `localStorage`.
 
-## Update (March 13, 2026)
+## Ingestion Verification
 
-- Added `chunking.html`, a local Chunking Lab for chunking strategy comparison across `time`, `sentence`, and `token` strategies against the same video.
-- Added `POST /v1/chunking/preview` for chunk previews and `POST /v1/chunking/search` for search comparison over ephemeral re-chunked content.
-- Chunking Lab can export the latest comparison into the browser-local Evaluation workspace as run snapshots.
-- Chunk comparison requires ingested videos with persisted `full_transcript` data; re-ingest older videos if the lab reports that transcript data is missing.
+Use the real backend for ingestion checks:
 
-## Update (April 1, 2026)
+```bash
+python local_preview/local_api.py
+```
 
-- Citation-backed Q&A now shows grounded answer status, trust copy, and supporting evidence with EN/JP-safe answer-panel strings.
-- Fallback evidence cards keep source links visible in insufficient-evidence and provider-error states.
-- Local preview includes `review_agent_workflow.py` for building assisted labeling batches from live search results and posting approved labels back into `/v1/feedback/search-review`.
+Then test through `http://127.0.0.1:8000/index.html` or the JSON API.
 
-## Update (April 28, 2026)
+For an end-to-end ingestion check, capture:
 
-- Ingest Gateway includes a Local Video OCR panel for local or permissioned `.mp4`, `.m4v`, `.mov`, `.mkv`, and `.webm` files.
-- Q&A Studio can search transcript evidence, OCR evidence, or a merged transcript + OCR evidence list.
-- New local endpoints: `POST /v1/local-video-ocr/jobs`, `GET /v1/local-video-ocr/jobs`, `GET /v1/local-video-ocr/videos/{video_id}`, `POST /v1/search-multimodal`, and `POST /v1/ask-multimodal`.
+- `POST /v1/ingest/videos` response
+- `GET /v1/ingest/jobs` status, which should reach `completed`
+- `GET /v1/videos` result with the ingested video and chunk count
 
-## Update (April 30, 2026)
+Static hosting or mocked `/v1/*` responses are not valid ingestion verification.
 
-- Added a read-only Evidence Curation workspace for transcript quality signals, eligibility decisions, topic tags, and pipeline run metadata generated under `data/runtime/`.
+## Local Video OCR
 
-## Safety Mode (Evaluation)
+Local Video OCR is intentionally separate from the public YouTube transcript flow.
 
-- Evaluation data is browser-local (`localStorage`) by design.
-- No shared reviewer state is required for local evaluation runs.
+- It accepts local `.mp4`, `.m4v`, `.mov`, `.mkv`, and `.webm` files.
+- It creates timestamped frame, OCR, and OCR-index artifacts under `data/`.
+- Q&A Studio can search transcript evidence, OCR evidence, or both.
+- It requires `ffmpeg` and `ffprobe` on `PATH`.
 
-## Notes
+The main endpoints are:
 
-- Ingestion runs synchronously in local mode.
-- If embedding model download is unavailable, local preview can fall back to local hashing embeddings.
-- Local preview writes runtime state to `data/runtime/` and TLDR cache files to `data/cache/summaries/`.
-- Library persistence is split across `data/library/` (manifest + per-video records) and `data/index/` (FAISS index).
-- Chunking Lab uses the stored `full_transcript` artifact from ingest and does not mutate the saved library/index during preview/search comparison.
-- Cloudflare production stack remains in `production_cloudflare/` for later.
+- `POST /v1/local-video-ocr/jobs`
+- `GET /v1/local-video-ocr/jobs`
+- `GET /v1/local-video-ocr/jobs/{job_id}`
+- `GET /v1/local-video-ocr/videos/{video_id}`
+- `POST /v1/search-multimodal`
+- `POST /v1/ask-multimodal`
 
 ## Assisted Labeling Workflow
 
-Use `local_preview/review_agent_workflow.py` to batch live `/v1/search` results for assisted review and to apply approved labels back through `/v1/feedback/search-review`.
+Use `local_preview/review_agent_workflow.py` to batch live search results, render reviewer prompts, build adjudication inputs, and apply approved labels back through `/v1/feedback/search-review`.
 
-Example:
+Build a batch:
 
 ```bash
 python local_preview/review_agent_workflow.py build-batch \
@@ -108,9 +98,7 @@ python local_preview/review_agent_workflow.py build-batch \
   --include-existing-feedback
 ```
 
-The checked-in example query file is tuned for the currently ingested `葬送のフリーレン` radio-style transcript library and uses Japanese queries. If your local library is different, copy the file and swap in queries that match your own transcripts.
-
-Render a reviewer prompt for one shard:
+Render a reviewer prompt:
 
 ```bash
 python local_preview/review_agent_workflow.py render-prompt \
@@ -119,16 +107,25 @@ python local_preview/review_agent_workflow.py render-prompt \
   --shard-id shard-001
 ```
 
-Group reviewer outputs into consensus and disagreement buckets:
+Build adjudication input:
 
 ```bash
 python local_preview/review_agent_workflow.py build-adjudication \
   --input data/runtime/review_recommendations/<recommendations>.json
 ```
 
-Apply only approved recommendations:
+Apply approved recommendations:
 
 ```bash
 python local_preview/review_agent_workflow.py apply \
   --input data/runtime/review_recommendations/<approved>.json
 ```
+
+The checked-in example query file uses Japanese prompts aligned to the current local sample library. For other libraries, copy it and replace the queries with prompts that match your transcripts.
+
+## Notes
+
+- Ingestion runs synchronously in local mode.
+- If embedding model download is unavailable, local preview can use hashing embeddings.
+- Chunking Lab reads stored `full_transcript` data and does not mutate the saved library or index during preview/search comparison.
+- The Cloudflare production stack remains separate in `production_cloudflare/`.
