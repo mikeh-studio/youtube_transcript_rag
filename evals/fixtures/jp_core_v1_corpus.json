@@ -1,0 +1,197 @@
+{
+  "name": "jp_core_v1_fixture_corpus",
+  "videos": [
+    {
+      "video_id": "jpCoreVid01",
+      "title": "Japanese Robotics Retrieval Fixture",
+      "language": "ja",
+      "url": "https://www.youtube.com/watch?v=jpCoreVid01",
+      "chunks": [
+        {
+          "start": 0,
+          "end": 54,
+          "text": "冒頭では AI 推論 の一般的な話と、ロボット番組の目的を紹介する。Jetson という言葉はまだ出ない。",
+          "semantic_terms": ["intro", "ai", "robotics"],
+          "dense_scores": {
+            "Jetson Orin エッジAI 推論": 0.95,
+            "Isaac Sim 合成データ 把持モデル": 0.44,
+            "OEMチャネル A/Bテスト 販売店": 0.42,
+            "Precision Recall MRR nDCG 評価ワークスペース": 0.40,
+            "引用付き回答 根拠不足 警告": 0.36,
+            "完全オフライン 起動 ハッシュ埋め込み": 0.38,
+            "手動テスト URL 127.0.0.1 index.html": 0.30,
+            "代理店施策の勝ち筋": 0.84
+          }
+        },
+        {
+          "start": 55,
+          "end": 116,
+          "text": "NVIDIA Jetson Orin は ロボット の エッジAI 推論 に使う。低遅延でカメラ入力を処理し、クラウドに送らずに判断できる。",
+          "semantic_terms": ["jetson", "orin", "edge ai", "robot inference"],
+          "dense_scores": {
+            "Jetson Orin エッジAI 推論": 0.60,
+            "Isaac Sim 合成データ 把持モデル": 0.50,
+            "OEMチャネル A/Bテスト 販売店": 0.39,
+            "Precision Recall MRR nDCG 評価ワークスペース": 0.34,
+            "引用付き回答 根拠不足 警告": 0.35,
+            "完全オフライン 起動 ハッシュ埋め込み": 0.52,
+            "手動テスト URL 127.0.0.1 index.html": 0.31,
+            "代理店施策の勝ち筋": 0.40
+          }
+        },
+        {
+          "start": 117,
+          "end": 178,
+          "text": "デモでは Isaac Sim で 合成データ を作り、ロボットアームの 把持モデル を評価した。実機テスト前の失敗例もここで確認する。",
+          "semantic_terms": ["isaac sim", "synthetic data", "grasping model"],
+          "dense_scores": {
+            "Jetson Orin エッジAI 推論": 0.48,
+            "Isaac Sim 合成データ 把持モデル": 0.58,
+            "OEMチャネル A/Bテスト 販売店": 0.41,
+            "Precision Recall MRR nDCG 評価ワークスペース": 0.33,
+            "引用付き回答 根拠不足 警告": 0.37,
+            "完全オフライン 起動 ハッシュ埋め込み": 0.42,
+            "手動テスト URL 127.0.0.1 index.html": 0.30,
+            "代理店施策の勝ち筋": 0.44
+          }
+        },
+        {
+          "start": 179,
+          "end": 240,
+          "text": "OEMチャネル では 販売店 向けの A/Bテスト を行う。比較指標は資料請求率、デモ予約率、商談化率で、成果パターンを週次で見る。",
+          "semantic_terms": ["oem channel", "dealer experiment", "ab test", "winning motion"],
+          "dense_scores": {
+            "Jetson Orin エッジAI 推論": 0.46,
+            "Isaac Sim 合成データ 把持モデル": 0.45,
+            "OEMチャネル A/Bテスト 販売店": 0.61,
+            "Precision Recall MRR nDCG 評価ワークスペース": 0.38,
+            "引用付き回答 根拠不足 警告": 0.32,
+            "完全オフライン 起動 ハッシュ埋め込み": 0.39,
+            "手動テスト URL 127.0.0.1 index.html": 0.30,
+            "代理店施策の勝ち筋": 0.92
+          }
+        },
+        {
+          "start": 241,
+          "end": 300,
+          "text": "質疑では Jetson の価格、Isaac の発表予定、AI 推論 のベンチマークなど複数の話題を短く触れる。",
+          "semantic_terms": ["mixed q and a", "jetson", "isaac", "benchmark"],
+          "dense_scores": {
+            "Jetson Orin エッジAI 推論": 0.91,
+            "Isaac Sim 合成データ 把持モデル": 0.96,
+            "OEMチャネル A/Bテスト 販売店": 0.47,
+            "Precision Recall MRR nDCG 評価ワークスペース": 0.42,
+            "引用付き回答 根拠不足 警告": 0.40,
+            "完全オフライン 起動 ハッシュ埋め込み": 0.41,
+            "手動テスト URL 127.0.0.1 index.html": 0.30,
+            "代理店施策の勝ち筋": 0.62
+          }
+        },
+        {
+          "start": 301,
+          "end": 360,
+          "text": "最後に来週の宿題を整理する。販売店 という単語は出るが、ここでは日程調整だけで A/Bテスト の説明はない。",
+          "semantic_terms": ["wrap up", "dealer schedule"],
+          "dense_scores": {
+            "Jetson Orin エッジAI 推論": 0.90,
+            "Isaac Sim 合成データ 把持モデル": 0.43,
+            "OEMチャネル A/Bテスト 販売店": 0.96,
+            "Precision Recall MRR nDCG 評価ワークスペース": 0.35,
+            "引用付き回答 根拠不足 警告": 0.34,
+            "完全オフライン 起動 ハッシュ埋め込み": 0.36,
+            "手動テスト URL 127.0.0.1 index.html": 0.30,
+            "代理店施策の勝ち筋": 0.58
+          }
+        }
+      ]
+    },
+    {
+      "video_id": "jpCoreVid02",
+      "title": "Evaluation Workspace Fixture",
+      "language": "ja",
+      "url": "https://www.youtube.com/watch?v=jpCoreVid02",
+      "chunks": [
+        {
+          "start": 0,
+          "end": 58,
+          "text": "このアプリはローカルの YouTube Transcript RAG 作業台で、検索モードを dense lexical hybrid から選べる。",
+          "semantic_terms": ["local app", "retrieval modes"],
+          "dense_scores": {
+            "Jetson Orin エッジAI 推論": 0.40,
+            "Isaac Sim 合成データ 把持モデル": 0.41,
+            "OEMチャネル A/Bテスト 販売店": 0.42,
+            "Precision Recall MRR nDCG 評価ワークスペース": 0.96,
+            "引用付き回答 根拠不足 警告": 0.82,
+            "完全オフライン 起動 ハッシュ埋め込み": 0.70,
+            "手動テスト URL 127.0.0.1 index.html": 0.60,
+            "代理店施策の勝ち筋": 0.42
+          }
+        },
+        {
+          "start": 59,
+          "end": 122,
+          "text": "Evaluation Workspace ではクエリセット、実行スナップショット、手動ラベルを保存し、Precision Recall MRR nDCG を比較できる。",
+          "semantic_terms": ["evaluation workspace", "precision", "recall", "mrr", "ndcg"],
+          "dense_scores": {
+            "Jetson Orin エッジAI 推論": 0.35,
+            "Isaac Sim 合成データ 把持モデル": 0.37,
+            "OEMチャネル A/Bテスト 販売店": 0.39,
+            "Precision Recall MRR nDCG 評価ワークスペース": 0.65,
+            "引用付き回答 根拠不足 警告": 0.51,
+            "完全オフライン 起動 ハッシュ埋め込み": 0.54,
+            "手動テスト URL 127.0.0.1 index.html": 0.57,
+            "代理店施策の勝ち筋": 0.38
+          }
+        },
+        {
+          "start": 123,
+          "end": 184,
+          "text": "Q&A Studio は 引用付き回答 を生成し、検索根拠が薄い場合は 根拠不足 と 警告 を返す。回答にはタイムスタンプを含める。",
+          "semantic_terms": ["grounded answer", "citations", "insufficient evidence"],
+          "dense_scores": {
+            "Jetson Orin エッジAI 推論": 0.36,
+            "Isaac Sim 合成データ 把持モデル": 0.37,
+            "OEMチャネル A/Bテスト 販売店": 0.34,
+            "Precision Recall MRR nDCG 評価ワークスペース": 0.52,
+            "引用付き回答 根拠不足 警告": 0.61,
+            "完全オフライン 起動 ハッシュ埋め込み": 0.58,
+            "手動テスト URL 127.0.0.1 index.html": 0.65,
+            "代理店施策の勝ち筋": 0.36
+          }
+        },
+        {
+          "start": 185,
+          "end": 246,
+          "text": "モデルのダウンロードが使えない環境では、完全オフライン 起動 のために ハッシュ埋め込み へフォールバックできる。",
+          "semantic_terms": ["offline startup", "hash embeddings"],
+          "dense_scores": {
+            "Jetson Orin エッジAI 推論": 0.37,
+            "Isaac Sim 合成データ 把持モデル": 0.38,
+            "OEMチャネル A/Bテスト 販売店": 0.36,
+            "Precision Recall MRR nDCG 評価ワークスペース": 0.57,
+            "引用付き回答 根拠不足 警告": 0.55,
+            "完全オフライン 起動 ハッシュ埋め込み": 0.62,
+            "手動テスト URL 127.0.0.1 index.html": 0.67,
+            "代理店施策の勝ち筋": 0.35
+          }
+        },
+        {
+          "start": 247,
+          "end": 308,
+          "text": "手動テスト URL は http://127.0.0.1:8000/index.html を使う。静的ホスティングやモック応答では ingest の確認にならない。",
+          "semantic_terms": ["manual test url", "index.html", "real backend"],
+          "dense_scores": {
+            "Jetson Orin エッジAI 推論": 0.34,
+            "Isaac Sim 合成データ 把持モデル": 0.35,
+            "OEMチャネル A/Bテスト 販売店": 0.33,
+            "Precision Recall MRR nDCG 評価ワークスペース": 0.54,
+            "引用付き回答 根拠不足 警告": 0.59,
+            "完全オフライン 起動 ハッシュ埋め込み": 0.74,
+            "手動テスト URL 127.0.0.1 index.html": 0.63,
+            "代理店施策の勝ち筋": 0.34
+          }
+        }
+      ]
+    }
+  ]
+}

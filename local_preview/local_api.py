@@ -89,6 +89,14 @@ PLAYLIST_VIDEO_RE = re.compile(r'"videoId":"([a-zA-Z0-9_-]{11})"')
 TOKEN_RE = re.compile(r"[a-zA-Z0-9_]+")
 JP_CHAR_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
 RETRIEVAL_MODES = {"hybrid", "dense", "lexical"}
+HYBRID_BASELINE_PROFILE = "baseline_rrf"
+HYBRID_OPTIMIZED_PROFILE = "optimized_v1"
+HYBRID_PROFILES = {HYBRID_BASELINE_PROFILE, HYBRID_OPTIMIZED_PROFILE}
+HYBRID_OPTIMIZED_WEIGHTS = {
+    "dense": 0.35,
+    "lexical": 0.60,
+    "dual_signal": 0.05,
+}
 REVIEW_LABELS = {"relevant", "not_relevant"}
 TITLE_PLACEHOLDER_RE = re.compile(r"^Video [a-zA-Z0-9_-]{11}$")
 ASK_PROVIDERS = {"chatgpt", "claude"}
@@ -2135,6 +2143,100 @@ class LocalRAGService:
             return fused
         return fused[: max(1, int(limit))]
 
+    @staticmethod
+    def _normalize_hybrid_profile(value: Optional[str]) -> str:
+        profile = str(value or HYBRID_OPTIMIZED_PROFILE).strip().lower()
+        if not profile:
+            return HYBRID_OPTIMIZED_PROFILE
+        if profile not in HYBRID_PROFILES:
+            raise ValueError(
+                f"retrieval_profile must be one of: {', '.join(sorted(HYBRID_PROFILES))}"
+            )
+        return profile
+
+    def _normalized_scores_by_key(
+        self, rows: List[dict], score_key: str
+    ) -> Dict[str, float]:
+        keyed_scores: Dict[str, float] = {}
+        low: Optional[float] = None
+        high: Optional[float] = None
+        for row in rows:
+            key = self._chunk_identity(row)
+            value = float(row.get(score_key, row.get("score", 0.0)))
+            keyed_scores[key] = value
+            low = value if low is None else min(low, value)
+            high = value if high is None else max(high, value)
+
+        if not keyed_scores or low is None or high is None:
+            return {}
+        if abs(high - low) <= 1e-12:
+            return {key: 1.0 if high > 0.0 else 0.0 for key in keyed_scores}
+        scale = high - low
+        for key, value in list(keyed_scores.items()):
+            keyed_scores[key] = (value - low) / scale
+        return keyed_scores
+
+    def _weighted_hybrid_fuse(
+        self,
+        dense_results: List[dict],
+        lexical_results: List[dict],
+        limit: Optional[int] = None,
+    ) -> List[dict]:
+        dense_norm = self._normalized_scores_by_key(dense_results, "dense_score")
+        lexical_norm = self._normalized_scores_by_key(lexical_results, "lexical_score")
+        merged: Dict[str, dict] = {}
+
+        for dense_rank, row in enumerate(dense_results, start=1):
+            key = self._chunk_identity(row)
+            entry = merged.setdefault(key, dict(row))
+            entry["dense_rank"] = min(dense_rank, entry.get("dense_rank", dense_rank))
+            entry["dense_score"] = float(row.get("dense_score", row.get("score", 0.0)))
+
+        for lexical_rank, row in enumerate(lexical_results, start=1):
+            key = self._chunk_identity(row)
+            entry = merged.setdefault(key, dict(row))
+            entry["lexical_rank"] = min(
+                lexical_rank, entry.get("lexical_rank", lexical_rank)
+            )
+            entry["lexical_score"] = float(
+                row.get("lexical_score", row.get("score", 0.0))
+            )
+
+        weights = HYBRID_OPTIMIZED_WEIGHTS
+
+        fused = []
+        for key, row in merged.items():
+            dense_component = dense_norm.get(key, 0.0)
+            lexical_component = lexical_norm.get(key, 0.0)
+            dual_signal = 1.0 if key in dense_norm and key in lexical_norm else 0.0
+            hybrid_score = (
+                (weights["dense"] * dense_component)
+                + (weights["lexical"] * lexical_component)
+                + (weights["dual_signal"] * dual_signal)
+            )
+            item = dict(row)
+            item["hybrid_score"] = float(hybrid_score)
+            fused.append(item)
+
+        fused.sort(
+            key=lambda row: (
+                float(row.get("hybrid_score", 0.0)),
+                float(row.get("lexical_score", 0.0)),
+                float(row.get("dense_score", 0.0)),
+                -int(row.get("lexical_rank", 10**9)),
+                -int(row.get("dense_rank", 10**9)),
+                -int(row.get("chunk_index", 10**9)),
+            ),
+            reverse=True,
+        )
+        for rank, row in enumerate(fused, start=1):
+            row["rank"] = rank
+            row["score"] = float(row.get("hybrid_score", 0.0))
+
+        if limit is None:
+            return fused
+        return fused[: max(1, int(limit))]
+
     def _rows_near_duplicate(self, left: dict, right: dict) -> bool:
         if str(left.get("video_id") or "") != str(right.get("video_id") or ""):
             return False
@@ -2211,6 +2313,21 @@ class LocalRAGService:
             "max_per_video": max_per_video,
         }
 
+    def _total_chunk_count(self, video_id: Optional[str] = None) -> int:
+        engine = getattr(self, "engine", None)
+        library = getattr(engine, "library", None)
+        videos = getattr(library, "videos", None)
+        if not isinstance(videos, dict):
+            return 0
+
+        scoped_video_id = str(video_id or "").strip()
+        total = 0
+        for current_video_id, video_data in videos.items():
+            if scoped_video_id and current_video_id != scoped_video_id:
+                continue
+            total += len(video_data.get("chunks", []))
+        return total
+
     def retrieve(
         self,
         query: str,
@@ -2218,18 +2335,27 @@ class LocalRAGService:
         language: Optional[str] = None,
         retrieval_mode: str = "hybrid",
         video_id: Optional[str] = None,
+        retrieval_profile: Optional[str] = None,
     ) -> dict:
         mode = (retrieval_mode or "hybrid").strip().lower()
         if mode not in RETRIEVAL_MODES:
             raise ValueError(
                 f"retrieval_mode must be one of: {', '.join(sorted(RETRIEVAL_MODES))}"
             )
+        hybrid_profile = (
+            self._normalize_hybrid_profile(retrieval_profile)
+            if mode == "hybrid"
+            else None
+        )
         scoped_video_id = str(video_id or "").strip()
         if scoped_video_id and scoped_video_id not in self.engine.library.videos:
             raise KeyError(f"video_id not found: {scoped_video_id}")
 
         top_k = max(1, min(int(k), 12))
+        total_chunks = self._total_chunk_count(video_id=scoped_video_id or None)
         candidate_k = max(30, top_k * 8)
+        if total_chunks > 0:
+            candidate_k = min(candidate_k, total_chunks)
 
         dense_results: List[dict] = []
         lexical_results: List[dict] = []
@@ -2270,9 +2396,16 @@ class LocalRAGService:
             candidate_rows = lexical_results
         else:
             if dense_results and lexical_results:
-                candidate_rows = self._rrf_fuse(
-                    dense_results, lexical_results, limit=None
-                )
+                if hybrid_profile == HYBRID_BASELINE_PROFILE:
+                    candidate_rows = self._rrf_fuse(
+                        dense_results, lexical_results, limit=None
+                    )
+                else:
+                    candidate_rows = self._weighted_hybrid_fuse(
+                        dense_results,
+                        lexical_results,
+                        limit=None,
+                    )
             elif dense_results:
                 candidate_rows = dense_results
             else:
@@ -2286,8 +2419,22 @@ class LocalRAGService:
         diverse = self._apply_diversity_selection(reranked_rows, top_k=top_k)
         results = diverse["results"]
 
+        fusion_name = "none"
+        if mode == "hybrid":
+            fusion_name = (
+                "rrf"
+                if hybrid_profile == HYBRID_BASELINE_PROFILE
+                else "weighted_normalized"
+            )
+
         details = {
-            "fusion": "rrf" if mode == "hybrid" else "none",
+            "fusion": fusion_name,
+            "fusion_profile": hybrid_profile if mode == "hybrid" else None,
+            "fusion_weights": (
+                HYBRID_OPTIMIZED_WEIGHTS
+                if mode == "hybrid" and hybrid_profile == HYBRID_OPTIMIZED_PROFILE
+                else None
+            ),
             "dense_candidates": len(dense_results),
             "lexical_candidates": len(lexical_results),
             "candidate_k": candidate_k,

@@ -1,0 +1,48 @@
+{
+  "name": "jp_core_v1_fixture",
+  "corpus_fixture": "evals/fixtures/jp_core_v1_corpus.json",
+  "top_k": 10,
+  "latency_repetitions": 5,
+  "feedback_tuning": false,
+  "runs": [
+    {
+      "name": "dense",
+      "retrieval_mode": "dense"
+    },
+    {
+      "name": "lexical",
+      "retrieval_mode": "lexical"
+    },
+    {
+      "name": "hybrid_baseline",
+      "retrieval_mode": "hybrid",
+      "retrieval_profile": "baseline_rrf",
+      "baseline": true
+    },
+    {
+      "name": "optimized_hybrid",
+      "retrieval_mode": "hybrid",
+      "retrieval_profile": "optimized_v1"
+    }
+  ],
+  "success_criteria": {
+    "min_queries_for_relative": 20,
+    "relative_improvement": {
+      "gold_recall@5": 0.10,
+      "MRR@10": 0.10,
+      "nDCG@10": 0.05
+    },
+    "absolute_targets": {
+      "gold_recall@5": 0.85,
+      "MRR@10": 0.70,
+      "nDCG@10": 0.75
+    },
+    "sample_absolute": {
+      "gold_recall@5": 1.0,
+      "MRR@10": 0.95,
+      "nDCG@10": 0.95
+    },
+    "max_p95_latency_regression": 0.20,
+    "failed_query_count": 0
+  }
+}

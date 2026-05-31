@@ -234,10 +234,27 @@ local files:
 
 - `local_preview/` - local web UI + API for development and demos
 - `multilingual/` - retrieval engine, multilingual tokenization, transcript processing
+- `evals/` - offline retrieval benchmark datasets, configs, scoring, and reports
 - `pipelines/` - local, permissioned video frame/OCR/embedding scripts and evidence curation
 - `production_cloudflare/` - Cloudflare deployment stack (separate from local preview)
 - `retrieval/` - OCR and multimodal evidence search helpers
 - `tests/` - unit/integration tests for core behavior
+
+## Offline Retrieval Benchmark
+
+Run the checked-in benchmark without network access or provider keys.
+
+```bash
+python -m evals.runner \
+  --dataset evals/datasets/jp_core_v1.example.jsonl \
+  --config evals/configs/baseline.yaml \
+  --out evals/reports/latest
+```
+
+The runner compares dense, lexical, baseline hybrid, and optimized hybrid
+retrieval, then writes a compact leaderboard plus machine-readable metrics.
+See [`evals/README.md`](evals/README.md) for metrics, latest fixture results,
+and sample-set limitations.
 
 ## Known Limitations
 
@@ -246,6 +263,7 @@ local files:
 - Inter-rater agreement/adjudication workflow is not implemented yet.
 - Retrieval quality depends on transcript availability from YouTube.
 - Chunking Lab compares chunking strategies on already ingested videos and needs a stored `full_transcript`; legacy videos without that artifact must be re-ingested before preview/search comparison works.
+- The checked-in retrieval benchmark is a small deterministic fixture, not a statistically stable corpus.
 
 ## Assisted Labeling Workflow
 
