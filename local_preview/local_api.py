@@ -92,9 +92,10 @@ RETRIEVAL_MODES = {"hybrid", "dense", "lexical"}
 HYBRID_BASELINE_PROFILE = "baseline_rrf"
 HYBRID_OPTIMIZED_PROFILE = "optimized_v1"
 HYBRID_PROFILES = {HYBRID_BASELINE_PROFILE, HYBRID_OPTIMIZED_PROFILE}
+HYBRID_PROFILE_ENV = "YT_RAG_HYBRID_PROFILE"
 HYBRID_OPTIMIZED_WEIGHTS = {
-    "dense": 0.35,
-    "lexical": 0.60,
+    "dense": 0.475,
+    "lexical": 0.475,
     "dual_signal": 0.05,
 }
 REVIEW_LABELS = {"relevant", "not_relevant"}
@@ -665,6 +666,7 @@ class LocalRAGService:
         k: int = 5,
         language: Optional[str] = None,
         retrieval_mode: str = "hybrid",
+        retrieval_profile: Optional[str] = None,
         video_id: Optional[str] = None,
         source_mode: str = "both",
     ) -> dict:
@@ -685,6 +687,7 @@ class LocalRAGService:
                     k=candidate_k,
                     language=language,
                     retrieval_mode=retrieval_mode,
+                    retrieval_profile=retrieval_profile,
                     video_id=video_id,
                 )
                 transcript_results = retrieval["results"]
@@ -2144,10 +2147,21 @@ class LocalRAGService:
         return fused[: max(1, int(limit))]
 
     @staticmethod
-    def _normalize_hybrid_profile(value: Optional[str]) -> str:
-        profile = str(value or HYBRID_OPTIMIZED_PROFILE).strip().lower()
+    def _default_hybrid_profile() -> str:
+        configured = os.getenv(HYBRID_PROFILE_ENV, HYBRID_BASELINE_PROFILE)
+        return LocalRAGService._normalize_hybrid_profile(
+            configured, fallback=HYBRID_BASELINE_PROFILE
+        )
+
+    @staticmethod
+    def _normalize_hybrid_profile(
+        value: Optional[str],
+        *,
+        fallback: Optional[str] = None,
+    ) -> str:
+        profile = str(value or fallback or HYBRID_BASELINE_PROFILE).strip().lower()
         if not profile:
-            return HYBRID_OPTIMIZED_PROFILE
+            return fallback or HYBRID_BASELINE_PROFILE
         if profile not in HYBRID_PROFILES:
             raise ValueError(
                 f"retrieval_profile must be one of: {', '.join(sorted(HYBRID_PROFILES))}"
@@ -2172,6 +2186,9 @@ class LocalRAGService:
         if abs(high - low) <= 1e-12:
             return {key: 1.0 if high > 0.0 else 0.0 for key in keyed_scores}
         scale = high - low
+        # This normalization is local to the returned candidate pool. The worst
+        # returned item maps to 0.0, which is also the value for an absent item,
+        # so benchmark comparisons should keep candidate_k and corpus scope fixed.
         for key, value in list(keyed_scores.items()):
             keyed_scores[key] = (value - low) / scale
         return keyed_scores
@@ -2342,11 +2359,13 @@ class LocalRAGService:
             raise ValueError(
                 f"retrieval_mode must be one of: {', '.join(sorted(RETRIEVAL_MODES))}"
             )
-        hybrid_profile = (
-            self._normalize_hybrid_profile(retrieval_profile)
-            if mode == "hybrid"
-            else None
-        )
+        hybrid_profile = None
+        if mode == "hybrid":
+            hybrid_profile = (
+                self._normalize_hybrid_profile(retrieval_profile)
+                if retrieval_profile is not None
+                else self._default_hybrid_profile()
+            )
         scoped_video_id = str(video_id or "").strip()
         if scoped_video_id and scoped_video_id not in self.engine.library.videos:
             raise KeyError(f"video_id not found: {scoped_video_id}")
@@ -4520,6 +4539,7 @@ class Handler(BaseHTTPRequestHandler):
                 retrieval_mode = (
                     str(body.get("retrieval_mode") or "hybrid").strip().lower()
                 )
+                retrieval_profile = body.get("retrieval_profile")
                 source_mode = str(body.get("source_mode") or "both").strip().lower()
                 if retrieval_mode not in RETRIEVAL_MODES:
                     self._json(
@@ -4538,6 +4558,7 @@ class Handler(BaseHTTPRequestHandler):
                     k=k,
                     language=normalize_language(language) if language else None,
                     retrieval_mode=retrieval_mode,
+                    retrieval_profile=retrieval_profile,
                     video_id=str(body.get("video_id") or "").strip() or None,
                     source_mode=source_mode,
                 )
@@ -4563,6 +4584,7 @@ class Handler(BaseHTTPRequestHandler):
                 retrieval_mode = (
                     str(body.get("retrieval_mode") or "hybrid").strip().lower()
                 )
+                retrieval_profile = body.get("retrieval_profile")
                 source_mode = str(body.get("source_mode") or "both").strip().lower()
                 provider = (
                     str(body.get("provider") or DEFAULT_ASK_PROVIDER).strip().lower()
@@ -4597,6 +4619,7 @@ class Handler(BaseHTTPRequestHandler):
                     k=k,
                     language=normalize_language(language) if language else None,
                     retrieval_mode=retrieval_mode,
+                    retrieval_profile=retrieval_profile,
                     video_id=str(body.get("video_id") or "").strip() or None,
                     source_mode=source_mode,
                 )
@@ -4647,6 +4670,7 @@ class Handler(BaseHTTPRequestHandler):
                 retrieval_mode = (
                     str(body.get("retrieval_mode") or "hybrid").strip().lower()
                 )
+                retrieval_profile = body.get("retrieval_profile")
                 if retrieval_mode not in RETRIEVAL_MODES:
                     self._json(
                         {
@@ -4664,6 +4688,7 @@ class Handler(BaseHTTPRequestHandler):
                     k=k,
                     language=normalize_language(language) if language else None,
                     retrieval_mode=retrieval_mode,
+                    retrieval_profile=retrieval_profile,
                 )
                 self._json(
                     {
@@ -4698,6 +4723,7 @@ class Handler(BaseHTTPRequestHandler):
                 retrieval_mode = (
                     str(body.get("retrieval_mode") or "hybrid").strip().lower()
                 )
+                retrieval_profile = body.get("retrieval_profile")
                 provider = (
                     str(body.get("provider") or DEFAULT_ASK_PROVIDER).strip().lower()
                 )
@@ -4732,6 +4758,7 @@ class Handler(BaseHTTPRequestHandler):
                     k=k,
                     language=normalize_language(language) if language else None,
                     retrieval_mode=retrieval_mode,
+                    retrieval_profile=retrieval_profile,
                     video_id=video_id,
                 )
                 result = SERVICE.ask_with_sources(

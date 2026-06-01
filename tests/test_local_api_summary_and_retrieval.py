@@ -619,10 +619,19 @@ def test_answer_route_alias_returns_grounded_answer_payload(monkeypatch):
     saved_history = {}
 
     class StubService:
-        def retrieve(self, query, k, language, retrieval_mode, video_id=None):
+        def retrieve(
+            self,
+            query,
+            k,
+            language,
+            retrieval_mode,
+            retrieval_profile=None,
+            video_id=None,
+        ):
             assert query == "What is the product intent?"
             assert k == 4
             assert retrieval_mode == "hybrid"
+            assert retrieval_profile == "baseline_rrf"
             assert video_id == "vid1"
             return {
                 "retrieval_mode": "hybrid",
@@ -705,6 +714,7 @@ def test_answer_route_alias_returns_grounded_answer_payload(monkeypatch):
                 "query": "What is the product intent?",
                 "top_k": 4,
                 "retrieval_mode": "hybrid",
+                "retrieval_profile": "baseline_rrf",
                 "provider": "chatgpt",
                 "video_id": "vid1",
             },
@@ -725,6 +735,68 @@ def test_answer_route_alias_returns_grounded_answer_payload(monkeypatch):
     assert saved_history["status"] == "answered"
     assert saved_history["confidence"] == "high"
     assert saved_history["video_id"] == "vid1"
+
+
+def test_search_route_plumbs_retrieval_profile():
+    class StubService:
+        def retrieve(
+            self,
+            query,
+            k,
+            language,
+            retrieval_mode,
+            retrieval_profile=None,
+            video_id=None,
+        ):
+            assert query == "semantic query"
+            assert k == 3
+            assert retrieval_mode == "hybrid"
+            assert retrieval_profile == "optimized_v1"
+            assert video_id is None
+            return {
+                "retrieval_mode": "hybrid",
+                "details": {
+                    "fusion": "weighted_normalized",
+                    "fusion_profile": "optimized_v1",
+                },
+                "results": [],
+            }
+
+    original_service = local_api.SERVICE
+    try:
+        local_api.SERVICE = StubService()
+
+        class FakeHandler:
+            def __init__(self, path, body):
+                self.path = path
+                self._body = body
+                self.response_status = None
+                self.response_payload = None
+
+            def _read_json_body(self):
+                return self._body
+
+            def _json(self, payload, status=200):
+                self.response_status = status
+                self.response_payload = payload
+
+        handler = FakeHandler(
+            "/v1/search",
+            {
+                "query": "semantic query",
+                "k": 3,
+                "retrieval_mode": "hybrid",
+                "retrieval_profile": "optimized_v1",
+            },
+        )
+        local_api.Handler.do_POST(handler)
+        payload = handler.response_payload
+    finally:
+        local_api.SERVICE = original_service
+
+    assert handler.response_status == 200
+    assert payload["ok"] is True
+    assert payload["retrieval_details"]["fusion_profile"] == "optimized_v1"
 
 
 def test_summarize_video_transcript_returns_five_ranked_items():

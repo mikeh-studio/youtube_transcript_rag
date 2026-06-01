@@ -140,4 +140,37 @@ def test_optimized_hybrid_profile_fixes_rrf_dense_tie_bias():
     assert baseline["results"][0]["chunk_index"] == 0
     assert optimized["results"][0]["chunk_index"] == 3
     assert optimized["details"]["fusion_profile"] == "optimized_v1"
-    assert optimized["details"]["fusion_weights"]["lexical"] > 0
+    assert (
+        optimized["details"]["fusion_weights"]["dense"]
+        == optimized["details"]["fusion_weights"]["lexical"]
+    )
+
+
+def test_hybrid_default_remains_baseline_rrf(monkeypatch):
+    monkeypatch.delenv(local_api.HYBRID_PROFILE_ENV, raising=False)
+    service = _make_service()
+
+    result = service.retrieve(
+        "Jetson Orin エッジAI 推論",
+        k=1,
+        retrieval_mode="hybrid",
+    )
+
+    assert result["results"][0]["chunk_index"] == 0
+    assert result["details"]["fusion"] == "rrf"
+    assert result["details"]["fusion_profile"] == "baseline_rrf"
+
+
+def test_hybrid_default_can_be_switched_by_env(monkeypatch):
+    monkeypatch.setenv(local_api.HYBRID_PROFILE_ENV, "optimized_v1")
+    service = _make_service()
+
+    result = service.retrieve(
+        "Jetson Orin エッジAI 推論",
+        k=1,
+        retrieval_mode="hybrid",
+    )
+
+    assert result["results"][0]["chunk_index"] == 3
+    assert result["details"]["fusion"] == "weighted_normalized"
+    assert result["details"]["fusion_profile"] == "optimized_v1"

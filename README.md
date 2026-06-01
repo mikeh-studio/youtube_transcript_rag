@@ -253,6 +253,9 @@ python -m evals.runner \
 
 The runner compares dense, lexical, baseline hybrid, and optimized hybrid
 retrieval, then writes a compact leaderboard plus machine-readable metrics.
+The local app keeps baseline RRF as the default hybrid profile unless
+`retrieval_profile` or `YT_RAG_HYBRID_PROFILE` explicitly opts into another
+profile.
 See [`evals/README.md`](evals/README.md) for metrics, latest fixture results,
 and sample-set limitations.
 

@@ -57,10 +57,19 @@ Gold evidence can match either:
 ## Retrieval Change
 
 The app still exposes the same retrieval modes: `dense`, `lexical`, and
-`hybrid`. The default hybrid path now uses `optimized_v1`, a weighted fusion
-profile that combines normalized dense and lexical scores with a small dual-
-signal bonus. The old RRF behavior is still available as `baseline_rrf` for
-benchmark comparisons.
+`hybrid`. The production default for `hybrid` remains `baseline_rrf`, the
+existing rank-based reciprocal-rank fusion behavior.
+
+`optimized_v1` is an explicit benchmark candidate. It combines normalized dense
+and lexical scores with equal weights plus a small dual-signal bonus. It is not
+the default app profile. To try it locally, pass
+`retrieval_profile: "optimized_v1"` to the local API request body or set
+`YT_RAG_HYBRID_PROFILE=optimized_v1` before starting `local_preview/local_api.py`.
+
+The weighted profile is intentionally treated as candidate evidence only. The
+checked-in fixture uses deterministic, hand-authored dense scores so it is useful
+for regression testing the harness, not for proving that a new default
+generalizes to real embedding indexes.
 
 The implementation is intentionally narrow:
 
@@ -69,17 +78,24 @@ The implementation is intentionally narrow:
 - no paid API calls
 - no network dependency in the benchmark
 - no replacement of the existing dense, lexical, feedback, or diversity stages
+- no default production flip away from RRF
 
 ## Fixture Result
 
-The latest local fixture run selected `optimized_hybrid`.
+The latest local fixture run selected `optimized_hybrid` as the best benchmark
+candidate, while the app default remains `baseline_rrf`.
 
 | Run | Recall@5 | MRR@10 | nDCG@10 | p95 ms |
 | --- | ---: | ---: | ---: | ---: |
-| `hybrid_baseline` | 1.0000 | 0.7917 | 0.8452 | 0.83 |
-| `optimized_hybrid` | 1.0000 | 1.0000 | 1.0000 | 0.84 |
+| `hybrid_baseline` | 1.0000 | 0.7917 | 0.8452 | 0.87 |
+| `optimized_hybrid` | 1.0000 | 1.0000 | 1.0000 | 0.80 |
 
 The fixture has only 8 queries, so the runner reports small-sample mode and
 uses absolute pass/fail checks instead of claiming stable relative percentages.
 Use a larger project-specific dataset before making production-quality
 percentage claims.
+
+Known scoring caveat: `optimized_v1` uses min-max normalization over the current
+candidate pool. Rankings can shift if `candidate_k` or corpus scope changes, and
+the lowest returned dense or lexical candidate normalizes to the same `0.0`
+value used for a chunk absent from that signal.

@@ -331,21 +331,26 @@ def test_local_api_starts_local_video_ocr_job(monkeypatch, tmp_path):
 def test_local_api_multimodal_search_merges_transcript_and_ocr(monkeypatch, tmp_path):
     local_api = _load_local_api()
     service = _make_local_api_service(local_api, tmp_path)
+    retrieval_kwargs = {}
 
-    service.retrieve = lambda *args, **kwargs: {
-        "results": [
-            {
-                "video_id": "abc12345678",
-                "video_title": "Transcript Video",
-                "language": "en",
-                "start": 12,
-                "end": 22,
-                "text": "Transcript evidence",
-                "score": 0.3,
-            }
-        ],
-        "details": {"fusion": "none"},
-    }
+    def fake_retrieve(*args, **kwargs):
+        retrieval_kwargs.update(kwargs)
+        return {
+            "results": [
+                {
+                    "video_id": "abc12345678",
+                    "video_title": "Transcript Video",
+                    "language": "en",
+                    "start": 12,
+                    "end": 22,
+                    "text": "Transcript evidence",
+                    "score": 0.3,
+                }
+            ],
+            "details": {"fusion": "weighted_normalized"},
+        }
+
+    service.retrieve = fake_retrieve
 
     class FakeRetriever:
         def __init__(self, *args, **kwargs):
@@ -369,10 +374,12 @@ def test_local_api_multimodal_search_merges_transcript_and_ocr(monkeypatch, tmp_
     result = service.search_multimodal(
         query="inflation",
         k=2,
-        retrieval_mode="dense",
+        retrieval_mode="hybrid",
+        retrieval_profile="optimized_v1",
         source_mode="both",
     )
 
+    assert retrieval_kwargs["retrieval_profile"] == "optimized_v1"
     assert result["result_count"] == 2
     assert result["results"][0]["source_type"] == "ocr"
     assert result["results"][0]["text"] == "Slide evidence"
