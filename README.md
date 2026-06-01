@@ -126,6 +126,7 @@ local files
 
 - `local_preview/` - local web UI, API, and review workflow helpers.
 - `multilingual/` - transcript processing, chunking, embeddings, and retrieval.
+- `evals/` - offline retrieval benchmark datasets, configs, scoring, and reports.
 - `pipelines/` - local OCR, embedding, and evidence curation scripts.
 - `retrieval/` - multimodal search helpers.
 - `production_cloudflare/` - separate Cloudflare deployment stack.
@@ -162,6 +163,25 @@ Open `http://127.0.0.1:8000/evidence.html` to inspect the generated artifacts.
 
 See [`local_preview/README.md`](local_preview/README.md) for the full local operator flow.
 
+## Offline Retrieval Benchmark
+
+Run the checked-in benchmark without network access or provider keys.
+
+```bash
+python -m evals.runner \
+  --dataset evals/datasets/jp_core_v1.example.jsonl \
+  --config evals/configs/baseline.yaml \
+  --out evals/reports/latest
+```
+
+The runner compares dense, lexical, baseline hybrid, and optimized hybrid
+retrieval, then writes a compact leaderboard plus machine-readable metrics.
+The local app keeps baseline RRF as the default hybrid profile unless
+`retrieval_profile` or `YT_RAG_HYBRID_PROFILE` explicitly opts into another
+profile.
+See [`evals/README.md`](evals/README.md) for metrics, latest fixture results,
+and sample-set limitations.
+
 ## Known Limitations
 
 - Evaluation is single-reviewer.
@@ -169,6 +189,7 @@ See [`local_preview/README.md`](local_preview/README.md) for the full local oper
 - Inter-rater agreement and adjudication UI are not implemented.
 - Retrieval quality depends on transcript availability from YouTube.
 - Chunking Lab requires videos with stored `full_transcript`; re-ingest older videos if preview/search comparison reports missing transcript data.
+- The checked-in retrieval benchmark is a small deterministic fixture, not a statistically stable corpus.
 
 ## Tests
 
