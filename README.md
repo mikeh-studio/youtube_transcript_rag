@@ -1,8 +1,10 @@
 # YouTube Transcript Retrieval Evaluation Workbench
 
-Local-first workbench for testing retrieval quality over English and Japanese YouTube transcripts.
+Local-first RAG workbench for YouTube transcripts that evaluates retrieval quality before the answer layer. It ingests English and Japanese transcripts, chunks them with timestamps, builds local FAISS indexes, and supports dense, lexical, and hybrid retrieval for citation-backed Q&A.
 
-It ingests transcripts, chunks them with timestamps, builds local FAISS indexes, supports dense / lexical / hybrid search, lets you label results, compares ranking runs, answers questions with citations, and can optionally search OCR evidence from local or permissioned video files.
+![Evaluation Metrics](docs/media/02-evaluation-metrics.png)
+
+Evaluation rigor: retrieval runs are scored with P@K, Recall@K, MRR, and nDCG@K, with browser-local labels and run comparison snapshots.
 
 ## Quick Start
 
@@ -74,27 +76,7 @@ The local workflow lets you:
 - Read-only evidence curation reports from local pipeline artifacts.
 - Local-video OCR for `.mp4`, `.m4v`, `.mov`, `.mkv`, and `.webm` files.
 
-## Screenshots
-
-### Ingest Gateway
-
-![Ingest Gateway](docs/media/01-main-console.png)
-
-### Evaluation Metrics
-
-![Evaluation Metrics](docs/media/02-evaluation-metrics.png)
-
-### Run Comparison
-
-![Run Comparison](docs/media/03-run-comparison.png)
-
-### Evidence Curation
-
-![Evidence Curation](docs/media/04-evidence-curation.png)
-
-### Q&A Studio, Japanese Locale
-
-![Q&A Studio Japanese locale](docs/media/01-main-console-jp.png)
+Historical release notes live in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Architecture
 
