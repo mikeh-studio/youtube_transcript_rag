@@ -41,6 +41,14 @@ const FALLBACK_LLM_PROVIDER_OPTIONS = {
       { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
     ],
   },
+  sakana: {
+    default: "fugu",
+    models: [
+      { id: "fugu", label: "Sakana Fugu" },
+      { id: "fugu-ultra", label: "Sakana Fugu Ultra" },
+      { id: "fugu-ultra-20260615", label: "Sakana Fugu Ultra 20260615" },
+    ],
+  },
 };
 const STUDY_FOCUS_PRESETS = [
   { id: "main_ideas", label: "Main ideas" },
@@ -1234,6 +1242,7 @@ function QAStudioPage({ locale }) {
                   >
                     <option value="chatgpt">ChatGPT</option>
                     <option value="claude">Claude</option>
+                    <option value="sakana">Sakana AI</option>
                   </select>
                 </label>
                 <ModelSelectLabel
@@ -1667,6 +1676,7 @@ function TLDRStudioPage() {
             >
               <option value="chatgpt">ChatGPT</option>
               <option value="claude">Claude</option>
+              <option value="sakana">Sakana AI</option>
             </select>
           </label>
           <ModelSelectLabel
@@ -2047,6 +2057,7 @@ function StudyStudioPage() {
               >
                 <option value="chatgpt">ChatGPT</option>
                 <option value="claude">Claude</option>
+                <option value="sakana">Sakana AI</option>
               </select>
             </label>
             <ModelSelectLabel

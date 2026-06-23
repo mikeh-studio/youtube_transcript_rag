@@ -107,8 +107,10 @@ HYBRID_OPTIMIZED_WEIGHTS = {
 }
 REVIEW_LABELS = {"relevant", "not_relevant"}
 TITLE_PLACEHOLDER_RE = re.compile(r"^Video [a-zA-Z0-9_-]{11}$")
-ASK_PROVIDERS = {"chatgpt", "claude"}
+ASK_PROVIDERS = {"chatgpt", "claude", "sakana"}
 DEFAULT_ASK_PROVIDER = "chatgpt"
+SAKANA_DEFAULT_MODEL = "fugu"
+SAKANA_DEFAULT_BASE_URL = "https://api.sakana.ai/v1"
 # Selectable models per provider for the QA and TLDR tabs. Requests may also
 # use the env-configured default even when it is not listed here.
 LLM_MODEL_OPTIONS = {
@@ -122,12 +124,26 @@ LLM_MODEL_OPTIONS = {
         {"id": "gpt-5.4-mini", "label": "GPT-5.4 mini"},
         {"id": "gpt-5.5", "label": "GPT-5.5"},
     ],
+    "sakana": [
+        {"id": "fugu", "label": "Sakana Fugu"},
+        {"id": "fugu-ultra", "label": "Sakana Fugu Ultra"},
+        {"id": "fugu-ultra-20260615", "label": "Sakana Fugu Ultra 20260615"},
+    ],
 }
 
 
 def _provider_error_message(extra: Optional[set] = None) -> str:
     providers = sorted(ASK_PROVIDERS | (extra or set()))
     return f"provider must be one of: {', '.join(providers)}"
+
+
+def _normalize_openai_compatible_base_url(value: Optional[str]) -> str:
+    base_url = str(value or SAKANA_DEFAULT_BASE_URL).strip().rstrip("/")
+    if not base_url:
+        base_url = SAKANA_DEFAULT_BASE_URL
+    if not base_url.endswith("/v1"):
+        base_url = f"{base_url}/v1"
+    return base_url
 
 
 def _model_supports_temperature(provider: str, model: str) -> bool:
@@ -137,6 +153,10 @@ def _model_supports_temperature(provider: str, model: str) -> bool:
         return not scoped.startswith(
             ("claude-opus-4-7", "claude-opus-4-8", "claude-fable")
         )
+    if provider == "sakana":
+        # Sakana's OpenAI-compatible Chat Completions endpoint accepts
+        # temperature, though Fugu currently ignores sampling controls.
+        return True
     # OpenAI reasoning families reject temperature in chat completions.
     return not scoped.startswith(("gpt-5", "o1", "o3", "o4"))
 ASK_MAX_TOKENS = 2000
@@ -169,6 +189,7 @@ STUDY_CARD_COUNT_MAX = 20
 STUDY_DEFAULT_CARD_COUNT = 8
 STUDY_CARD_TYPES = ("recall", "concept", "detail", "application")
 STUDY_SECTION_CACHE_VERSION = 1
+SAKANA_STUDY_MIN_MAX_TOKENS = 4000
 STUDY_DEFAULT_FOCUS_PRESET = "main_ideas"
 STUDY_FOCUS_PRESETS = {
     "main_ideas": {
@@ -226,6 +247,7 @@ STUDY_MODEL_PROFILES = {
         "models": {
             "chatgpt": "gpt-5.4-nano",
             "claude": "claude-haiku-4-5",
+            "sakana": "fugu",
         },
     },
     "balanced": {
@@ -235,6 +257,7 @@ STUDY_MODEL_PROFILES = {
         "models": {
             "chatgpt": "gpt-5.4-mini",
             "claude": "claude-sonnet-4-6",
+            "sakana": "fugu",
         },
     },
     "quality": {
@@ -244,6 +267,7 @@ STUDY_MODEL_PROFILES = {
         "models": {
             "chatgpt": "gpt-5.5",
             "claude": "claude-opus-4-8",
+            "sakana": "fugu-ultra",
         },
     },
 }
@@ -473,7 +497,15 @@ class LocalRAGService:
             str(os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
             or "gpt-4o-mini"
         )
+        self.sakana_model = (
+            str(os.environ.get("SAKANA_MODEL") or SAKANA_DEFAULT_MODEL).strip()
+            or SAKANA_DEFAULT_MODEL
+        )
+        self.sakana_base_url = _normalize_openai_compatible_base_url(
+            os.environ.get("SAKANA_BASE_URL") or os.environ.get("FUGU_BASE_URL")
+        )
         self._openai_client = None
+        self._sakana_client = None
         self.jobs: Dict[str, IngestJob] = {}
         self.ocr_jobs: Dict[str, LocalVideoOCRJob] = {}
         self.ocr_lock = threading.Lock()
@@ -517,6 +549,30 @@ class LocalRAGService:
                 )
             self._openai_client = OpenAI(api_key=api_key)
         return self._openai_client
+
+    @property
+    def sakana_client(self):
+        if OpenAI is None:
+            raise ValueError(
+                "openai package is not installed. Install dependencies to use provider='sakana'."
+            )
+
+        if self._sakana_client is None:
+            api_key = str(
+                os.environ.get("SAKANA_API_KEY")
+                or os.environ.get("FUGU_API_KEY")
+                or ""
+            ).strip()
+            if not api_key:
+                raise ValueError(
+                    "SAKANA_API_KEY environment variable is not set. "
+                    "Set it to use provider='sakana'."
+                )
+            self._sakana_client = OpenAI(
+                api_key=api_key,
+                base_url=getattr(self, "sakana_base_url", SAKANA_DEFAULT_BASE_URL),
+            )
+        return self._sakana_client
 
     def list_jobs(self) -> List[IngestJob]:
         with self.lock:
@@ -2632,6 +2688,8 @@ class LocalRAGService:
             raise ValueError(_provider_error_message())
         if scoped_provider == "claude":
             default_model = self.engine.model
+        elif scoped_provider == "sakana":
+            default_model = getattr(self, "sakana_model", SAKANA_DEFAULT_MODEL)
         else:
             default_model = self.openai_model
         scoped_model = str(model or "").strip()
@@ -2686,8 +2744,12 @@ class LocalRAGService:
                 )
             model = resolved_model
         else:
-            client = self.openai_client
-            provider_label = "OpenAI"
+            client = (
+                self.sakana_client
+                if scoped_provider == "sakana"
+                else self.openai_client
+            )
+            provider_label = "Sakana" if scoped_provider == "sakana" else "OpenAI"
             request_kwargs = {
                 "model": resolved_model,
                 "max_completion_tokens": max_tokens,
@@ -2698,6 +2760,8 @@ class LocalRAGService:
             }
             if supports_temperature:
                 request_kwargs["temperature"] = temperature
+            if scoped_provider == "sakana":
+                request_kwargs["response_format"] = {"type": "json_object"}
             response = client.chat.completions.create(**request_kwargs)
             text = ""
             finish_reason = ""
@@ -3944,6 +4008,14 @@ class LocalRAGService:
             )
         if scoped_provider == "claude":
             return bool(str(os.environ.get("ANTHROPIC_API_KEY") or "").strip())
+        if scoped_provider == "sakana":
+            return OpenAI is not None and bool(
+                str(
+                    os.environ.get("SAKANA_API_KEY")
+                    or os.environ.get("FUGU_API_KEY")
+                    or ""
+                ).strip()
+            )
         return False
 
     def _resolve_study_context(self, video_id: str) -> dict:
@@ -4893,6 +4965,8 @@ class LocalRAGService:
             STUDY_MODEL_PROFILES["balanced"],
         )
         max_tokens = int(profile.get("max_tokens", 2200))
+        if provider == "sakana":
+            max_tokens = max(max_tokens, SAKANA_STUDY_MIN_MAX_TOKENS)
         llm = self._llm_text_response(
             provider=provider,
             system_prompt=system_prompt,

@@ -21,6 +21,14 @@ Add provider keys to `.env.local` if you want citation-backed Q&A:
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
+SAKANA_API_KEY=your_sakana_api_key_here
+```
+
+Optional Sakana overrides:
+
+```env
+SAKANA_MODEL=fugu
+SAKANA_BASE_URL=https://api.sakana.ai/v1
 ```
 
 Open the real local app:
@@ -70,7 +78,7 @@ The local workflow lets you:
 - Timestamped chunking with strategy comparison in Chunking Lab.
 - Local FAISS indexes for transcript and OCR evidence.
 - Retrieval modes: `dense`, `lexical`, and `hybrid`.
-- Citation-backed Q&A with fallback states and selectable OpenAI or Claude models.
+- Citation-backed Q&A with fallback states and selectable OpenAI, Claude, or Sakana AI providers.
 - Study Studio for transcript-grounded flashcards, topic maps, and study-quality checks.
 - Search-result review and assisted labeling helpers.
 - Browser-local evaluation query sets, labels, run snapshots, and metrics.

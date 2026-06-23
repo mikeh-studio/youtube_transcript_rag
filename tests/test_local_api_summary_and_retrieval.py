@@ -39,6 +39,9 @@ def _make_service(enabled=True):
     service.feedback_path = runtime_dir / "search_feedback.json"
     service.legacy_feedback_path = legacy_dir / "search_feedback.json"
     service.openai_model = "gpt-4o-mini"
+    service.sakana_model = "fugu"
+    service.sakana_base_url = local_api.SAKANA_DEFAULT_BASE_URL
+    service._sakana_client = None
     service.ask_history_lock = threading.Lock()
     service.ask_history = {}
     service.ask_history_path = runtime_dir / "ask_history.json"
@@ -334,7 +337,6 @@ def test_generate_study_flashcards_use_requested_focus_without_timestamps(
         for check in quality["quality"]["checks"]
     )
 
-
 def test_generate_study_flashcards_uses_chatgpt_when_key_is_configured(monkeypatch):
     monkeypatch.setattr(local_api, "OpenAI", object())
     monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
@@ -371,6 +373,44 @@ def test_generate_study_flashcards_uses_chatgpt_when_key_is_configured(monkeypat
     assert captured["model"] == "gpt-5.4-nano"
     assert flashcards["provider"] == "chatgpt"
     assert flashcards["model"] == "gpt-5.4-nano"
+    assert flashcards["generation_mode"] == "llm"
+
+
+def test_generate_study_flashcards_uses_sakana_when_key_is_configured(monkeypatch):
+    monkeypatch.setenv("SAKANA_API_KEY", "sakana-test-key")
+    service = _make_study_service()
+    captured = {}
+
+    def fake_llm_flashcards(**kwargs):
+        captured.update(kwargs)
+        return {
+            "provider": kwargs["provider"],
+            "model": kwargs["model"],
+            "cards": service._local_flashcards_from_evidence(
+                evidence_rows=kwargs["evidence_rows"],
+                card_count=kwargs["card_count"],
+                language=kwargs["language"],
+                difficulty=kwargs["difficulty"],
+            ),
+        }
+
+    service._llm_flashcards_from_evidence = fake_llm_flashcards
+
+    flashcards = service.generate_study_artifact(
+        mode="flashcards",
+        video_id="vidStudy001",
+        language="en",
+        provider="sakana",
+        model="fugu-ultra",
+        card_count=4,
+        difficulty="balanced",
+        model_profile="economy",
+    )
+
+    assert captured["provider"] == "sakana"
+    assert captured["model"] == "fugu-ultra"
+    assert flashcards["provider"] == "sakana"
+    assert flashcards["model"] == "fugu-ultra"
     assert flashcards["generation_mode"] == "llm"
 
 
@@ -2303,6 +2343,7 @@ def test_resolve_llm_model_defaults_to_provider_default():
     assert service._resolve_llm_model("chatgpt", None) == "gpt-4o-mini"
     assert service._resolve_llm_model("chatgpt", "") == "gpt-4o-mini"
     assert service._resolve_llm_model("claude", None) == "claude-sonnet-4-5-20250929"
+    assert service._resolve_llm_model("sakana", None) == "fugu"
 
 
 def test_resolve_llm_model_accepts_listed_and_default_models():
@@ -2311,6 +2352,11 @@ def test_resolve_llm_model_accepts_listed_and_default_models():
 
     assert service._resolve_llm_model("chatgpt", "gpt-5.4-mini") == "gpt-5.4-mini"
     assert service._resolve_llm_model("claude", "claude-opus-4-8") == "claude-opus-4-8"
+    assert service._resolve_llm_model("sakana", "fugu-ultra") == "fugu-ultra"
+    assert (
+        service._resolve_llm_model("sakana", "fugu-ultra-20260615")
+        == "fugu-ultra-20260615"
+    )
     # The env-configured default stays valid even when it is not in the list.
     assert service._resolve_llm_model("chatgpt", "gpt-4o-mini") == "gpt-4o-mini"
     assert (
@@ -2327,6 +2373,8 @@ def test_resolve_llm_model_rejects_unknown_model():
         service._resolve_llm_model("chatgpt", "gpt-3.5-turbo")
     with pytest.raises(ValueError, match="model for provider 'claude'"):
         service._resolve_llm_model("claude", "claude-2.1")
+    with pytest.raises(ValueError, match="model for provider 'sakana'"):
+        service._resolve_llm_model("sakana", "marlin")
 
 
 def test_model_supports_temperature_gating():
@@ -2336,6 +2384,90 @@ def test_model_supports_temperature_gating():
     assert local_api._model_supports_temperature("chatgpt", "gpt-4o-mini")
     assert not local_api._model_supports_temperature("chatgpt", "gpt-5.4-mini")
     assert not local_api._model_supports_temperature("chatgpt", "gpt-5.5")
+    assert local_api._model_supports_temperature("sakana", "fugu")
+
+
+def test_normalize_openai_compatible_base_url_appends_v1():
+    assert (
+        local_api._normalize_openai_compatible_base_url("https://api.sakana.ai")
+        == "https://api.sakana.ai/v1"
+    )
+    assert (
+        local_api._normalize_openai_compatible_base_url("https://api.sakana.ai/v1")
+        == "https://api.sakana.ai/v1"
+    )
+
+
+def test_sakana_client_uses_sakana_key_and_base_url(monkeypatch):
+    service = _make_service(enabled=False)
+    service.sakana_base_url = "https://api.sakana.ai/v1"
+    captured = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(local_api, "OpenAI", FakeOpenAI)
+    monkeypatch.setenv("SAKANA_API_KEY", "sakana-test-key")
+    monkeypatch.delenv("FUGU_API_KEY", raising=False)
+
+    assert isinstance(service.sakana_client, FakeOpenAI)
+    assert captured == {
+        "api_key": "sakana-test-key",
+        "base_url": "https://api.sakana.ai/v1",
+    }
+
+
+def test_llm_text_response_uses_sakana_chat_completions():
+    service = _make_service(enabled=False)
+    service.engine = _ModelSelectionEngine()
+    captured = {}
+
+    class FakeMessage:
+        content = "{\"ok\": true}"
+
+    class FakeChoice:
+        message = FakeMessage()
+        finish_reason = "stop"
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return FakeResponse()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeSakanaClient:
+        chat = FakeChat()
+
+    service._sakana_client = FakeSakanaClient()
+
+    result = service._llm_text_response(
+        provider="sakana",
+        model="fugu-ultra",
+        system_prompt="Answer as JSON.",
+        user_message="Return ok.",
+        max_tokens=123,
+        temperature=0.2,
+    )
+
+    assert result == {
+        "provider": "sakana",
+        "model": "fugu-ultra",
+        "text": "{\"ok\": true}",
+    }
+    assert captured["model"] == "fugu-ultra"
+    assert captured["max_completion_tokens"] == 123
+    assert captured["temperature"] == 0.2
+    assert captured["response_format"] == {"type": "json_object"}
+    assert captured["messages"] == [
+        {"role": "system", "content": "Answer as JSON."},
+        {"role": "user", "content": "Return ok."},
+    ]
 
 
 def test_ask_with_sources_passes_selected_model_to_llm():
@@ -2405,6 +2537,7 @@ def test_summary_cache_key_includes_model():
 def test_llm_options_route_returns_models_and_defaults():
     class StubService:
         openai_model = "gpt-4o-mini"
+        sakana_model = "fugu"
         engine = _ModelSelectionEngine()
 
         def _resolve_llm_model(self, provider, model):
@@ -2432,11 +2565,13 @@ def test_llm_options_route_returns_models_and_defaults():
     payload = handler.response_payload
     assert payload["ok"] is True
     providers = payload["providers"]
-    assert set(providers) == {"chatgpt", "claude"}
+    assert set(providers) == {"chatgpt", "claude", "sakana"}
     assert providers["chatgpt"]["default"] == "gpt-4o-mini"
     assert providers["claude"]["default"] == "claude-sonnet-4-5-20250929"
+    assert providers["sakana"]["default"] == "fugu"
     chatgpt_ids = [row["id"] for row in providers["chatgpt"]["models"]]
     claude_ids = [row["id"] for row in providers["claude"]["models"]]
+    sakana_ids = [row["id"] for row in providers["sakana"]["models"]]
     # Defaults are prepended when not already listed.
     assert chatgpt_ids[0] == "gpt-4o-mini"
     assert claude_ids[0] == "claude-sonnet-4-5-20250929"
@@ -2444,3 +2579,4 @@ def test_llm_options_route_returns_models_and_defaults():
     assert {"claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"} <= set(
         claude_ids
     )
+    assert {"fugu", "fugu-ultra", "fugu-ultra-20260615"} <= set(sakana_ids)
