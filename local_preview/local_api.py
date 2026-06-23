@@ -32,8 +32,15 @@ from urllib.parse import parse_qs, quote, urlparse, unquote
 from urllib.request import Request, urlopen
 
 try:
+    import anthropic
+except Exception:  # pragma: no cover
+    anthropic = None
+
+try:
+    import openai
     from openai import OpenAI
 except Exception:  # pragma: no cover
+    openai = None
     OpenAI = None
 
 try:
@@ -102,6 +109,36 @@ REVIEW_LABELS = {"relevant", "not_relevant"}
 TITLE_PLACEHOLDER_RE = re.compile(r"^Video [a-zA-Z0-9_-]{11}$")
 ASK_PROVIDERS = {"chatgpt", "claude"}
 DEFAULT_ASK_PROVIDER = "chatgpt"
+# Selectable models per provider for the QA and TLDR tabs. Requests may also
+# use the env-configured default even when it is not listed here.
+LLM_MODEL_OPTIONS = {
+    "claude": [
+        {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
+        {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6"},
+        {"id": "claude-opus-4-8", "label": "Claude Opus 4.8"},
+    ],
+    "chatgpt": [
+        {"id": "gpt-5.4-nano", "label": "GPT-5.4 nano"},
+        {"id": "gpt-5.4-mini", "label": "GPT-5.4 mini"},
+        {"id": "gpt-5.5", "label": "GPT-5.5"},
+    ],
+}
+
+
+def _provider_error_message(extra: Optional[set] = None) -> str:
+    providers = sorted(ASK_PROVIDERS | (extra or set()))
+    return f"provider must be one of: {', '.join(providers)}"
+
+
+def _model_supports_temperature(provider: str, model: str) -> bool:
+    scoped = str(model or "").strip().lower()
+    if provider == "claude":
+        # Opus 4.7+ and Fable-tier models reject sampling parameters (400).
+        return not scoped.startswith(
+            ("claude-opus-4-7", "claude-opus-4-8", "claude-fable")
+        )
+    # OpenAI reasoning families reject temperature in chat completions.
+    return not scoped.startswith(("gpt-5", "o1", "o3", "o4"))
 ASK_MAX_TOKENS = 2000
 ASK_TEMPERATURE = 0.5
 FEEDBACK_ALPHA_QUERY = 0.30
@@ -125,7 +162,91 @@ SUMMARY_RELAXED_MIN_SENTENCES = 3
 SUMMARY_RELAXED_MAX_SENTENCES = 6
 SUMMARY_ANCHOR_MIN_CHARS = 8
 SUMMARY_ANCHOR_TOKEN_MATCH_THRESHOLD = 0.55
-SUMMARY_CACHE_VERSION = 1
+SUMMARY_CACHE_VERSION = 2
+STUDY_MODES = {"flashcards", "topics", "quality"}
+STUDY_CARD_COUNT_MIN = 4
+STUDY_CARD_COUNT_MAX = 20
+STUDY_DEFAULT_CARD_COUNT = 8
+STUDY_CARD_TYPES = ("recall", "concept", "detail", "application")
+STUDY_SECTION_CACHE_VERSION = 1
+STUDY_DEFAULT_FOCUS_PRESET = "main_ideas"
+STUDY_FOCUS_PRESETS = {
+    "main_ideas": {
+        "label": "Main ideas",
+        "keywords": ["main", "idea", "theme", "point", "summary", "important", "要点", "全体"],
+    },
+    "characters": {
+        "label": "People / characters",
+        "keywords": [
+            "character",
+            "person",
+            "people",
+            "guest",
+            "host",
+            "cast",
+            "serie",
+            "frieren",
+            "fern",
+            "ゼリエ",
+            "フリーレン",
+            "フェルン",
+        ],
+    },
+    "vocabulary": {
+        "label": "Vocabulary",
+        "keywords": ["term", "word", "phrase", "definition", "meaning", "vocabulary", "言葉", "意味"],
+    },
+    "timeline": {
+        "label": "Timeline / sequence",
+        "keywords": ["timeline", "sequence", "before", "after", "first", "next", "then", "流れ", "次"],
+    },
+    "quotes": {
+        "label": "Quotes / context",
+        "keywords": ["quote", "said", "context", "line", "moment", "発言", "セリフ", "文脈"],
+    },
+    "exam": {
+        "label": "Exam prep",
+        "keywords": ["exam", "quiz", "test", "review", "compare", "contrast", "why", "復習", "試験"],
+    },
+    "language": {
+        "label": "Language learning",
+        "keywords": ["grammar", "listening", "translation", "language", "nuance", "文法", "翻訳", "ニュアンス"],
+    },
+    "discussion": {
+        "label": "Discussion questions",
+        "keywords": ["discuss", "opinion", "debate", "interpret", "why", "how", "議論", "解釈"],
+    },
+}
+STUDY_SCOPES = {"whole_video", "focused_sections"}
+STUDY_MODEL_PROFILES = {
+    "economy": {
+        "label": "Economy",
+        "max_evidence_rows": 8,
+        "max_tokens": 1600,
+        "models": {
+            "chatgpt": "gpt-5.4-nano",
+            "claude": "claude-haiku-4-5",
+        },
+    },
+    "balanced": {
+        "label": "Balanced",
+        "max_evidence_rows": 12,
+        "max_tokens": 2200,
+        "models": {
+            "chatgpt": "gpt-5.4-mini",
+            "claude": "claude-sonnet-4-6",
+        },
+    },
+    "quality": {
+        "label": "Quality",
+        "max_evidence_rows": 16,
+        "max_tokens": 3000,
+        "models": {
+            "chatgpt": "gpt-5.5",
+            "claude": "claude-opus-4-8",
+        },
+    },
+}
 ASK_HISTORY_LIMIT_PER_VIDEO = 20
 ASK_HISTORY_LIST_LIMIT_MAX = 100
 LOCALHOST_CORS_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -156,6 +277,25 @@ def _allowed_local_origin(origin: Optional[str]) -> Optional[str]:
     if parsed.hostname not in LOCALHOST_CORS_HOSTS:
         return None
     return text
+
+
+# Auth/permission/request-shape errors will fail identically on every attempt,
+# so the summary retry loop should not burn its budget re-sending them.
+_NON_RETRYABLE_LLM_ERRORS: tuple = ()
+if anthropic is not None:  # pragma: no branch
+    _NON_RETRYABLE_LLM_ERRORS += (
+        anthropic.AuthenticationError,
+        anthropic.PermissionDeniedError,
+        anthropic.NotFoundError,
+        anthropic.BadRequestError,
+    )
+if openai is not None:  # pragma: no branch
+    _NON_RETRYABLE_LLM_ERRORS += (
+        openai.AuthenticationError,
+        openai.PermissionDeniedError,
+        openai.NotFoundError,
+        openai.BadRequestError,
+    )
 
 
 class SummaryGenerationError(RuntimeError):
@@ -342,6 +482,7 @@ class LocalRAGService:
         self.runtime_data_dir = ROOT_DIR / "data" / "runtime"
         self.cache_data_dir = ROOT_DIR / "data" / "cache"
         self.summary_cache_dir = self.cache_data_dir / "summaries"
+        self.study_section_cache_dir = self.cache_data_dir / "study_sections"
         self.legacy_data_dir = Path(__file__).resolve().parent / "data"
         self.feedback_path = self.runtime_data_dir / "search_feedback.json"
         self.legacy_feedback_path = self.legacy_data_dir / "search_feedback.json"
@@ -2485,6 +2626,26 @@ class LocalRAGService:
             "results": results,
         }
 
+    def _resolve_llm_model(self, provider: str, model: Optional[str]) -> str:
+        scoped_provider = str(provider or DEFAULT_ASK_PROVIDER).strip().lower()
+        if scoped_provider not in ASK_PROVIDERS:
+            raise ValueError(_provider_error_message())
+        if scoped_provider == "claude":
+            default_model = self.engine.model
+        else:
+            default_model = self.openai_model
+        scoped_model = str(model or "").strip()
+        if not scoped_model:
+            return default_model
+        allowed = {option["id"] for option in LLM_MODEL_OPTIONS[scoped_provider]}
+        allowed.add(default_model)
+        if scoped_model not in allowed:
+            raise ValueError(
+                f"model for provider '{scoped_provider}' must be one of: "
+                f"{', '.join(sorted(allowed))}"
+            )
+        return scoped_model
+
     def _llm_text_response(
         self,
         *,
@@ -2493,37 +2654,64 @@ class LocalRAGService:
         user_message: str,
         max_tokens: int,
         temperature: float,
+        model: Optional[str] = None,
     ) -> dict:
         scoped_provider = str(provider or DEFAULT_ASK_PROVIDER).strip().lower()
         if scoped_provider not in ASK_PROVIDERS:
-            raise ValueError("provider must be one of: chatgpt, claude")
+            raise ValueError(_provider_error_message())
+        resolved_model = self._resolve_llm_model(scoped_provider, model)
+        supports_temperature = _model_supports_temperature(
+            scoped_provider, resolved_model
+        )
 
         if scoped_provider == "claude":
-            response = self.engine.client.messages.create(
-                model=self.engine.model,
-                max_tokens=max_tokens,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_message}],
-                temperature=temperature,
+            request_kwargs = {
+                "model": resolved_model,
+                "max_tokens": max_tokens,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_message}],
+            }
+            if supports_temperature:
+                request_kwargs["temperature"] = temperature
+            response = self.engine.client.messages.create(**request_kwargs)
+            text = "".join(
+                block.text
+                for block in (response.content or [])
+                if getattr(block, "type", "") == "text"
             )
-            text = response.content[0].text if response.content else ""
-            model = self.engine.model
+            if getattr(response, "stop_reason", None) == "max_tokens":
+                raise ValueError(
+                    f"Claude response was truncated at max_tokens={max_tokens}; "
+                    "increase the token budget for this call."
+                )
+            model = resolved_model
         else:
-            response = self.openai_client.chat.completions.create(
-                model=self.openai_model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                messages=[
+            client = self.openai_client
+            provider_label = "OpenAI"
+            request_kwargs = {
+                "model": resolved_model,
+                "max_completion_tokens": max_tokens,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
-            )
+            }
+            if supports_temperature:
+                request_kwargs["temperature"] = temperature
+            response = client.chat.completions.create(**request_kwargs)
             text = ""
+            finish_reason = ""
             if response.choices:
                 text = str(response.choices[0].message.content or "")
+                finish_reason = str(response.choices[0].finish_reason or "")
+            if finish_reason == "length":
+                raise ValueError(
+                    f"{provider_label} response was truncated at max_tokens={max_tokens}; "
+                    "increase the token budget for this call."
+                )
             if not text.strip():
-                raise ValueError("OpenAI response missing content.")
-            model = self.openai_model
+                raise ValueError(f"{provider_label} response missing content.")
+            model = resolved_model
 
         if not str(text or "").strip():
             raise ValueError("LLM response missing content.")
@@ -2971,6 +3159,7 @@ class LocalRAGService:
         items: List[dict],
         min_sentences: int = SUMMARY_MIN_SENTENCES,
         max_sentences: int = SUMMARY_MAX_SENTENCES,
+        model: Optional[str] = None,
     ) -> List[dict]:
         language_rule = (
             "Rewrite in Japanese only."
@@ -3008,6 +3197,7 @@ class LocalRAGService:
             user_message=user_message,
             max_tokens=900,
             temperature=SUMMARY_TEMPERATURE,
+            model=model,
         )
         parsed = _extract_json_payload(llm["text"])
         rewritten = self._normalize_summary_items(
@@ -3032,6 +3222,7 @@ class LocalRAGService:
         require_exact_count: bool = True,
         min_sentences: int = SUMMARY_MIN_SENTENCES,
         max_sentences: int = SUMMARY_MAX_SENTENCES,
+        model: Optional[str] = None,
     ) -> dict:
         last_error: Optional[Exception] = None
         attempts = max(1, int(SUMMARY_RETRY_ATTEMPTS))
@@ -3044,6 +3235,7 @@ class LocalRAGService:
                     user_message=user_message,
                     max_tokens=max_tokens,
                     temperature=SUMMARY_TEMPERATURE,
+                    model=model,
                 )
                 parsed = _extract_json_payload(llm["text"])
                 items = self._normalize_summary_items(
@@ -3075,6 +3267,7 @@ class LocalRAGService:
                         items=items,
                         min_sentences=min_sentences,
                         max_sentences=max_sentences,
+                        model=model,
                     )
                     if not self._summary_items_match_language(items, language):
                         raise ValueError(
@@ -3114,6 +3307,10 @@ class LocalRAGService:
                 }
             except Exception as exc:
                 last_error = exc
+                if isinstance(exc, _NON_RETRYABLE_LLM_ERRORS):
+                    raise SummaryGenerationError(
+                        f"{stage} failed with a non-retryable provider error: {exc}"
+                    ) from exc
 
         raise SummaryGenerationError(
             f"{stage} failed after {attempts} attempts: {last_error}"
@@ -3129,6 +3326,7 @@ class LocalRAGService:
         max_points: int,
         min_sentences: int = SUMMARY_MIN_SENTENCES,
         max_sentences: int = SUMMARY_MAX_SENTENCES,
+        model: Optional[str] = None,
     ) -> dict:
         system_prompt = self._summary_system_prompt(
             language=language, max_points=max_points
@@ -3151,6 +3349,7 @@ class LocalRAGService:
             require_exact_count=True,
             min_sentences=min_sentences,
             max_sentences=max_sentences,
+            model=model,
         )
         return {
             "provider": result["provider"],
@@ -3171,6 +3370,7 @@ class LocalRAGService:
         max_points: int,
         min_sentences: int = SUMMARY_MIN_SENTENCES,
         max_sentences: int = SUMMARY_MAX_SENTENCES,
+        model: Optional[str] = None,
     ) -> dict:
         compact_lines = self._summary_compact_transcript_lines(segments)
         if not compact_lines:
@@ -3196,6 +3396,7 @@ class LocalRAGService:
             require_exact_count=True,
             min_sentences=min_sentences,
             max_sentences=max_sentences,
+            model=model,
         )
         return {
             "provider": result["provider"],
@@ -3216,6 +3417,7 @@ class LocalRAGService:
         max_points: int,
         min_sentences: int = SUMMARY_MIN_SENTENCES,
         max_sentences: int = SUMMARY_MAX_SENTENCES,
+        model: Optional[str] = None,
     ) -> dict:
         windows = self._window_chunks_for_summary(
             segments, max_chars=SUMMARY_WINDOW_MAX_CHARS
@@ -3230,13 +3432,12 @@ class LocalRAGService:
                 max_points=max_points,
                 min_sentences=min_sentences,
                 max_sentences=max_sentences,
+                model=model,
             )
 
         map_items: List[dict] = []
         resolved_provider = str(provider or DEFAULT_ASK_PROVIDER).strip().lower()
-        resolved_model = (
-            self.openai_model if resolved_provider == "chatgpt" else self.engine.model
-        )
+        resolved_model = self._resolve_llm_model(resolved_provider, model)
         retries = 0
         processed_windows = 0
 
@@ -3265,6 +3466,7 @@ class LocalRAGService:
                 require_exact_count=False,
                 min_sentences=min_sentences,
                 max_sentences=max_sentences,
+                model=model,
             )
             resolved_provider = map_result["provider"]
             resolved_model = map_result["model"]
@@ -3294,6 +3496,7 @@ class LocalRAGService:
             require_exact_count=True,
             min_sentences=min_sentences,
             max_sentences=max_sentences,
+            model=model,
         )
         resolved_provider = final_result["provider"]
         resolved_model = final_result["model"]
@@ -3352,8 +3555,13 @@ class LocalRAGService:
         return payload, True
 
     @staticmethod
-    def _summary_cache_key(*, language: str, provider: str, max_points: int) -> str:
-        return f"{str(language).strip().lower()}:{str(provider).strip().lower()}:{int(max_points)}"
+    def _summary_cache_key(
+        *, language: str, provider: str, max_points: int, model: str
+    ) -> str:
+        return (
+            f"{str(language).strip().lower()}:{str(provider).strip().lower()}"
+            f":{int(max_points)}:{str(model).strip().lower()}"
+        )
 
     def _summary_cache_path(self, video_id: str) -> Path:
         safe_video_id = str(video_id or "").strip()
@@ -3473,6 +3681,7 @@ class LocalRAGService:
         language: str,
         provider: str = DEFAULT_ASK_PROVIDER,
         max_points: int = SUMMARY_MAX_POINTS,
+        model: Optional[str] = None,
     ) -> dict:
         scoped_video_id = str(video_id or "").strip()
         if not scoped_video_id:
@@ -3482,7 +3691,8 @@ class LocalRAGService:
 
         scoped_provider = str(provider or DEFAULT_ASK_PROVIDER).strip().lower()
         if scoped_provider not in ASK_PROVIDERS:
-            raise ValueError("provider must be one of: chatgpt, claude")
+            raise ValueError(_provider_error_message())
+        scoped_model = self._resolve_llm_model(scoped_provider, model)
 
         scoped_language = str(language or "").strip().lower() or "en"
         if scoped_language not in SUMMARY_LANGUAGES:
@@ -3511,6 +3721,7 @@ class LocalRAGService:
             language=scoped_language,
             provider=scoped_provider,
             max_points=safe_max_points,
+            model=scoped_model,
         )
         source_fingerprint = self._summary_source_fingerprint(
             full_transcript=full_transcript
@@ -3563,6 +3774,7 @@ class LocalRAGService:
                     language=scoped_language,
                     provider=scoped_provider,
                     max_points=safe_max_points,
+                    model=scoped_model,
                 )
             except SummaryGenerationError as exc:
                 fallback_applied = True
@@ -3576,6 +3788,7 @@ class LocalRAGService:
                     max_points=safe_max_points,
                     min_sentences=SUMMARY_RELAXED_MIN_SENTENCES,
                     max_sentences=SUMMARY_RELAXED_MAX_SENTENCES,
+                    model=scoped_model,
                 )
         else:
             primary_strategy = "compact_single_pass"
@@ -3585,6 +3798,7 @@ class LocalRAGService:
                     language=scoped_language,
                     provider=scoped_provider,
                     max_points=safe_max_points,
+                    model=scoped_model,
                 )
             except SummaryGenerationError as exc:
                 fallback_applied = True
@@ -3595,6 +3809,7 @@ class LocalRAGService:
                         language=scoped_language,
                         provider=scoped_provider,
                         max_points=safe_max_points,
+                        model=scoped_model,
                     )
                 except SummaryGenerationError as reduce_exc:
                     validation_relaxed = True
@@ -3608,6 +3823,7 @@ class LocalRAGService:
                         max_points=safe_max_points,
                         min_sentences=SUMMARY_RELAXED_MIN_SENTENCES,
                         max_sentences=SUMMARY_RELAXED_MAX_SENTENCES,
+                        model=scoped_model,
                     )
 
         summary_items: List[dict] = []
@@ -3698,21 +3914,1779 @@ class LocalRAGService:
 
         return response
 
+    @staticmethod
+    def _study_clean_text(value: str) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip()
+
+    @classmethod
+    def _study_clip_text(cls, value: str, limit: int = 260) -> str:
+        text = cls._study_clean_text(value)
+        if len(text) <= limit:
+            return text
+        clipped = text[: max(1, int(limit))].rsplit(" ", 1)[0].strip()
+        return f"{clipped or text[:limit].strip()}..."
+
+    @staticmethod
+    def _study_timestamp_label(seconds: float) -> str:
+        safe_seconds = max(0, int(float(seconds or 0)))
+        hours = safe_seconds // 3600
+        minutes = (safe_seconds % 3600) // 60
+        remaining = safe_seconds % 60
+        if hours:
+            return f"{hours}:{minutes:02d}:{remaining:02d}"
+        return f"{minutes}:{remaining:02d}"
+
+    def _study_provider_available(self, provider: str) -> bool:
+        scoped_provider = str(provider or DEFAULT_ASK_PROVIDER).strip().lower()
+        if scoped_provider == "chatgpt":
+            return OpenAI is not None and bool(
+                str(os.environ.get("OPENAI_API_KEY") or "").strip()
+            )
+        if scoped_provider == "claude":
+            return bool(str(os.environ.get("ANTHROPIC_API_KEY") or "").strip())
+        return False
+
+    def _resolve_study_context(self, video_id: str) -> dict:
+        scoped_video_id = str(video_id or "").strip()
+        if not scoped_video_id:
+            raise ValueError("video_id is required")
+        if scoped_video_id not in self.engine.library.videos:
+            raise KeyError(f"video_id not found: {scoped_video_id}")
+
+        video = self.engine.library.videos.get(scoped_video_id, {})
+        full_transcript, backfilled = self._resolve_summary_full_transcript(video=video)
+        segments = self._coerce_summary_segments(full_transcript.get("segments") or [])
+        if not segments:
+            raise ValueError("video has no transcript segments")
+        source_fingerprint = self._summary_source_fingerprint(
+            full_transcript=full_transcript
+        )
+        return {
+            "video_id": scoped_video_id,
+            "video": video,
+            "full_transcript": full_transcript,
+            "segments": segments,
+            "source_fingerprint": source_fingerprint,
+            "full_transcript_backfilled": bool(backfilled),
+        }
+
+    def _study_evidence_rows(
+        self,
+        *,
+        video_id: str,
+        video: dict,
+        segments: List[dict],
+        limit: int,
+    ) -> List[dict]:
+        rows: List[dict] = []
+        raw_chunks = video.get("chunks") or []
+        source_rows = raw_chunks if raw_chunks else segments
+        source_label = "chunk" if raw_chunks else "segment"
+        title = str(video.get("title") or f"Video {video_id}")
+        language = str(video.get("language") or "ja")
+
+        for idx, raw in enumerate(source_rows):
+            text = self._study_clean_text(
+                raw.get("text") or raw.get("raw_text") or raw.get("embed_text") or ""
+            )
+            if not text:
+                continue
+            start = float(raw.get("start", raw.get("start_seconds", 0.0)) or 0.0)
+            end = float(raw.get("end", raw.get("end_seconds", start)) or start)
+            chunk_index = raw.get("chunk_index", idx)
+            evidence_id = f"{source_label}_{idx + 1}"
+            rows.append(
+                {
+                    "evidence_id": evidence_id,
+                    "video_id": video_id,
+                    "video_title": title,
+                    "language": language,
+                    "source_type": "transcript",
+                    "chunk_index": chunk_index if source_label == "chunk" else None,
+                    "segment_index": idx if source_label == "segment" else None,
+                    "start": start,
+                    "end": end,
+                    "timestamp": self._study_timestamp_label(start),
+                    "url": f"https://www.youtube.com/watch?v={video_id}&t={int(start)}s",
+                    "text": text,
+                    "source_label": source_label,
+                }
+            )
+
+        if not rows:
+            raise ValueError("video has no readable transcript evidence")
+
+        safe_limit = max(1, min(int(limit or STUDY_DEFAULT_CARD_COUNT), len(rows)))
+        if len(rows) <= safe_limit:
+            return rows
+        if safe_limit == 1:
+            return [rows[0]]
+
+        selected = []
+        seen = set()
+        max_index = len(rows) - 1
+        for idx in range(safe_limit):
+            source_index = round((idx * max_index) / (safe_limit - 1))
+            if source_index in seen:
+                continue
+            seen.add(source_index)
+            selected.append(rows[source_index])
+        return selected
+
+    def _study_section_cache_path(self, video_id: str) -> Path:
+        safe_video_id = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(video_id or "").strip())
+        base_dir = getattr(self, "study_section_cache_dir", None)
+        if base_dir is None:
+            base_dir = getattr(self, "cache_data_dir", ROOT_DIR / "data" / "cache") / "study_sections"
+            self.study_section_cache_dir = base_dir
+        return Path(base_dir) / f"{safe_video_id or 'unknown'}.json"
+
+    @staticmethod
+    def _normalize_study_scope(scope: str) -> str:
+        scoped = str(scope or "whole_video").strip().lower()
+        return scoped if scoped in STUDY_SCOPES else "whole_video"
+
+    @staticmethod
+    def _normalize_study_model_profile(model_profile: str) -> str:
+        scoped = str(model_profile or "balanced").strip().lower()
+        return scoped if scoped in STUDY_MODEL_PROFILES else "balanced"
+
+    def _study_focus_metadata(
+        self,
+        *,
+        focus: str,
+        focus_preset: str,
+        scope: str,
+        model_profile: str,
+    ) -> dict:
+        scoped_preset = (
+            str(focus_preset or STUDY_DEFAULT_FOCUS_PRESET)
+            .strip()
+            .lower()
+            .replace("-", "_")
+        )
+        if scoped_preset not in STUDY_FOCUS_PRESETS:
+            scoped_preset = STUDY_DEFAULT_FOCUS_PRESET
+        scoped_scope = self._normalize_study_scope(scope)
+        scoped_profile = self._normalize_study_model_profile(model_profile)
+        query = self._study_clip_text(focus or "", 180)
+        has_focus = bool(query) or scoped_preset != STUDY_DEFAULT_FOCUS_PRESET
+        if scoped_scope == "focused_sections" and scoped_preset != STUDY_DEFAULT_FOCUS_PRESET:
+            has_focus = True
+        preset_config = STUDY_FOCUS_PRESETS[scoped_preset]
+        profile_config = STUDY_MODEL_PROFILES[scoped_profile]
+        return {
+            "query": query,
+            "preset": scoped_preset,
+            "preset_label": preset_config["label"],
+            "scope": scoped_scope,
+            "model_profile": scoped_profile,
+            "model_profile_label": profile_config["label"],
+            "has_focus": has_focus,
+        }
+
+    def _study_model_for_profile(
+        self,
+        *,
+        provider: str,
+        requested_model: Optional[str],
+        model_profile: str,
+    ) -> Optional[str]:
+        if str(requested_model or "").strip():
+            return requested_model
+        profile = STUDY_MODEL_PROFILES.get(
+            self._normalize_study_model_profile(model_profile),
+            STUDY_MODEL_PROFILES["balanced"],
+        )
+        return profile.get("models", {}).get(str(provider or "").strip().lower())
+
+    @staticmethod
+    def _study_search_tokens(value: str) -> List[str]:
+        return [
+            token.lower()
+            for token in re.findall(
+                r"[A-Za-z][A-Za-z0-9'_-]{2,}|[ぁ-んァ-ヴー一-龥]{2,12}|[一-龥]",
+                str(value or ""),
+            )
+        ]
+
+    def _study_focus_terms(self, focus_meta: dict) -> List[str]:
+        if not focus_meta.get("has_focus"):
+            return []
+        query_terms = self._study_search_tokens(focus_meta.get("query", ""))
+        if query_terms:
+            terms = query_terms
+        else:
+            preset = str(focus_meta.get("preset") or STUDY_DEFAULT_FOCUS_PRESET)
+            preset_keywords = STUDY_FOCUS_PRESETS.get(preset, {}).get("keywords", [])
+            terms = self._study_search_tokens(" ".join(preset_keywords))
+        seen = set()
+        deduped = []
+        for term in terms:
+            if term in seen:
+                continue
+            seen.add(term)
+            deduped.append(term)
+        return deduped
+
+    def _study_section_text(self, section: dict) -> str:
+        return self._study_clean_text(
+            " ".join(
+                [
+                    str(section.get("title") or ""),
+                    str(section.get("tldr") or ""),
+                    " ".join(str(point) for point in section.get("key_points") or []),
+                    str(section.get("anchor_text") or ""),
+                    " ".join(str(keyword) for keyword in section.get("keywords") or []),
+                    str(section.get("section_type") or ""),
+                ]
+            )
+        )
+
+    def _study_build_sections(self, *, context: dict, language: str) -> List[dict]:
+        video = context["video"]
+        source_rows = video.get("chunks") or context["segments"]
+        evidence_rows = self._study_evidence_rows(
+            video_id=context["video_id"],
+            video=video,
+            segments=context["segments"],
+            limit=max(5, len(source_rows)),
+        )
+        topics = self._local_topics_from_evidence(
+            evidence_rows=evidence_rows,
+            language=language,
+        )
+        sections: List[dict] = []
+        for idx, topic in enumerate(topics, start=1):
+            evidence = deepcopy(topic.get("evidence") or {})
+            title = self._study_clip_text(topic.get("title") or f"Section {idx}", 140)
+            tldr = self._study_clip_text(topic.get("tldr") or "", 300)
+            key_points = [
+                self._study_clip_text(point, 180)
+                for point in topic.get("key_points") or []
+                if self._study_clean_text(point)
+            ][:4]
+            anchor_text = self._study_clip_text(topic.get("anchor_text") or "", 220)
+            section_text = self._study_clean_text(
+                " ".join([title, tldr, " ".join(key_points), anchor_text])
+            )
+            start = float(topic.get("start", evidence.get("start", 0.0)) or 0.0)
+            end = float(topic.get("end", evidence.get("end", start)) or start)
+            sections.append(
+                {
+                    "section_id": f"section_{idx}",
+                    "rank": idx,
+                    "title": title,
+                    "tldr": tldr,
+                    "key_points": key_points,
+                    "anchor_text": anchor_text,
+                    "keywords": self._study_keywords(section_text, limit=8),
+                    "section_type": topic.get("section_type", "estimated"),
+                    "confidence": topic.get("confidence", "estimated"),
+                    "start": start,
+                    "end": end,
+                    "timestamp": self._study_timestamp_label(start),
+                    "url": topic.get("url") or evidence.get("url") or "",
+                    "evidence": evidence,
+                }
+            )
+        return sections
+
+    def _get_study_sections(self, *, context: dict, language: str) -> dict:
+        cache_path = self._study_section_cache_path(context["video_id"])
+        cached = self._read_json_file(cache_path)
+        if (
+            cached
+            and cached.get("version") == STUDY_SECTION_CACHE_VERSION
+            and cached.get("source_fingerprint") == context["source_fingerprint"]
+            and cached.get("language") == language
+            and isinstance(cached.get("sections"), list)
+        ):
+            return {
+                "sections": deepcopy(cached["sections"]),
+                "cache_status": "hit",
+                "cache_version": STUDY_SECTION_CACHE_VERSION,
+            }
+
+        sections = self._study_build_sections(context=context, language=language)
+        payload = {
+            "version": STUDY_SECTION_CACHE_VERSION,
+            "created_at": now_iso(),
+            "video_id": context["video_id"],
+            "language": language,
+            "source_fingerprint": context["source_fingerprint"],
+            "sections": sections,
+        }
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = cache_path.with_suffix(".tmp")
+            temp_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            _chmod_private(temp_path)
+            temp_path.replace(cache_path)
+            _chmod_private(cache_path)
+        except OSError:
+            pass
+        return {
+            "sections": deepcopy(sections),
+            "cache_status": "miss",
+            "cache_version": STUDY_SECTION_CACHE_VERSION,
+        }
+
+    def _study_section_score(self, *, section: dict, focus_meta: dict) -> float:
+        query_terms = self._study_search_tokens(focus_meta.get("query", ""))
+        preset = str(focus_meta.get("preset") or STUDY_DEFAULT_FOCUS_PRESET)
+        preset_keywords = STUDY_FOCUS_PRESETS.get(preset, {}).get("keywords", [])
+        preset_terms = self._study_search_tokens(" ".join(preset_keywords))
+        if not query_terms and not focus_meta.get("has_focus"):
+            return max(0.0, 1.0 - (float(section.get("rank", 1)) * 0.01))
+        text = self._study_section_text(section).lower()
+        section_tokens = set(self._study_search_tokens(text))
+        score = 0.0
+        for term in query_terms:
+            if term in section_tokens:
+                score += 5.0
+            elif term and term in text:
+                score += 2.5
+        preset_weight = 0.5 if query_terms else 2.0
+        for term in preset_terms:
+            if term in section_tokens:
+                score += preset_weight
+            elif term and term in text:
+                score += preset_weight / 2
+        section_type = str(section.get("section_type") or "").lower()
+        if preset == "characters" and section_type == "character":
+            score += 3.0
+        if preset == "timeline" and section_type in {"intro", "closing"}:
+            score += 0.8
+        if preset == "discussion" and section_type in {"character", "performance"}:
+            score += 0.8
+        return round(score, 3)
+
+    def _study_query_match_count(self, *, section: dict, focus_meta: dict) -> int:
+        query_terms = self._study_search_tokens(focus_meta.get("query", ""))
+        if not query_terms:
+            return 0
+        text = self._study_section_text(section).lower()
+        section_tokens = set(self._study_search_tokens(text))
+        return sum(1 for term in query_terms if term in section_tokens or term in text)
+
+    def _study_select_focus_sections(
+        self,
+        *,
+        sections: List[dict],
+        focus_meta: dict,
+        limit: int,
+    ) -> List[dict]:
+        clean_sections = [section for section in sections if section.get("title")]
+        if not clean_sections:
+            return []
+        safe_limit = max(1, min(int(limit or 5), len(clean_sections)))
+        scored = []
+        for section in clean_sections:
+            row = deepcopy(section)
+            row["focus_score"] = self._study_section_score(
+                section=section,
+                focus_meta=focus_meta,
+            )
+            row["query_match_count"] = self._study_query_match_count(
+                section=section,
+                focus_meta=focus_meta,
+            )
+            scored.append(row)
+        if focus_meta.get("has_focus"):
+            ranked = sorted(
+                scored,
+                key=lambda row: (-float(row.get("focus_score", 0.0)), int(row.get("rank", 999))),
+            )
+            query_terms = self._study_search_tokens(focus_meta.get("query", ""))
+            if query_terms and focus_meta.get("scope") == "focused_sections":
+                query_ranked = [
+                    row
+                    for row in ranked
+                    if int(row.get("query_match_count", 0)) >= 1
+                ]
+                if query_ranked:
+                    return sorted(
+                        query_ranked,
+                        key=lambda row: (
+                            -int(row.get("query_match_count", 0)),
+                            -float(row.get("focus_score", 0.0)),
+                            int(row.get("rank", 999)),
+                        ),
+                    )[:safe_limit]
+            if float(ranked[0].get("focus_score", 0.0)) > 0:
+                return ranked[:safe_limit]
+        return sorted(scored, key=lambda row: int(row.get("rank", 999)))[:safe_limit]
+
+    def _study_evidence_rows_from_sections(
+        self,
+        *,
+        sections: List[dict],
+        max_rows: int,
+        language: str,
+        video_id: str,
+        video_title: str,
+    ) -> List[dict]:
+        rows: List[dict] = []
+        safe_limit = max(1, int(max_rows or STUDY_DEFAULT_CARD_COUNT))
+        section_concepts = []
+        for section in sections:
+            base_evidence = deepcopy(section.get("evidence") or {})
+            concepts = [
+                section.get("tldr", ""),
+                *(section.get("key_points") or []),
+                section.get("anchor_text", ""),
+            ]
+            cleaned_concepts = [
+                self._study_clean_text(point)
+                for point in concepts
+                if self._study_clean_text(point)
+            ]
+            if cleaned_concepts:
+                section_concepts.append((section, base_evidence, cleaned_concepts))
+
+        max_concepts = max((len(item[2]) for item in section_concepts), default=0)
+        for point_idx in range(max_concepts):
+            for section, base_evidence, concepts in section_concepts:
+                if point_idx >= len(concepts):
+                    continue
+                clean_point = concepts[point_idx]
+                text = self._study_clean_text(f"{section.get('title')}: {clean_point}")
+                start = float(
+                    section.get("start", base_evidence.get("start", 0.0)) or 0.0
+                )
+                end = float(
+                    section.get("end", base_evidence.get("end", start)) or start
+                )
+                rows.append(
+                    {
+                        "evidence_id": f"{section.get('section_id')}_point_{point_idx + 1}",
+                        "video_id": video_id,
+                        "video_title": video_title,
+                        "language": language,
+                        "source_type": "study_section",
+                        "section_id": section.get("section_id"),
+                        "section_rank": section.get("rank"),
+                        "section_title": section.get("title"),
+                        "start": start,
+                        "end": end,
+                        "timestamp": self._study_timestamp_label(start),
+                        "url": section.get("url")
+                        or base_evidence.get("url")
+                        or f"https://www.youtube.com/watch?v={video_id}&t={int(start)}s",
+                        "text": text,
+                        "source_label": "study_section",
+                        "base_evidence_id": base_evidence.get("evidence_id"),
+                    }
+                )
+                if len(rows) >= safe_limit:
+                    return rows
+        if rows and len(rows) < safe_limit:
+            base_rows = deepcopy(rows)
+            review_round = 2
+            while len(rows) < safe_limit:
+                for base_row in base_rows:
+                    row = deepcopy(base_row)
+                    # Reuse the same timestamped evidence for spaced review cards while
+                    # keeping ids unique for card-level tracking and quality checks.
+                    row["evidence_id"] = f"{base_row['evidence_id']}_review_{review_round}"
+                    rows.append(row)
+                    if len(rows) >= safe_limit:
+                        return rows
+                review_round += 1
+        return rows
+
+    def _study_section_preview(self, section: dict) -> dict:
+        return {
+            "section_id": section.get("section_id"),
+            "rank": section.get("rank"),
+            "title": section.get("title"),
+            "tldr": section.get("tldr"),
+            "key_points": section.get("key_points", [])[:3],
+            "start": section.get("start"),
+            "end": section.get("end"),
+            "timestamp": section.get("timestamp")
+            or self._study_timestamp_label(section.get("start", 0.0)),
+            "url": section.get("url"),
+            "section_type": section.get("section_type"),
+            "confidence": section.get("confidence"),
+            "focus_score": section.get("focus_score"),
+        }
+
+    def _study_evidence_pack(
+        self,
+        *,
+        section_bundle: dict,
+        selected_sections: List[dict],
+        evidence_rows: List[dict],
+    ) -> dict:
+        return {
+            "basis": "cached_transcript_sections",
+            "cache_status": section_bundle.get("cache_status", "miss"),
+            "cache_version": section_bundle.get("cache_version", STUDY_SECTION_CACHE_VERSION),
+            "section_count": len(section_bundle.get("sections") or []),
+            "selected_section_count": len(selected_sections),
+            "evidence_row_count": len(evidence_rows),
+            "selected_sections": [
+                self._study_section_preview(section) for section in selected_sections
+            ],
+        }
+
+    @staticmethod
+    def _study_sentence_candidates(value: str) -> List[str]:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if not text:
+            return []
+        parts = re.split(r"[。.!?！？]\s*|\n+", text)
+        fillers = {
+            "はい",
+            "うん",
+            "ええ",
+            "ああ",
+            "そう",
+            "そうですね",
+            "えっと",
+            "あの",
+            "わあ",
+            "へえ",
+            "ほう",
+        }
+        candidates = []
+        for raw in parts:
+            item = re.sub(r"\s+", " ", raw).strip(" 、,")
+            if not item:
+                continue
+            compact = re.sub(r"[、,\s]+", "", item)
+            if compact in fillers:
+                continue
+            if len(compact) < 12:
+                continue
+            candidates.append(item)
+        if candidates:
+            return candidates
+        clipped = text[:260].rsplit(" ", 1)[0].strip()
+        return [clipped or text[:260].strip()]
+
+    @classmethod
+    def _study_takeaway_text(cls, value: str, limit: int = 180) -> str:
+        candidates = cls._study_sentence_candidates(value)
+        if not candidates:
+            return ""
+        selected = candidates[0]
+        if len(selected) < 70 and len(candidates) > 1:
+            selected = f"{selected}. {candidates[1]}"
+        return cls._study_clip_text(selected, limit)
+
+    @staticmethod
+    def _study_keywords(value: str, limit: int = 3) -> List[str]:
+        text = str(value or "")
+        raw_tokens = re.findall(
+            r"[A-Za-z][A-Za-z0-9'_-]{2,}|[ァ-ヴー]{2,12}|[一-龥]{2,8}",
+            text,
+        )
+        stopwords = {
+            "これ",
+            "それ",
+            "ここ",
+            "ところ",
+            "なんか",
+            "ちょっと",
+            "本当に",
+            "本当",
+            "皆さん",
+            "みたい",
+            "いう",
+            "こと",
+            "もの",
+            "よう",
+            "はい",
+            "うん",
+            "そう",
+            "あの",
+            "です",
+            "ます",
+            "あります",
+            "しました",
+            "think",
+            "thing",
+            "things",
+            "video",
+            "around",
+            "transcript",
+            "the",
+            "and",
+            "for",
+            "from",
+            "with",
+            "that",
+            "this",
+            "are",
+            "was",
+            "were",
+            "will",
+            "should",
+            "into",
+            "while",
+            "when",
+            "how",
+            "why",
+            "what",
+            "who",
+            "which",
+            "section",
+            "moment",
+            "learners",
+            "study",
+            "review",
+        }
+        counts = Counter()
+        order: Dict[str, int] = {}
+        for token in raw_tokens:
+            cleaned = token.strip("-_、。,.!?！？")
+            lowered = cleaned.lower()
+            if not cleaned or lowered in stopwords:
+                continue
+            if len(cleaned) > 18:
+                continue
+            if cleaned not in order:
+                order[cleaned] = len(order)
+            counts[cleaned] += 1
+        ranked = sorted(counts, key=lambda item: (-counts[item], order[item]))
+        return ranked[:limit]
+
+    @staticmethod
+    def _study_focus_label(keywords: List[str], *, is_ja: bool) -> str:
+        if keywords:
+            separator = "・" if is_ja else " / "
+            return separator.join(keywords[:3])
+        return "この場面" if is_ja else "this moment"
+
+    def _study_local_question(
+        self,
+        *,
+        card_type: str,
+        focus: str,
+        timestamp: str,
+        is_ja: bool,
+        source_language: str,
+        occurrence: int = 0,
+    ) -> str:
+        english_variant = ["", "additional ", "follow-up ", "another ", "review "]
+        japanese_variant = ["", "追加で", "別の", "もう一つ", "復習として"]
+        en_extra = english_variant[min(max(0, occurrence), len(english_variant) - 1)]
+        ja_extra = japanese_variant[min(max(0, occurrence), len(japanese_variant) - 1)]
+        if is_ja:
+            templates = {
+                "recall": f"{ja_extra}{focus}について何を覚えるべきですか？",
+                "concept": f"{ja_extra}{focus}の話から読み取れる考え方は何ですか？",
+                "detail": f"{ja_extra}{focus}について具体的に語られたことは何ですか？",
+                "application": f"{ja_extra}{focus}について、後で誰かにどう説明できますか？",
+            }
+            return templates.get(card_type, templates["recall"])
+        if source_language != "en":
+            templates = {
+                "recall": f"What {en_extra}point should you remember about {focus}?",
+                "concept": f"What {en_extra}idea about {focus} should a learner connect?",
+                "detail": f"What {en_extra}concrete detail is mentioned about {focus}?",
+                "application": f"How would you explain the {en_extra}point about {focus} after replaying the source?",
+            }
+            return templates.get(card_type, templates["recall"])
+        templates = {
+            "recall": f"What {en_extra}point should you remember about {focus}?",
+            "concept": f"What {en_extra}larger idea does this develop about {focus}?",
+            "detail": f"What {en_extra}concrete detail is mentioned about {focus}?",
+            "application": f"How would you explain the {en_extra}point about {focus} to someone else?",
+        }
+        return templates.get(card_type, templates["recall"])
+
+    @staticmethod
+    def _study_learning_objective(
+        *,
+        focus: str,
+        timestamp: str,
+        card_type: str,
+        is_ja: bool,
+    ) -> str:
+        if is_ja:
+            labels = {
+                "recall": "要点を思い出す",
+                "concept": "考え方をつなげる",
+                "detail": "具体的な発言を確認する",
+                "application": "自分の言葉で説明する",
+            }
+            return f"{focus}について、{labels.get(card_type, '要点を思い出す')}。"
+        labels = {
+            "recall": "Recall the main point",
+            "concept": "Connect the idea",
+            "detail": "Identify the concrete detail",
+            "application": "Explain it in your own words",
+        }
+        return f"{labels.get(card_type, 'Recall the main point')} about {focus}."
+
+    @staticmethod
+    def _study_why_it_matters(*, card_type: str, is_ja: bool) -> str:
+        if is_ja:
+            values = {
+                "recall": "長い文字起こしを、あとで思い出せる1つの要点に絞ります。",
+                "concept": "会話の細部を、動画全体のテーマと結びつけます。",
+                "detail": "聞き流しやすい具体的な発言を確認できます。",
+                "application": "内容を見返すだけでなく、自分の言葉で説明する練習になります。",
+            }
+            return values.get(card_type, values["recall"])
+        values = {
+            "recall": "It narrows a long transcript window into one thing to remember.",
+            "concept": "It connects a transcript detail to the broader idea of the video.",
+            "detail": "It catches a concrete moment that is easy to miss while listening.",
+            "application": "It pushes the learner to explain the moment, not just reread it.",
+        }
+        return values.get(card_type, values["recall"])
+
+    def _local_flashcards_from_evidence(
+        self,
+        *,
+        evidence_rows: List[dict],
+        card_count: int,
+        language: str,
+        difficulty: str,
+    ) -> List[dict]:
+        safe_count = max(
+            STUDY_CARD_COUNT_MIN,
+            min(int(card_count or STUDY_DEFAULT_CARD_COUNT), STUDY_CARD_COUNT_MAX),
+        )
+        selected = evidence_rows[:safe_count]
+        cards: List[dict] = []
+        is_ja = str(language or "").strip().lower() == "ja"
+        difficulty_tag = self._study_clean_text(difficulty or "balanced").lower()
+
+        for idx, row in enumerate(selected, start=1):
+            cue = self._study_clip_text(row["text"], 180)
+            source_language = str(row.get("language") or "").strip().lower()
+            card_type = STUDY_CARD_TYPES[(idx - 1) % len(STUDY_CARD_TYPES)]
+            keywords = self._study_keywords(row["text"], limit=3)
+            focus_keywords = (
+                keywords[:2] if not is_ja and source_language != "en" else keywords
+            )
+            focus = self._study_focus_label(focus_keywords, is_ja=is_ja)
+            takeaway_limit = 120 if not is_ja and source_language != "en" else 150
+            takeaway = self._study_takeaway_text(row["text"], limit=takeaway_limit)
+            timestamp = row["timestamp"]
+            question = self._study_local_question(
+                card_type=card_type,
+                focus=focus,
+                timestamp=timestamp,
+                is_ja=is_ja,
+                source_language=source_language,
+                occurrence=(idx - 1) // len(STUDY_CARD_TYPES),
+            )
+            learning_objective = self._study_learning_objective(
+                focus=focus,
+                timestamp=timestamp,
+                card_type=card_type,
+                is_ja=is_ja,
+            )
+            why_it_matters = self._study_why_it_matters(
+                card_type=card_type,
+                is_ja=is_ja,
+            )
+            if is_ja:
+                answer = takeaway
+                explanation = (
+                    "タイムスタンプ付き根拠から、復習しやすい短い要点に圧縮しました。"
+                    "ニュアンスは動画の該当箇所で確認できます。"
+                )
+                tags = ["文字起こし", card_type, difficulty_tag]
+                language_note = ""
+            else:
+                if source_language and source_language != "en":
+                    answer = f"Source-language takeaway: {takeaway}"
+                    language_note = (
+                        "Local fallback preserves source-language wording. "
+                        "Use a configured LLM provider for translated answers."
+                    )
+                else:
+                    answer = takeaway
+                    language_note = ""
+                explanation = (
+                    "This card compresses timestamped evidence into a learner-sized "
+                    "recall target. Replay the source for tone and nuance."
+                )
+                tags = ["transcript", card_type, difficulty_tag]
+
+            cards.append(
+                {
+                    "card_type": card_type,
+                    "question": question,
+                    "answer": answer,
+                    "explanation": explanation,
+                    "learning_objective": learning_objective,
+                    "why_it_matters": why_it_matters,
+                    "language_note": language_note,
+                    "source_cue": cue,
+                    "tags": [tag for tag in tags if tag],
+                    "evidence": deepcopy(row),
+                    "retrieved_chunk_ids": [row["evidence_id"]],
+                    "retrieval_mode": (
+                        "study_section_focus"
+                        if row.get("source_type") == "study_section"
+                        else "transcript_learning_card"
+                    ),
+                }
+            )
+        return cards
+
+    def _normalize_study_cards(
+        self,
+        *,
+        raw_cards: Any,
+        evidence_rows: List[dict],
+        card_count: int,
+        language: str,
+        difficulty: str,
+    ) -> List[dict]:
+        if isinstance(raw_cards, dict):
+            raw_cards = raw_cards.get("cards") or []
+        if not isinstance(raw_cards, list):
+            raw_cards = []
+
+        evidence_by_id = {row["evidence_id"]: row for row in evidence_rows}
+        fallback_cards = self._local_flashcards_from_evidence(
+            evidence_rows=evidence_rows,
+            card_count=card_count,
+            language=language,
+            difficulty=difficulty,
+        )
+        normalized: List[dict] = []
+
+        for idx, raw in enumerate(raw_cards[:card_count]):
+            if not isinstance(raw, dict):
+                continue
+            fallback = fallback_cards[idx % len(fallback_cards)]
+            evidence_id = str(raw.get("evidence_id") or "").strip()
+            evidence = evidence_by_id.get(evidence_id) or fallback["evidence"]
+            source_cue = self._study_clip_text(
+                raw.get("source_cue") or raw.get("source") or evidence["text"], 180
+            )
+            tags = raw.get("tags")
+            if not isinstance(tags, list):
+                tags = []
+            raw_card_type = self._study_clean_text(raw.get("card_type")).lower()
+            if raw_card_type not in STUDY_CARD_TYPES:
+                raw_card_type = fallback["card_type"]
+            question = self._study_clip_text(
+                raw.get("question") or fallback["question"], 220
+            )
+            answer = self._study_clip_text(raw.get("answer") or fallback["answer"], 320)
+            explanation = self._study_clip_text(
+                raw.get("explanation") or fallback["explanation"], 260
+            )
+            learning_objective = self._study_clip_text(
+                raw.get("learning_objective") or fallback["learning_objective"], 220
+            )
+            why_it_matters = self._study_clip_text(
+                raw.get("why_it_matters") or fallback["why_it_matters"], 220
+            )
+            language_note = self._study_clip_text(
+                raw.get("language_note") or fallback.get("language_note", ""), 180
+            )
+            normalized.append(
+                {
+                    "card_type": raw_card_type,
+                    "question": question,
+                    "answer": answer,
+                    "explanation": explanation,
+                    "learning_objective": learning_objective,
+                    "why_it_matters": why_it_matters,
+                    "language_note": language_note,
+                    "source_cue": source_cue,
+                    "tags": [
+                        self._study_clean_text(tag)
+                        for tag in tags
+                        if self._study_clean_text(tag)
+                    ][:6]
+                    or fallback["tags"],
+                    "evidence": deepcopy(evidence),
+                    "retrieved_chunk_ids": [
+                        str(raw.get("evidence_id") or evidence["evidence_id"])
+                    ],
+                    "retrieval_mode": (
+                        "study_section_focus"
+                        if evidence.get("source_type") == "study_section"
+                        else "transcript_learning_card"
+                    ),
+                }
+            )
+
+        if len(normalized) < max(1, min(card_count, len(fallback_cards))):
+            normalized = fallback_cards
+        return normalized[:card_count]
+
+    def _llm_flashcards_from_evidence(
+        self,
+        *,
+        evidence_rows: List[dict],
+        card_count: int,
+        language: str,
+        difficulty: str,
+        provider: str,
+        model: Optional[str],
+        focus_meta: dict,
+        model_profile: str,
+    ) -> dict:
+        evidence_payload = [
+            {
+                "evidence_id": row["evidence_id"],
+                "timestamp": row["timestamp"],
+                "section_title": row.get("section_title"),
+                "text": self._study_clip_text(row["text"], 900),
+            }
+            for row in evidence_rows
+        ]
+        language_rule = (
+            "Write every field in Japanese."
+            if str(language or "").strip().lower() == "ja"
+            else "Write every field in English."
+        )
+        if focus_meta.get("has_focus"):
+            focus_rule = (
+                f"Learner focus: {focus_meta.get('query') or focus_meta.get('preset_label')}. "
+                f"Preset: {focus_meta.get('preset_label')}. "
+                "Generate cards that match this focus. If one evidence item is only weakly "
+                "related, say that briefly in language_note."
+            )
+        else:
+            focus_rule = (
+                "Learner focus: whole-video coverage. Cover the selected sections without "
+                "over-indexing on a single timestamp."
+            )
+        system_prompt = (
+            "You generate high-quality study flashcards from timestamped transcript evidence. "
+            "Every card must be answerable from one listed evidence item, but must not be "
+            "a raw transcript dump. Questions should be specific, answers should be concise, "
+            "and each card should make the learner's job obvious. "
+            "Return strict JSON only."
+        )
+        user_message = (
+            f"{language_rule}\n"
+            f"{focus_rule}\n"
+            f"Generate exactly {card_count} flashcards at {difficulty or 'balanced'} difficulty.\n"
+            "Mix card_type values across recall, concept, detail, and application.\n"
+            "Do not ask generic timestamp-only questions like 'What key point should you remember?'.\n"
+            "Do not include timestamps, time ranges, or phrases like 'around 3:18' in questions. "
+            "Timestamps belong only to the evidence/source fields.\n"
+            "Each question must name the idea, person, event, term, or theme being tested.\n"
+            "Keep answers to 1-2 short sentences. Paraphrase the evidence instead of pasting it.\n"
+            "If the transcript is in a different language from the requested output language, translate "
+            "the answer while preserving names and important source terms.\n"
+            "Each card must include card_type, question, answer, explanation, learning_objective, "
+            "why_it_matters, source_cue, tags, and evidence_id.\n"
+            "Use this JSON shape: {\"cards\":[{\"question\":\"...\",\"answer\":\"...\","
+            "\"card_type\":\"recall\",\"explanation\":\"...\",\"learning_objective\":\"...\","
+            "\"why_it_matters\":\"...\",\"source_cue\":\"...\",\"tags\":[\"...\"],"
+            "\"evidence_id\":\"chunk_1\"}]}.\n\n"
+            f"Evidence:\n{json.dumps(evidence_payload, ensure_ascii=False, indent=2)}"
+        )
+        profile = STUDY_MODEL_PROFILES.get(
+            self._normalize_study_model_profile(model_profile),
+            STUDY_MODEL_PROFILES["balanced"],
+        )
+        max_tokens = int(profile.get("max_tokens", 2200))
+        llm = self._llm_text_response(
+            provider=provider,
+            system_prompt=system_prompt,
+            user_message=user_message,
+            max_tokens=max_tokens,
+            temperature=0.25,
+            model=model,
+        )
+        parsed = _extract_json_payload(llm["text"])
+        cards = self._normalize_study_cards(
+            raw_cards=parsed,
+            evidence_rows=evidence_rows,
+            card_count=card_count,
+            language=language,
+            difficulty=difficulty,
+        )
+        return {"cards": cards, "provider": provider, "model": llm["model"]}
+
+    def generate_study_flashcards(
+        self,
+        *,
+        video_id: str,
+        language: str,
+        provider: str,
+        model: Optional[str],
+        card_count: int,
+        difficulty: str,
+        focus: str = "",
+        focus_preset: str = STUDY_DEFAULT_FOCUS_PRESET,
+        scope: str = "whole_video",
+        model_profile: str = "balanced",
+    ) -> dict:
+        safe_count = max(
+            STUDY_CARD_COUNT_MIN,
+            min(int(card_count or STUDY_DEFAULT_CARD_COUNT), STUDY_CARD_COUNT_MAX),
+        )
+        context = self._resolve_study_context(video_id)
+        video = context["video"]
+        scoped_provider = str(provider or DEFAULT_ASK_PROVIDER).strip().lower()
+        if scoped_provider not in ASK_PROVIDERS:
+            raise ValueError(_provider_error_message())
+        scoped_language = str(language or video.get("language") or "en").strip().lower()
+        if scoped_language not in SUMMARY_LANGUAGES:
+            scoped_language = "en"
+        focus_meta = self._study_focus_metadata(
+            focus=focus,
+            focus_preset=focus_preset,
+            scope=scope,
+            model_profile=model_profile,
+        )
+        profile = STUDY_MODEL_PROFILES[focus_meta["model_profile"]]
+        section_bundle = self._get_study_sections(
+            context=context,
+            language=scoped_language,
+        )
+        section_limit = 3 if focus_meta["scope"] == "focused_sections" else 5
+        selected_sections = self._study_select_focus_sections(
+            sections=section_bundle.get("sections") or [],
+            focus_meta=focus_meta,
+            limit=section_limit,
+        )
+        evidence_rows = self._study_evidence_rows_from_sections(
+            sections=selected_sections,
+            max_rows=max(safe_count, int(profile.get("max_evidence_rows", safe_count))),
+            language=scoped_language,
+            video_id=context["video_id"],
+            video_title=video.get("title", f"Video {context['video_id']}"),
+        )
+        if not evidence_rows:
+            evidence_rows = self._study_evidence_rows(
+                video_id=context["video_id"],
+                video=video,
+                segments=context["segments"],
+                limit=safe_count,
+            )
+        fallback_reason = None
+        resolved_request_model = self._study_model_for_profile(
+            provider=scoped_provider,
+            requested_model=model,
+            model_profile=focus_meta["model_profile"],
+        )
+        if self._study_provider_available(scoped_provider):
+            try:
+                generated = self._llm_flashcards_from_evidence(
+                    evidence_rows=evidence_rows,
+                    card_count=safe_count,
+                    language=scoped_language,
+                    difficulty=difficulty,
+                    provider=scoped_provider,
+                    model=resolved_request_model,
+                    focus_meta=focus_meta,
+                    model_profile=focus_meta["model_profile"],
+                )
+                cards = generated["cards"]
+                resolved_provider = generated["provider"]
+                resolved_model = generated["model"]
+                generation_mode = "llm"
+            except Exception as exc:
+                fallback_reason = str(exc)
+                cards = self._local_flashcards_from_evidence(
+                    evidence_rows=evidence_rows,
+                    card_count=safe_count,
+                    language=scoped_language,
+                    difficulty=difficulty,
+                )
+                resolved_provider = "local"
+                resolved_model = "deterministic-learning-cards"
+                generation_mode = "local_fallback"
+        else:
+            fallback_reason = f"{scoped_provider} provider credentials are not configured"
+            cards = self._local_flashcards_from_evidence(
+                evidence_rows=evidence_rows,
+                card_count=safe_count,
+                language=scoped_language,
+                difficulty=difficulty,
+            )
+            resolved_provider = "local"
+            resolved_model = "deterministic-learning-cards"
+            generation_mode = "local_fallback"
+
+        return {
+            "mode": "flashcards",
+            "video_id": context["video_id"],
+            "video_title": video.get("title", f"Video {context['video_id']}"),
+            "language": scoped_language,
+            "provider": resolved_provider,
+            "model": resolved_model,
+            "generation_mode": generation_mode,
+            "fallback_reason": fallback_reason,
+            "source": {
+                "basis": "transcript",
+                "source_fingerprint": context["source_fingerprint"],
+                "segment_count": len(context["segments"]),
+                "chunk_count": len(video.get("chunks", [])),
+                "full_transcript_backfilled": context["full_transcript_backfilled"],
+            },
+            "focus": focus_meta,
+            "evidence_pack": self._study_evidence_pack(
+                section_bundle=section_bundle,
+                selected_sections=selected_sections,
+                evidence_rows=evidence_rows,
+            ),
+            "deck": {
+                "title": f"{video.get('title', context['video_id'])} Study Deck",
+                "difficulty": difficulty or "balanced",
+                "card_count": len(cards),
+                "cards": cards,
+            },
+        }
+
+    def _local_topics_from_evidence(
+        self,
+        *,
+        evidence_rows: List[dict],
+        language: str,
+    ) -> List[dict]:
+        is_ja = str(language or "").strip().lower() == "ja"
+        groups = self._study_topic_groups(evidence_rows, topic_count=5)
+        topics = []
+        for idx, group in enumerate(groups, start=1):
+            if not group:
+                continue
+            first = group[0]
+            last = group[-1]
+            combined_text = self._study_clean_text(
+                " ".join(row.get("text", "") for row in group)
+            )
+            profile = self._study_topic_profile(
+                combined_text,
+                rank=idx,
+                language=language,
+            )
+            key_points = [
+                self._study_clip_text(point, 120)
+                for point in self._study_sentence_candidates(combined_text)[:3]
+            ]
+            anchor_text = self._study_clip_text(
+                self._study_takeaway_text(combined_text, 180) or combined_text,
+                180,
+            )
+            if is_ja:
+                tldr = profile["summary"]
+            else:
+                tldr = profile["summary"]
+                if first.get("language") != "en" and profile.get("source") == "keywords":
+                    tldr = (
+                        f"{tldr} Source-language cue: "
+                        f"{self._study_clip_text(anchor_text, 120)}"
+                    )
+            topics.append(
+                {
+                    "rank": idx,
+                    "title": profile["title"],
+                    "tldr": tldr,
+                    "key_points": key_points,
+                    "anchor_text": anchor_text,
+                    "start": first["start"],
+                    "end": last["end"],
+                    "url": first["url"],
+                    "section_type": profile["section_type"],
+                    "confidence": profile["confidence"],
+                    "evidence": {
+                        **deepcopy(first),
+                        "end": last["end"],
+                        "text": anchor_text,
+                        "source_label": "topic_section",
+                    },
+                }
+            )
+        return topics
+
+    def _study_topics_from_sections(self, *, sections: List[dict]) -> List[dict]:
+        topics: List[dict] = []
+        for idx, section in enumerate(sections, start=1):
+            evidence = deepcopy(section.get("evidence") or {})
+            raw_start = section.get("start", evidence.get("start", 0.0))
+            start = float(raw_start if raw_start is not None else 0.0)
+            raw_end = section.get("end", evidence.get("end", start))
+            end = float(raw_end if raw_end is not None else start)
+            topics.append(
+                {
+                    "rank": idx,
+                    "title": section.get("title") or f"Section {idx}",
+                    "tldr": section.get("tldr") or "",
+                    "key_points": section.get("key_points") or [],
+                    "anchor_text": section.get("anchor_text") or "",
+                    "start": start,
+                    "end": end,
+                    "url": section.get("url") or evidence.get("url") or "",
+                    "section_type": section.get("section_type", "estimated"),
+                    "confidence": section.get("confidence", "estimated"),
+                    "focus_score": section.get("focus_score"),
+                    "evidence": {
+                        **evidence,
+                        "source_type": "study_section",
+                        "section_id": section.get("section_id"),
+                        "section_rank": section.get("rank"),
+                        "section_title": section.get("title"),
+                        "start": start,
+                        "end": end,
+                        "timestamp": self._study_timestamp_label(start),
+                        "url": section.get("url") or evidence.get("url") or "",
+                        "text": section.get("anchor_text") or section.get("tldr") or "",
+                        "source_label": "study_section",
+                    },
+                }
+            )
+        return topics
+
+    @staticmethod
+    def _study_topic_groups(
+        evidence_rows: List[dict],
+        *,
+        topic_count: int,
+    ) -> List[List[dict]]:
+        rows = [row for row in evidence_rows if row.get("text")]
+        if not rows:
+            return []
+        count = min(max(1, int(topic_count or 5)), len(rows))
+        groups: List[List[dict]] = []
+        for idx in range(count):
+            start = round(idx * len(rows) / count)
+            end = round((idx + 1) * len(rows) / count)
+            group = rows[start:end] or [rows[min(idx, len(rows) - 1)]]
+            groups.append(group)
+        return groups
+
+    def _study_topic_profile(self, text: str, *, rank: int, language: str) -> dict:
+        is_ja = str(language or "").strip().lower() == "ja"
+        normalized = self._study_clean_text(text)
+        profiles = [
+            {
+                "section_type": "intro",
+                "markers": ["皆さんこんばんは", "初登場", "お願いします", "トークの魔法", "第2期"],
+                "title_en": "Episode intro and guest setup",
+                "title_ja": "番組紹介とゲストの登場",
+                "summary_en": (
+                    "The hosts set up the radio-style episode, introduce the Frieren "
+                    "Season 2 context, and welcome the guest."
+                ),
+                "summary_ja": "番組の趣旨、第2期の話題、出演者とゲストの紹介を整理するセクションです。",
+            },
+            {
+                "section_type": "background",
+                "markers": ["出会い", "作品", "印象", "読ませ", "子育て", "人生"],
+                "title_en": "Guest background and first impressions",
+                "title_ja": "作品との出会いと第一印象",
+                "summary_en": (
+                    "The conversation moves into how the guest encountered Frieren, "
+                    "read the source material, and connected with its themes."
+                ),
+                "summary_ja": "ゲストが作品に触れたきっかけや、読んだ時の印象を整理するセクションです。",
+            },
+            {
+                "section_type": "character",
+                "markers": ["ゼリエ", "フランメ", "強すぎ", "孤独", "圧倒的", "おちゃめ"],
+                "title_en": "How Serie is interpreted as a character",
+                "title_ja": "ゼリエというキャラクターの解釈",
+                "summary_en": (
+                    "This section focuses on Serie's overwhelming power, loneliness, "
+                    "playfulness, and relationship to other characters."
+                ),
+                "summary_ja": "ゼリエの強さ、孤独さ、茶目っ気、他キャラクターとの関係を整理するセクションです。",
+            },
+            {
+                "section_type": "performance",
+                "markers": ["演じ", "芝居", "ディレクション", "普通", "フェルン", "音響監督", "感情"],
+                "title_en": "Acting choices and performance direction",
+                "title_ja": "演技の作り方とディレクション",
+                "summary_en": (
+                    "The cast discusses performance choices, direction from the staff, "
+                    "and how characters should sound or feel."
+                ),
+                "summary_ja": "演技の方向性、音響や監督からの指示、キャラクター表現の作り方を整理するセクションです。",
+            },
+            {
+                "section_type": "closing",
+                "markers": ["お気に入りの魔法", "過去に戻", "放送中", "次回", "ありがとうございました"],
+                "title_en": "Favorite magic and closing announcements",
+                "title_ja": "お気に入りの魔法と締めの告知",
+                "summary_en": (
+                    "The episode closes with a favorite-magic prompt, broadcast details, "
+                    "streaming reminders, and next-episode notes."
+                ),
+                "summary_ja": "好きな魔法の話題、放送・配信情報、次回への案内をまとめる締めのセクションです。",
+            },
+        ]
+        best_profile = None
+        best_score = 0
+        for profile in profiles:
+            score = sum(1 for marker in profile["markers"] if marker in normalized)
+            if score > best_score:
+                best_profile = profile
+                best_score = score
+
+        if best_profile is not None:
+            return {
+                "title": best_profile["title_ja" if is_ja else "title_en"],
+                "summary": best_profile["summary_ja" if is_ja else "summary_en"],
+                "section_type": best_profile["section_type"],
+                "confidence": "matched_markers",
+            }
+
+        keywords = self._study_keywords(normalized, limit=2)
+        focus = self._study_focus_label(keywords, is_ja=is_ja)
+        if is_ja:
+            return {
+                "title": f"セクション{rank}: {focus}",
+                "summary": f"{focus}を中心にした会話として推定されたセクションです。",
+                "section_type": "estimated",
+                "confidence": "estimated_keywords",
+            }
+        return {
+            "title": f"Section {rank}: {focus}",
+            "summary": (
+                f"Estimated section centered on {focus}. Use the source cue to "
+                "verify the nuance."
+            ),
+            "section_type": "estimated",
+            "confidence": "estimated_keywords",
+        }
+
+    def generate_study_topics(
+        self,
+        *,
+        video_id: str,
+        language: str,
+        provider: str,
+        model: Optional[str],
+        focus: str = "",
+        focus_preset: str = STUDY_DEFAULT_FOCUS_PRESET,
+        scope: str = "whole_video",
+        model_profile: str = "balanced",
+    ) -> dict:
+        context = self._resolve_study_context(video_id)
+        video = context["video"]
+        scoped_provider = str(provider or DEFAULT_ASK_PROVIDER).strip().lower()
+        if scoped_provider and scoped_provider not in ASK_PROVIDERS | {"local"}:
+            raise ValueError(_provider_error_message({"local"}))
+        scoped_language = str(language or video.get("language") or "en").strip().lower()
+        if scoped_language not in SUMMARY_LANGUAGES:
+            scoped_language = "en"
+        focus_meta = self._study_focus_metadata(
+            focus=focus,
+            focus_preset=focus_preset,
+            scope=scope,
+            model_profile=model_profile,
+        )
+        section_bundle = self._get_study_sections(
+            context=context,
+            language=scoped_language,
+        )
+        section_limit = 3 if focus_meta["scope"] == "focused_sections" else 5
+        selected_sections = self._study_select_focus_sections(
+            sections=section_bundle.get("sections") or [],
+            focus_meta=focus_meta,
+            limit=section_limit,
+        )
+        topics = self._study_topics_from_sections(sections=selected_sections)
+        resolved_provider = "local"
+        resolved_model = "deterministic-topic-map"
+        generation_mode = "section_cache"
+
+        return {
+            "mode": "topics",
+            "video_id": context["video_id"],
+            "video_title": video.get("title", f"Video {context['video_id']}"),
+            "language": scoped_language,
+            "provider": resolved_provider,
+            "model": resolved_model,
+            "generation_mode": generation_mode,
+            "fallback_reason": None,
+            "source": {
+                "basis": "transcript",
+                "source_fingerprint": context["source_fingerprint"],
+                "segment_count": len(context["segments"]),
+                "chunk_count": len(video.get("chunks", [])),
+                "full_transcript_backfilled": context["full_transcript_backfilled"],
+            },
+            "focus": focus_meta,
+            "evidence_pack": self._study_evidence_pack(
+                section_bundle=section_bundle,
+                selected_sections=selected_sections,
+                evidence_rows=[],
+            ),
+            "topics": topics[:5],
+        }
+
+    def evaluate_study_quality(
+        self,
+        *,
+        video_id: str,
+        language: str,
+        cards: Optional[List[dict]] = None,
+        focus: str = "",
+        focus_preset: str = STUDY_DEFAULT_FOCUS_PRESET,
+        scope: str = "whole_video",
+        model_profile: str = "balanced",
+    ) -> dict:
+        context = self._resolve_study_context(video_id)
+        video = context["video"]
+        scoped_language = str(language or video.get("language") or "en").strip().lower()
+        if scoped_language not in SUMMARY_LANGUAGES:
+            scoped_language = "en"
+        focus_meta = self._study_focus_metadata(
+            focus=focus,
+            focus_preset=focus_preset,
+            scope=scope,
+            model_profile=model_profile,
+        )
+        profile = STUDY_MODEL_PROFILES[focus_meta["model_profile"]]
+        section_bundle = self._get_study_sections(
+            context=context,
+            language=scoped_language,
+        )
+        section_limit = 3 if focus_meta["scope"] == "focused_sections" else 5
+        selected_sections = self._study_select_focus_sections(
+            sections=section_bundle.get("sections") or [],
+            focus_meta=focus_meta,
+            limit=section_limit,
+        )
+        evidence_rows = self._study_evidence_rows_from_sections(
+            sections=selected_sections,
+            max_rows=max(
+                STUDY_DEFAULT_CARD_COUNT,
+                int(profile.get("max_evidence_rows", STUDY_DEFAULT_CARD_COUNT)),
+            ),
+            language=scoped_language,
+            video_id=context["video_id"],
+            video_title=video.get("title", f"Video {context['video_id']}"),
+        )
+        if not isinstance(cards, list) or not cards:
+            if not evidence_rows:
+                evidence_rows = self._study_evidence_rows(
+                    video_id=context["video_id"],
+                    video=video,
+                    segments=context["segments"],
+                    limit=STUDY_DEFAULT_CARD_COUNT,
+                )
+            cards = self._local_flashcards_from_evidence(
+                evidence_rows=evidence_rows,
+                card_count=STUDY_DEFAULT_CARD_COUNT,
+                language=scoped_language,
+                difficulty="balanced",
+            )
+        dict_cards = [card for card in cards if isinstance(card, dict)]
+
+        normalized_questions = [
+            re.sub(r"\W+", " ", self._study_clean_text(card.get("question", "")).lower()).strip()
+            for card in dict_cards
+        ]
+        duplicate_count = sum(
+            count - 1 for count in Counter(normalized_questions).values() if count > 1
+        )
+        card_count = max(1, len(dict_cards))
+        evidence_cards = [
+            card
+            for card in dict_cards
+            if isinstance(card.get("evidence"), dict)
+        ]
+        source_cue_cards = [
+            card
+            for card in dict_cards
+            if self._study_clean_text(card.get("source_cue"))
+        ]
+        timestamp_cards = [
+            card
+            for card in evidence_cards
+            if card.get("evidence", {}).get("start") is not None
+        ]
+        answerable_cards = [
+            card
+            for card in evidence_cards
+            if self._study_clean_text(card.get("answer"))
+            and self._study_clean_text(card.get("source_cue"))
+        ]
+        typed_cards = [
+            card
+            for card in dict_cards
+            if self._study_clean_text(card.get("card_type")).lower()
+            in STUDY_CARD_TYPES
+        ]
+        objective_cards = [
+            card
+            for card in dict_cards
+            if self._study_clean_text(card.get("learning_objective"))
+        ]
+        value_cards = [
+            card
+            for card in dict_cards
+            if self._study_clean_text(card.get("why_it_matters"))
+        ]
+        concise_answer_cards = [
+            card
+            for card in dict_cards
+            if len(self._study_clean_text(card.get("answer"))) <= 360
+        ]
+        generic_question_patterns = (
+            "what key point should you remember",
+            "what should you remember from around",
+            "付近の発言から押さえるべき要点",
+        )
+        generic_question_cards = [
+            card
+            for card in dict_cards
+            if any(
+                pattern in self._study_clean_text(card.get("question")).lower()
+                for pattern in generic_question_patterns
+            )
+        ]
+        timestamp_question_cards = [
+            card
+            for card in dict_cards
+            if (
+                re.search(
+                    r"\b\d{1,2}:\d{2}(?::\d{2})?\b",
+                    self._study_clean_text(card.get("question")),
+                )
+                or "付近" in self._study_clean_text(card.get("question"))
+            )
+        ]
+        focus_terms = self._study_focus_terms(focus_meta)
+        focus_aligned_cards = []
+        if focus_terms:
+            for card in dict_cards:
+                searchable = self._study_clean_text(
+                    " ".join(
+                        [
+                            str(card.get("question") or ""),
+                            str(card.get("answer") or ""),
+                            str(card.get("source_cue") or ""),
+                            str(card.get("evidence", {}).get("section_title") or ""),
+                        ]
+                    )
+                ).lower()
+                tokens = set(self._study_search_tokens(searchable))
+                if any(term in tokens or term in searchable for term in focus_terms):
+                    focus_aligned_cards.append(card)
+
+        metrics = {
+            "cards_evaluated": len(dict_cards),
+            "citation_coverage": round(len(evidence_cards) / card_count, 3),
+            "source_cue_coverage": round(len(source_cue_cards) / card_count, 3),
+            "timestamp_coverage": round(len(timestamp_cards) / card_count, 3),
+            "answerability_rate": round(len(answerable_cards) / card_count, 3),
+            "duplicate_question_rate": round(duplicate_count / card_count, 3),
+            "specific_question_rate": round(
+                (card_count - len(generic_question_cards)) / card_count, 3
+            ),
+            "timestamp_free_question_rate": round(
+                (card_count - len(timestamp_question_cards)) / card_count, 3
+            ),
+            "concise_answer_rate": round(len(concise_answer_cards) / card_count, 3),
+            "card_type_coverage": round(len(typed_cards) / card_count, 3),
+            "learning_objective_coverage": round(
+                len(objective_cards) / card_count, 3
+            ),
+            "learner_value_coverage": round(len(value_cards) / card_count, 3),
+            "transcript_segment_count": len(context["segments"]),
+            "transcript_chunk_count": len(video.get("chunks", [])),
+            "transcript_char_count": int(context["full_transcript"].get("char_count", 0)),
+        }
+        if focus_terms:
+            metrics["focus_alignment_rate"] = round(
+                len(focus_aligned_cards) / card_count,
+                3,
+            )
+        checks = [
+            {
+                "name": "Every card has timestamped evidence",
+                "status": "pass" if metrics["citation_coverage"] >= 1.0 else "warn",
+                "value": metrics["citation_coverage"],
+            },
+            {
+                "name": "Every card has a source cue",
+                "status": "pass" if metrics["source_cue_coverage"] >= 1.0 else "warn",
+                "value": metrics["source_cue_coverage"],
+            },
+            {
+                "name": "Questions test specific ideas",
+                "status": "pass" if metrics["specific_question_rate"] >= 1.0 else "warn",
+                "value": metrics["specific_question_rate"],
+            },
+            {
+                "name": "Questions keep timestamps in sources only",
+                "status": "pass"
+                if metrics["timestamp_free_question_rate"] >= 1.0
+                else "warn",
+                "value": metrics["timestamp_free_question_rate"],
+            },
+            {
+                "name": "Answers stay review-sized",
+                "status": "pass" if metrics["concise_answer_rate"] >= 0.85 else "warn",
+                "value": metrics["concise_answer_rate"],
+            },
+            {
+                "name": "Cards state learner value",
+                "status": "pass"
+                if metrics["learning_objective_coverage"] >= 1.0
+                and metrics["learner_value_coverage"] >= 1.0
+                else "warn",
+                "value": min(
+                    metrics["learning_objective_coverage"],
+                    metrics["learner_value_coverage"],
+                ),
+            },
+            {
+                "name": "Cards include study type",
+                "status": "pass" if metrics["card_type_coverage"] >= 1.0 else "warn",
+                "value": metrics["card_type_coverage"],
+            },
+            {
+                "name": "Questions are not duplicated",
+                "status": "pass" if metrics["duplicate_question_rate"] <= 0.0 else "warn",
+                "value": metrics["duplicate_question_rate"],
+            },
+            {
+                "name": "Transcript has enough material",
+                "status": "pass"
+                if metrics["transcript_segment_count"] >= 8
+                and metrics["transcript_char_count"] >= 800
+                else "warn",
+                "value": metrics["transcript_segment_count"],
+            },
+        ]
+        if focus_terms:
+            checks.append(
+                {
+                    "name": "Cards match requested focus",
+                    "status": "pass"
+                    if metrics["focus_alignment_rate"] >= 0.6
+                    else "warn",
+                    "value": metrics["focus_alignment_rate"],
+                }
+            )
+        passed = sum(1 for check in checks if check["status"] == "pass")
+        score = round(passed / max(1, len(checks)), 3)
+        recommendations = []
+        if metrics["duplicate_question_rate"] > 0:
+            recommendations.append("Regenerate with more diverse evidence windows.")
+        if metrics["specific_question_rate"] < 1:
+            recommendations.append("Rewrite generic questions around named ideas or moments.")
+        if metrics["timestamp_free_question_rate"] < 1:
+            recommendations.append("Move timestamps out of questions and keep them in source links.")
+        if metrics["concise_answer_rate"] < 0.85:
+            recommendations.append("Shorten answers so each card is quick to review.")
+        if metrics["learner_value_coverage"] < 1:
+            recommendations.append("Add a learning objective and why-it-matters note to each card.")
+        if metrics["citation_coverage"] < 1:
+            recommendations.append("Require every card to keep a timestamped evidence object.")
+        if metrics["transcript_segment_count"] < 8:
+            recommendations.append("Use a longer transcript or attach local audio/video evidence.")
+        if focus_terms and metrics["focus_alignment_rate"] < 0.6:
+            recommendations.append("Regenerate with a narrower focus or stronger matching sections.")
+        if not recommendations:
+            recommendations.append("Deck is ready for review; spot-check timestamps before sharing.")
+
+        return {
+            "mode": "quality",
+            "video_id": context["video_id"],
+            "video_title": video.get("title", f"Video {context['video_id']}"),
+            "language": scoped_language,
+            "provider": "local",
+            "model": "deterministic-quality",
+            "generation_mode": "local_evaluation",
+            "source": {
+                "basis": "transcript",
+                "source_fingerprint": context["source_fingerprint"],
+                "segment_count": len(context["segments"]),
+                "chunk_count": len(video.get("chunks", [])),
+                "full_transcript_backfilled": context["full_transcript_backfilled"],
+            },
+            "focus": focus_meta,
+            "evidence_pack": self._study_evidence_pack(
+                section_bundle=section_bundle,
+                selected_sections=selected_sections,
+                evidence_rows=evidence_rows,
+            ),
+            "quality": {
+                "score": score,
+                "verdict": "pass" if score >= 1.0 else "review",
+                "metrics": metrics,
+                "checks": checks,
+                "recommendations": recommendations,
+            },
+        }
+
+    def generate_study_artifact(
+        self,
+        *,
+        mode: str,
+        video_id: str,
+        language: str,
+        provider: str,
+        model: Optional[str],
+        card_count: int,
+        difficulty: str,
+        cards: Optional[List[dict]] = None,
+        focus: str = "",
+        focus_preset: str = STUDY_DEFAULT_FOCUS_PRESET,
+        scope: str = "whole_video",
+        model_profile: str = "balanced",
+    ) -> dict:
+        scoped_mode = str(mode or "flashcards").strip().lower()
+        if scoped_mode not in STUDY_MODES:
+            raise ValueError("mode must be one of: flashcards, topics, quality")
+        if scoped_mode == "flashcards":
+            return self.generate_study_flashcards(
+                video_id=video_id,
+                language=language,
+                provider=provider,
+                model=model,
+                card_count=card_count,
+                difficulty=difficulty,
+                focus=focus,
+                focus_preset=focus_preset,
+                scope=scope,
+                model_profile=model_profile,
+            )
+        if scoped_mode == "topics":
+            return self.generate_study_topics(
+                video_id=video_id,
+                language=language,
+                provider=provider,
+                model=model,
+                focus=focus,
+                focus_preset=focus_preset,
+                scope=scope,
+                model_profile=model_profile,
+            )
+        return self.evaluate_study_quality(
+            video_id=video_id,
+            language=language,
+            cards=cards,
+            focus=focus,
+            focus_preset=focus_preset,
+            scope=scope,
+            model_profile=model_profile,
+        )
+
     def ask_with_sources(
         self,
         question: str,
         sources: List[dict],
         provider: str = DEFAULT_ASK_PROVIDER,
         retrieval_mode: str = "hybrid",
+        model: Optional[str] = None,
     ) -> dict:
         scoped_provider = str(provider or DEFAULT_ASK_PROVIDER).strip().lower()
         if scoped_provider not in ASK_PROVIDERS:
-            raise ValueError("provider must be one of: chatgpt, claude")
+            raise ValueError(_provider_error_message())
 
         answer_language = self._infer_query_language(question)
-        selected_model = (
-            self.openai_model if scoped_provider == "chatgpt" else self.engine.model
-        )
+        selected_model = self._resolve_llm_model(scoped_provider, model)
         retrieved_chunks = build_retrieved_chunks_payload(sources)
         citations = build_citation_catalog(sources)
 
@@ -3766,6 +5740,7 @@ class LocalRAGService:
                 user_message=user_message,
                 max_tokens=ASK_MAX_TOKENS,
                 temperature=ASK_TEMPERATURE,
+                model=selected_model,
             )
             parsed = _extract_json_payload(llm["text"])
             if not isinstance(parsed, dict):
@@ -4097,6 +6072,22 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     }
                 )
+                return
+
+            if path == "/v1/llm-options":
+                providers = {}
+                for provider_id, options in LLM_MODEL_OPTIONS.items():
+                    default_model = SERVICE._resolve_llm_model(provider_id, None)
+                    models = list(options)
+                    if default_model not in {row["id"] for row in models}:
+                        models = [
+                            {"id": default_model, "label": f"{default_model} (default)"}
+                        ] + models
+                    providers[provider_id] = {
+                        "default": default_model,
+                        "models": models,
+                    }
+                self._json({"ok": True, "providers": providers})
                 return
 
             if path == "/v1/local-video-ocr/jobs":
@@ -4454,6 +6445,29 @@ class Handler(BaseHTTPRequestHandler):
                     language=language,
                     provider=provider,
                     max_points=max_points,
+                    model=str(body.get("model") or "").strip() or None,
+                )
+                self._json({"ok": True, **result})
+                return
+
+            if path == "/v1/study/generate":
+                result = SERVICE.generate_study_artifact(
+                    mode=str(body.get("mode") or "flashcards").strip().lower(),
+                    video_id=str(body.get("video_id") or "").strip(),
+                    language=str(body.get("language") or "en").strip().lower(),
+                    provider=str(body.get("provider") or DEFAULT_ASK_PROVIDER)
+                    .strip()
+                    .lower(),
+                    model=str(body.get("model") or "").strip() or None,
+                    card_count=int(body.get("card_count", STUDY_DEFAULT_CARD_COUNT)),
+                    difficulty=str(body.get("difficulty") or "balanced").strip(),
+                    cards=body.get("cards") if isinstance(body.get("cards"), list) else None,
+                    focus=str(body.get("focus") or "").strip(),
+                    focus_preset=str(
+                        body.get("focus_preset") or STUDY_DEFAULT_FOCUS_PRESET
+                    ).strip(),
+                    scope=str(body.get("scope") or "whole_video").strip(),
+                    model_profile=str(body.get("model_profile") or "balanced").strip(),
                 )
                 self._json({"ok": True, **result})
                 return
@@ -4607,7 +6621,7 @@ class Handler(BaseHTTPRequestHandler):
                             "ok": False,
                             "error": {
                                 "code": "INVALID_INPUT",
-                                "message": "provider must be one of: chatgpt, claude",
+                                "message": _provider_error_message(),
                             },
                         },
                         400,
@@ -4628,6 +6642,7 @@ class Handler(BaseHTTPRequestHandler):
                     retrieval["results"],
                     provider=provider,
                     retrieval_mode=retrieval["retrieval_mode"],
+                    model=str(body.get("model") or "").strip() or None,
                 )
                 if source_mode != "transcript" and not retrieval["results"]:
                     result["answer"] = (
@@ -4746,7 +6761,7 @@ class Handler(BaseHTTPRequestHandler):
                             "ok": False,
                             "error": {
                                 "code": "INVALID_INPUT",
-                                "message": "provider must be one of: chatgpt, claude",
+                                "message": _provider_error_message(),
                             },
                         },
                         400,
@@ -4766,6 +6781,7 @@ class Handler(BaseHTTPRequestHandler):
                     retrieval["results"],
                     provider=provider,
                     retrieval_mode=retrieval["retrieval_mode"],
+                    model=str(body.get("model") or "").strip() or None,
                 )
                 if video_id:
                     SERVICE.save_ask_history(

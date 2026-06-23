@@ -82,15 +82,22 @@ def _detect_dominant_language(results):
 class RAGEngine:
     """RAG pipeline: retrieve relevant chunks then generate an answer with an LLM."""
 
-    def __init__(self, library=None, model="claude-sonnet-4-5-20250929"):
+    DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+
+    def __init__(self, library=None, model=None):
         """Initialize the RAG engine.
 
         Args:
             library: VideoLibrary instance (created if not provided).
-            model: Anthropic model to use for generation.
+            model: Anthropic model to use for generation. Defaults to the
+                ANTHROPIC_MODEL environment variable, then DEFAULT_MODEL.
         """
         self.library = library or VideoLibrary()
-        self.model = model
+        self.model = (
+            model
+            or os.environ.get("ANTHROPIC_MODEL", "").strip()
+            or self.DEFAULT_MODEL
+        )
         self._client = None
 
     @property
@@ -168,7 +175,13 @@ class RAGEngine:
             temperature=0.3,
         )
 
-        answer = response.content[0].text
+        answer = "".join(
+            block.text
+            for block in (response.content or [])
+            if getattr(block, "type", "") == "text"
+        )
+        if not answer.strip():
+            raise ValueError("Claude response contained no text content.")
 
         return {
             "answer": answer,

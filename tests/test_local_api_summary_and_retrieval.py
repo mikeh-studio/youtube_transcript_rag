@@ -3,6 +3,7 @@
 import importlib
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -45,6 +46,66 @@ def _make_service(enabled=True):
     service.ingest_log_path = runtime_dir / "ingest_jobs.log"
     service.legacy_ingest_log_path = legacy_dir / "ingest_jobs.log"
     service.log_lock = threading.Lock()
+    return service
+
+
+def _make_study_service():
+    class DummyLibrary:
+        def __init__(self):
+            chunk_texts = [
+                "The host opens the episode and explains why the video will become a study deck.",
+                "The intro describes transcript evidence, timestamps, and source-grounded review.",
+                "The first section frames the main idea as learning from processed video evidence.",
+                "Serie is introduced as a character whose overwhelming power shapes the discussion.",
+                "The speakers compare Serie with other characters and describe her loneliness.",
+                "A second Serie moment focuses on playful behavior and how learners should interpret it.",
+                "The acting section explains performance direction and how emotion should sound.",
+                "The cast discusses voice choices, ordinary delivery, and character nuance.",
+                "The review section names concrete details that are easy to miss while listening.",
+                "The vocabulary section explains terms, phrasing, and translation nuance.",
+                "The closing section returns to favorite magic and episode announcements.",
+                "The final reminder asks learners to replay source links when checking answers.",
+            ]
+            chunks = [
+                {
+                    "raw_text": text,
+                    "start": float(idx * 30),
+                    "end": float(idx * 30 + 24),
+                }
+                for idx, text in enumerate(chunk_texts)
+            ]
+            segments = [
+                {
+                    "text": row["raw_text"],
+                    "start": row["start"],
+                    "end": row["end"],
+                }
+                for row in chunks
+            ]
+            self.videos = {
+                "vidStudy001": {
+                    "title": "Study Mode Demo",
+                    "url": "https://www.youtube.com/watch?v=vidStudy001",
+                    "language": "en",
+                    "chunks": chunks,
+                    "full_transcript": {
+                        "version": 1,
+                        "text": "\n".join(row["text"] for row in segments),
+                        "segments": segments,
+                        "segment_count": len(segments),
+                        "char_count": sum(len(row["text"]) for row in segments),
+                    },
+                }
+            }
+
+    class DummyEngine:
+        def __init__(self):
+            self.library = DummyLibrary()
+            self.model = "claude-sonnet-4-5-20250929"
+
+    service = _make_service(enabled=False)
+    service.engine = DummyEngine()
+    service.title_cache = {}
     return service
 
 
@@ -125,6 +186,370 @@ def test_list_videos_includes_chunking_metadata():
             "last_ask_at": None,
         }
     ]
+
+
+def test_generate_study_artifact_completes_all_three_modes_without_provider_keys(
+    monkeypatch,
+):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    service = _make_study_service()
+
+    flashcards = service.generate_study_artifact(
+        mode="flashcards",
+        video_id="vidStudy001",
+        language="en",
+        provider="chatgpt",
+        model=None,
+        card_count=6,
+        difficulty="balanced",
+    )
+    topics = service.generate_study_artifact(
+        mode="topics",
+        video_id="vidStudy001",
+        language="en",
+        provider="chatgpt",
+        model=None,
+        card_count=6,
+        difficulty="balanced",
+    )
+    quality = service.generate_study_artifact(
+        mode="quality",
+        video_id="vidStudy001",
+        language="en",
+        provider="chatgpt",
+        model=None,
+        card_count=6,
+        difficulty="balanced",
+        cards=flashcards["deck"]["cards"],
+    )
+
+    assert flashcards["mode"] == "flashcards"
+    assert flashcards["provider"] == "local"
+    assert flashcards["generation_mode"] == "local_fallback"
+    assert flashcards["focus"]["scope"] == "whole_video"
+    assert flashcards["evidence_pack"]["section_count"] == 5
+    assert flashcards["evidence_pack"]["selected_section_count"] == 5
+    assert len(flashcards["deck"]["cards"]) == 6
+    assert all(card["evidence"]["url"] for card in flashcards["deck"]["cards"])
+    assert all(
+        card["evidence"]["source_type"] == "study_section"
+        for card in flashcards["deck"]["cards"]
+    )
+    assert all(card["card_type"] for card in flashcards["deck"]["cards"])
+    assert all(card["learning_objective"] for card in flashcards["deck"]["cards"])
+    assert all(card["why_it_matters"] for card in flashcards["deck"]["cards"])
+    assert all(len(card["answer"]) <= 360 for card in flashcards["deck"]["cards"])
+    assert not any(
+        "What key point should you remember" in card["question"]
+        for card in flashcards["deck"]["cards"]
+    )
+    assert not any(
+        re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", card["question"])
+        for card in flashcards["deck"]["cards"]
+    )
+
+    assert topics["mode"] == "topics"
+    assert topics["provider"] == "local"
+    assert topics["generation_mode"] == "section_cache"
+    assert topics["evidence_pack"]["section_count"] == 5
+    assert len(topics["topics"]) == 5
+    assert all(topic["url"] for topic in topics["topics"])
+    assert all(topic["key_points"] for topic in topics["topics"])
+    assert not any(topic["title"].startswith("Topic ") for topic in topics["topics"])
+    assert not any(
+        "Evidence-backed topic from around" in topic["tldr"]
+        for topic in topics["topics"]
+    )
+
+    assert quality["mode"] == "quality"
+    assert quality["quality"]["metrics"]["cards_evaluated"] == 6
+    assert quality["quality"]["metrics"]["citation_coverage"] == 1
+    assert quality["quality"]["metrics"]["timestamp_coverage"] == 1
+    assert quality["quality"]["metrics"]["specific_question_rate"] == 1
+    assert quality["quality"]["metrics"]["timestamp_free_question_rate"] == 1
+    assert quality["quality"]["metrics"]["concise_answer_rate"] == 1
+    assert quality["quality"]["metrics"]["card_type_coverage"] == 1
+    assert quality["quality"]["metrics"]["learning_objective_coverage"] == 1
+    assert quality["quality"]["metrics"]["learner_value_coverage"] == 1
+    assert quality["quality"]["verdict"] == "pass"
+
+
+def test_generate_study_flashcards_use_requested_focus_without_timestamps(
+    monkeypatch,
+):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    service = _make_study_service()
+
+    flashcards = service.generate_study_artifact(
+        mode="flashcards",
+        video_id="vidStudy001",
+        language="en",
+        provider="chatgpt",
+        model=None,
+        card_count=6,
+        difficulty="balanced",
+        focus="Serie character interpretation",
+        focus_preset="characters",
+        scope="focused_sections",
+        model_profile="economy",
+    )
+    quality = service.generate_study_artifact(
+        mode="quality",
+        video_id="vidStudy001",
+        language="en",
+        provider="chatgpt",
+        model=None,
+        card_count=6,
+        difficulty="balanced",
+        cards=flashcards["deck"]["cards"],
+        focus="Serie character interpretation",
+        focus_preset="characters",
+        scope="focused_sections",
+        model_profile="economy",
+    )
+
+    assert flashcards["focus"]["query"] == "Serie character interpretation"
+    assert flashcards["focus"]["preset"] == "characters"
+    assert flashcards["focus"]["scope"] == "focused_sections"
+    assert flashcards["focus"]["model_profile"] == "economy"
+    assert flashcards["evidence_pack"]["selected_section_count"] >= 1
+    assert "Serie" in flashcards["evidence_pack"]["selected_sections"][0]["title"]
+    assert any(
+        "Serie" in card["question"] or "Serie" in card["source_cue"]
+        for card in flashcards["deck"]["cards"]
+    )
+    assert not any(
+        re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", card["question"])
+        for card in flashcards["deck"]["cards"]
+    )
+    assert all(
+        card["retrieval_mode"] == "study_section_focus"
+        for card in flashcards["deck"]["cards"]
+    )
+    assert quality["quality"]["metrics"]["focus_alignment_rate"] >= 0.6
+    assert any(
+        check["name"] == "Cards match requested focus" and check["status"] == "pass"
+        for check in quality["quality"]["checks"]
+    )
+
+
+def test_generate_study_flashcards_uses_chatgpt_when_key_is_configured(monkeypatch):
+    monkeypatch.setattr(local_api, "OpenAI", object())
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
+    service = _make_study_service()
+    captured = {}
+
+    def fake_llm_flashcards(**kwargs):
+        captured.update(kwargs)
+        return {
+            "provider": kwargs["provider"],
+            "model": kwargs["model"],
+            "cards": service._local_flashcards_from_evidence(
+                evidence_rows=kwargs["evidence_rows"],
+                card_count=kwargs["card_count"],
+                language=kwargs["language"],
+                difficulty=kwargs["difficulty"],
+            ),
+        }
+
+    service._llm_flashcards_from_evidence = fake_llm_flashcards
+
+    flashcards = service.generate_study_artifact(
+        mode="flashcards",
+        video_id="vidStudy001",
+        language="en",
+        provider="chatgpt",
+        model="gpt-5.4-nano",
+        card_count=4,
+        difficulty="balanced",
+        model_profile="economy",
+    )
+
+    assert captured["provider"] == "chatgpt"
+    assert captured["model"] == "gpt-5.4-nano"
+    assert flashcards["provider"] == "chatgpt"
+    assert flashcards["model"] == "gpt-5.4-nano"
+    assert flashcards["generation_mode"] == "llm"
+
+
+def test_study_focus_tokenizer_supports_japanese_focus_terms():
+    service = _make_study_service()
+    focus_meta = service._study_focus_metadata(
+        focus="",
+        focus_preset="timeline",
+        scope="focused_sections",
+        model_profile="balanced",
+    )
+
+    assert "流れ" in service._study_focus_terms(focus_meta)
+    assert "次" in service._study_focus_terms(focus_meta)
+    assert any(
+        "流れ" in token
+        for token in local_api.LocalRAGService._study_search_tokens("話の流れ")
+    )
+    assert any(
+        "ひらがな" in token
+        for token in local_api.LocalRAGService._study_search_tokens("ひらがなの説明")
+    )
+
+
+def test_study_focused_sections_prefer_partial_query_matches_over_preset_only():
+    service = _make_study_service()
+    focus_meta = service._study_focus_metadata(
+        focus="alpha beta",
+        focus_preset="characters",
+        scope="focused_sections",
+        model_profile="balanced",
+    )
+    sections = [
+        {
+            "section_id": "section_1",
+            "rank": 1,
+            "title": "Alpha topic",
+            "tldr": "This section explains alpha.",
+            "key_points": [],
+            "anchor_text": "",
+            "keywords": ["alpha"],
+            "section_type": "estimated",
+        },
+        {
+            "section_id": "section_2",
+            "rank": 2,
+            "title": "Guest character setup",
+            "tldr": "This section mentions guests and characters but not the query.",
+            "key_points": [],
+            "anchor_text": "",
+            "keywords": ["guest", "character"],
+            "section_type": "character",
+        },
+        {
+            "section_id": "section_3",
+            "rank": 3,
+            "title": "Beta topic",
+            "tldr": "This section explains beta.",
+            "key_points": [],
+            "anchor_text": "",
+            "keywords": ["beta"],
+            "section_type": "estimated",
+        },
+    ]
+
+    selected = service._study_select_focus_sections(
+        sections=sections,
+        focus_meta=focus_meta,
+        limit=2,
+    )
+
+    assert [section["title"] for section in selected] == [
+        "Alpha topic",
+        "Beta topic",
+    ]
+
+
+def test_study_evidence_rows_from_sections_pad_with_unique_review_ids():
+    service = _make_study_service()
+    rows = service._study_evidence_rows_from_sections(
+        sections=[
+            {
+                "section_id": "section_1",
+                "rank": 1,
+                "title": "Serie focus",
+                "tldr": "Serie is interpreted through power and loneliness.",
+                "key_points": [],
+                "anchor_text": "",
+                "start": 120.0,
+                "end": 150.0,
+                "url": "https://www.youtube.com/watch?v=vidStudy001&t=120s",
+                "evidence": {
+                    "evidence_id": "base_1",
+                    "start": 120.0,
+                    "end": 150.0,
+                },
+            }
+        ],
+        max_rows=4,
+        language="en",
+        video_id="vidStudy001",
+        video_title="Study Mode Demo",
+    )
+
+    assert len(rows) == 4
+    assert len({row["evidence_id"] for row in rows}) == 4
+    assert all(row["start"] == 120.0 for row in rows)
+
+
+def test_study_quality_ignores_malformed_non_dict_cards(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    service = _make_study_service()
+    flashcards = service.generate_study_artifact(
+        mode="flashcards",
+        video_id="vidStudy001",
+        language="en",
+        provider="chatgpt",
+        model=None,
+        card_count=4,
+        difficulty="balanced",
+    )
+
+    quality = service.generate_study_artifact(
+        mode="quality",
+        video_id="vidStudy001",
+        language="en",
+        provider="chatgpt",
+        model=None,
+        card_count=4,
+        difficulty="balanced",
+        cards=[flashcards["deck"]["cards"][0], "malformed-card"],
+    )
+
+    assert quality["quality"]["metrics"]["cards_evaluated"] == 1
+    assert quality["quality"]["metrics"]["citation_coverage"] == 1
+    assert quality["quality"]["metrics"]["specific_question_rate"] == 1
+
+
+def test_generate_study_topics_accepts_local_provider_without_llm_validation():
+    service = _make_study_service()
+
+    topics = service.generate_study_artifact(
+        mode="topics",
+        video_id="vidStudy001",
+        language="en",
+        provider="local",
+        model=None,
+        card_count=4,
+        difficulty="balanced",
+    )
+
+    assert topics["provider"] == "local"
+    assert topics["generation_mode"] == "section_cache"
+    assert topics["topics"]
+
+
+def test_study_topics_preserve_explicit_zero_end_timestamp():
+    service = _make_study_service()
+
+    topics = service._study_topics_from_sections(
+        sections=[
+            {
+                "section_id": "section_zero",
+                "rank": 1,
+                "title": "Zero end section",
+                "tldr": "Explicit zero end should not be replaced by start.",
+                "key_points": [],
+                "anchor_text": "zero",
+                "start": 5.0,
+                "end": 0.0,
+                "url": "https://www.youtube.com/watch?v=vidStudy001&t=5s",
+                "evidence": {},
+            }
+        ]
+    )
+
+    assert topics[0]["start"] == 5.0
+    assert topics[0]["end"] == 0.0
 
 
 def test_retrieve_rerank_happens_before_topk_cut():
@@ -640,12 +1065,13 @@ def test_answer_route_alias_returns_grounded_answer_payload(monkeypatch):
             }
 
         def ask_with_sources(
-            self, question, sources, provider, retrieval_mode="hybrid"
+            self, question, sources, provider, retrieval_mode="hybrid", model=None
         ):
             assert question == "What is the product intent?"
             assert provider == "chatgpt"
             assert len(sources) == 2
             assert retrieval_mode == "hybrid"
+            assert model is None
             return {
                 "status": "answered",
                 "answer": "It is a local-first, explainable demo [1] [2].",
@@ -1862,4 +2288,159 @@ def test_ingest_reingests_stale_video_without_force():
     assert (
         service.engine.library.videos["abc12345678"]["chunking"]["version"]
         == "time_v2_60s_15s"
+    )
+
+
+class _ModelSelectionEngine:
+    def __init__(self, model="claude-sonnet-4-5-20250929"):
+        self.model = model
+
+
+def test_resolve_llm_model_defaults_to_provider_default():
+    service = _make_service(enabled=False)
+    service.engine = _ModelSelectionEngine()
+
+    assert service._resolve_llm_model("chatgpt", None) == "gpt-4o-mini"
+    assert service._resolve_llm_model("chatgpt", "") == "gpt-4o-mini"
+    assert service._resolve_llm_model("claude", None) == "claude-sonnet-4-5-20250929"
+
+
+def test_resolve_llm_model_accepts_listed_and_default_models():
+    service = _make_service(enabled=False)
+    service.engine = _ModelSelectionEngine()
+
+    assert service._resolve_llm_model("chatgpt", "gpt-5.4-mini") == "gpt-5.4-mini"
+    assert service._resolve_llm_model("claude", "claude-opus-4-8") == "claude-opus-4-8"
+    # The env-configured default stays valid even when it is not in the list.
+    assert service._resolve_llm_model("chatgpt", "gpt-4o-mini") == "gpt-4o-mini"
+    assert (
+        service._resolve_llm_model("claude", "claude-sonnet-4-5-20250929")
+        == "claude-sonnet-4-5-20250929"
+    )
+
+
+def test_resolve_llm_model_rejects_unknown_model():
+    service = _make_service(enabled=False)
+    service.engine = _ModelSelectionEngine()
+
+    with pytest.raises(ValueError, match="model for provider 'chatgpt'"):
+        service._resolve_llm_model("chatgpt", "gpt-3.5-turbo")
+    with pytest.raises(ValueError, match="model for provider 'claude'"):
+        service._resolve_llm_model("claude", "claude-2.1")
+
+
+def test_model_supports_temperature_gating():
+    assert local_api._model_supports_temperature("claude", "claude-sonnet-4-6")
+    assert local_api._model_supports_temperature("claude", "claude-haiku-4-5")
+    assert not local_api._model_supports_temperature("claude", "claude-opus-4-8")
+    assert local_api._model_supports_temperature("chatgpt", "gpt-4o-mini")
+    assert not local_api._model_supports_temperature("chatgpt", "gpt-5.4-mini")
+    assert not local_api._model_supports_temperature("chatgpt", "gpt-5.5")
+
+
+def test_ask_with_sources_passes_selected_model_to_llm():
+    service = _make_service(enabled=False)
+    service.engine = _ModelSelectionEngine()
+    captured = {}
+
+    def fake_llm(**kwargs):
+        captured.update(kwargs)
+        return {
+            "provider": kwargs["provider"],
+            "model": kwargs["model"],
+            "text": json.dumps(
+                {
+                    "status": "answered",
+                    "confidence": "high",
+                    "answer": "The app runs locally [1] and is a portfolio demo [2].",
+                    "citations": [
+                        {"citation_id": 1, "reason": "Local-first behavior."},
+                        {"citation_id": 2, "reason": "Portfolio framing."},
+                    ],
+                    "warnings": [],
+                    "has_conflict": False,
+                }
+            ),
+        }
+
+    service._llm_text_response = fake_llm
+
+    result = service.ask_with_sources(
+        "Does the app run locally and present itself as a portfolio-friendly demo?",
+        _make_answer_sources(),
+        provider="claude",
+        model="claude-opus-4-8",
+    )
+
+    assert captured["model"] == "claude-opus-4-8"
+    assert result["model"] == "claude-opus-4-8"
+    assert result["provider"] == "claude"
+    assert result["status"] == "answered"
+
+
+def test_ask_with_sources_rejects_unknown_model():
+    service = _make_service(enabled=False)
+    service.engine = _ModelSelectionEngine()
+
+    with pytest.raises(ValueError, match="model for provider"):
+        service.ask_with_sources(
+            "Does the app run locally?",
+            _make_answer_sources(),
+            provider="chatgpt",
+            model="gpt-2",
+        )
+
+
+def test_summary_cache_key_includes_model():
+    key_a = LocalRAGService._summary_cache_key(
+        language="en", provider="claude", max_points=5, model="claude-sonnet-4-6"
+    )
+    key_b = LocalRAGService._summary_cache_key(
+        language="en", provider="claude", max_points=5, model="claude-opus-4-8"
+    )
+    assert key_a != key_b
+    assert key_a.endswith(":claude-sonnet-4-6")
+
+
+def test_llm_options_route_returns_models_and_defaults():
+    class StubService:
+        openai_model = "gpt-4o-mini"
+        engine = _ModelSelectionEngine()
+
+        def _resolve_llm_model(self, provider, model):
+            return LocalRAGService._resolve_llm_model(self, provider, model)
+
+    class FakeHandler:
+        def __init__(self, path):
+            self.path = path
+            self.response_status = None
+            self.response_payload = None
+
+        def _json(self, payload, status=200):
+            self.response_status = status
+            self.response_payload = payload
+
+    original_service = local_api.SERVICE
+    try:
+        local_api.SERVICE = StubService()
+        handler = FakeHandler("/v1/llm-options")
+        local_api.Handler.do_GET(handler)
+    finally:
+        local_api.SERVICE = original_service
+
+    assert handler.response_status == 200
+    payload = handler.response_payload
+    assert payload["ok"] is True
+    providers = payload["providers"]
+    assert set(providers) == {"chatgpt", "claude"}
+    assert providers["chatgpt"]["default"] == "gpt-4o-mini"
+    assert providers["claude"]["default"] == "claude-sonnet-4-5-20250929"
+    chatgpt_ids = [row["id"] for row in providers["chatgpt"]["models"]]
+    claude_ids = [row["id"] for row in providers["claude"]["models"]]
+    # Defaults are prepended when not already listed.
+    assert chatgpt_ids[0] == "gpt-4o-mini"
+    assert claude_ids[0] == "claude-sonnet-4-5-20250929"
+    assert {"gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.5"} <= set(chatgpt_ids)
+    assert {"claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"} <= set(
+        claude_ids
     )
