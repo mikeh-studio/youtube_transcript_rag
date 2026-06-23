@@ -93,6 +93,7 @@ class TestRAGEngineAsk:
         mock_anthropic_cls.return_value = mock_client
         mock_response = MagicMock()
         mock_response.content = [MagicMock()]
+        mock_response.content[0].type = "text"
         mock_response.content[0].text = "テストの回答です。"
         mock_client.messages.create.return_value = mock_response
 

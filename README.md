@@ -70,7 +70,8 @@ The local workflow lets you:
 - Timestamped chunking with strategy comparison in Chunking Lab.
 - Local FAISS indexes for transcript and OCR evidence.
 - Retrieval modes: `dense`, `lexical`, and `hybrid`.
-- Citation-backed Q&A with fallback states.
+- Citation-backed Q&A with fallback states and selectable OpenAI or Claude models.
+- Study Studio for transcript-grounded flashcards, topic maps, and study-quality checks.
 - Search-result review and assisted labeling helpers.
 - Browser-local evaluation query sets, labels, run snapshots, and metrics.
 - Read-only evidence curation reports from local pipeline artifacts.

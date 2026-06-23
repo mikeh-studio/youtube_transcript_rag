@@ -6,9 +6,22 @@ for cross-video semantic search. Each video has an associated language code
 that determines transcript fetching and tokenization.
 """
 
-import os
 import json
+import os
+import sys
 import numpy as np
+
+# Some faiss-cpu wheels import NumPy 2's private module path even when running
+# against NumPy 1.x, where the same extension lives under numpy.core.
+try:
+    import numpy.core as _numpy_core
+    import numpy.core._multiarray_umath as _numpy_multiarray_umath
+
+    sys.modules.setdefault("numpy._core", _numpy_core)
+    sys.modules.setdefault("numpy._core._multiarray_umath", _numpy_multiarray_umath)
+except Exception:
+    pass
+
 import faiss
 import re
 import time

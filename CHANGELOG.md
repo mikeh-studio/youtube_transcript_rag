@@ -16,8 +16,10 @@ Historical release notes moved out of the README so the project landing page can
 ### TLDR / Theme Quality
 
 - TLDR generation now reads from a persisted **full transcript** artifact created at ingest time, with lazy backfill for older indexed videos.
-- TLDR responses are now persisted in `data/cache/summaries/<video_id>.json` as a per-video summary cache keyed by `language + provider + max_points`.
+- TLDR responses are now persisted in `data/cache/summaries/<video_id>.json` as a per-video summary cache keyed by `language + provider + model + max_points`.
 - Cache entries automatically refresh when transcript content changes, preventing stale summaries from being reused.
+- TLDR, Q&A, and Study generation can use selectable OpenAI or Claude models.
+- Study Studio now turns transcript sections into flashcards, topic maps, and study-quality checks.
 - TLDR Studio now generates a fixed **5-theme** TLDR for more reliable output quality.
 - Theme output is ranked by **importance to the full video**, not auto-sorted by timeline order.
 - Each TLDR point now uses a paragraph-style summary for stronger contextual detail.

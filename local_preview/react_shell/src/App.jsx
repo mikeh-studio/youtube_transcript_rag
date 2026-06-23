@@ -8,11 +8,13 @@ const INTRO_SEEN_SESSION_KEY = "yt_rag_intro_seen";
 const ROUTES = {
   INGEST: "/ingest",
   TLDR: "/tldr",
+  STUDY: "/study",
   QA: "/qa",
 };
 const CORE_NAV_ITEMS = [
   { key: "ingest", label: "Ingest", icon: "/icons/icon-upload.svg", route: ROUTES.INGEST },
   { key: "tldr", label: "TLDR Studio", icon: "/icons/icon-chat.svg", route: ROUTES.TLDR, requiresUnlock: true },
+  { key: "study", label: "Study Studio", icon: "/icons/icon-library.svg", route: ROUTES.STUDY, requiresUnlock: true },
   { key: "qa", label: "Q&A Studio", icon: "/icons/icon-search.svg", route: ROUTES.QA, requiresUnlock: true },
 ];
 const TOOL_NAV_ITEMS = [
@@ -22,6 +24,95 @@ const TOOL_NAV_ITEMS = [
   { key: "chunking", label: "Chunking", icon: "/icons/icon-jobs.svg", href: "/chunking.html", requiresUnlock: true },
 ];
 const YOUTUBE_ID_PATTERN = /^[a-zA-Z0-9_-]{11}$/;
+const FALLBACK_LLM_PROVIDER_OPTIONS = {
+  chatgpt: {
+    default: "",
+    models: [
+      { id: "gpt-5.4-nano", label: "GPT-5.4 nano" },
+      { id: "gpt-5.4-mini", label: "GPT-5.4 mini" },
+      { id: "gpt-5.5", label: "GPT-5.5" },
+    ],
+  },
+  claude: {
+    default: "",
+    models: [
+      { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+      { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
+    ],
+  },
+};
+const STUDY_FOCUS_PRESETS = [
+  { id: "main_ideas", label: "Main ideas" },
+  { id: "characters", label: "People / characters" },
+  { id: "vocabulary", label: "Vocabulary" },
+  { id: "timeline", label: "Timeline / sequence" },
+  { id: "quotes", label: "Quotes / context" },
+  { id: "exam", label: "Exam prep" },
+  { id: "language", label: "Language learning" },
+  { id: "discussion", label: "Discussion questions" },
+];
+const STUDY_SCOPES = [
+  { id: "whole_video", label: "Whole video" },
+  { id: "focused_sections", label: "Strongest sections" },
+];
+const STUDY_MODEL_PROFILES = [
+  { id: "economy", label: "Economy" },
+  { id: "balanced", label: "Balanced" },
+  { id: "quality", label: "Quality" },
+];
+let llmProviderOptionsPromise = null;
+
+function loadLlmProviderOptions() {
+  if (!llmProviderOptionsPromise) {
+    llmProviderOptionsPromise = apiRequest("/v1/llm-options")
+      .then((payload) => payload?.providers || FALLBACK_LLM_PROVIDER_OPTIONS)
+      .catch(() => FALLBACK_LLM_PROVIDER_OPTIONS);
+  }
+  return llmProviderOptionsPromise;
+}
+
+function useLlmProviderOptions() {
+  const [options, setOptions] = useState(FALLBACK_LLM_PROVIDER_OPTIONS);
+  useEffect(() => {
+    let cancelled = false;
+    loadLlmProviderOptions().then((value) => {
+      if (!cancelled) {
+        setOptions(value);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return options;
+}
+
+function ModelSelectLabel({ providerOptions, provider, model, onChange, disabled = false }) {
+  const providerEntry = providerOptions?.[provider] || {};
+  const models = Array.isArray(providerEntry.models) ? providerEntry.models : [];
+  const defaultLabel = providerEntry.default
+    ? `Default (${providerEntry.default})`
+    : "Default";
+  return (
+    <label>
+      <span>Model</span>
+      <select
+        value={model}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+      >
+        <option value="">{defaultLabel}</option>
+        {models
+          .map((row) => (
+            <option key={row.id} value={row.id}>
+              {row.id === providerEntry.default ? `${row.label} (default)` : row.label}
+            </option>
+          ))}
+      </select>
+    </label>
+  );
+}
 const QA_ANSWER_I18N = {
   "en-US": {
     answerStatusAnswered: "Answered from evidence",
@@ -82,7 +173,7 @@ function readHashRoute() {
   if (!raw) {
     return ROUTES.INGEST;
   }
-  if (raw === ROUTES.INGEST || raw === ROUTES.TLDR || raw === ROUTES.QA) {
+  if (raw === ROUTES.INGEST || raw === ROUTES.TLDR || raw === ROUTES.STUDY || raw === ROUTES.QA) {
     return raw;
   }
   return ROUTES.INGEST;
@@ -97,6 +188,22 @@ function markFeedbackRevision() {
     localStorage.setItem(FEEDBACK_REVISION_STORAGE_KEY, String(Date.now()));
   } catch (_) {
     // best effort only for cross-tab review refreshes
+  }
+}
+
+function readLocalStorage(key, fallback = "") {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function writeLocalStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (_) {
+    // best effort only; storage failures should not break generated output
   }
 }
 
@@ -560,7 +667,7 @@ function IngestPage({ onSuccess }) {
       <header className="hero ingest-hero">
         <h1>Ingest Gateway</h1>
         <p className="subtitle">
-          Start here. Once ingest succeeds, TLDR Studio, Q&amp;A Studio, Evaluation, and Reviews unlock.
+          Start here. Once ingest succeeds, TLDR Studio, Study Studio, Q&amp;A Studio, Evaluation, and Reviews unlock.
         </p>
       </header>
 
@@ -838,6 +945,8 @@ function QAStudioPage({ locale }) {
   const [askMode, setAskMode] = useState("hybrid");
   const [askSourceMode, setAskSourceMode] = useState("transcript");
   const [provider, setProvider] = useState("chatgpt");
+  const [model, setModel] = useState("");
+  const llmProviderOptions = useLlmProviderOptions();
   const [askLoading, setAskLoading] = useState(false);
   const [askResponse, setAskResponse] = useState(null);
   const [askError, setAskError] = useState("");
@@ -1004,6 +1113,7 @@ function QAStudioPage({ locale }) {
           retrieval_mode: askMode,
           source_mode: askSourceMode,
           provider,
+          model: model || undefined,
         },
       });
       setAskResponse(payload);
@@ -1115,11 +1225,23 @@ function QAStudioPage({ locale }) {
                 </label>
                 <label>
                   <span>Provider</span>
-                  <select value={provider} onChange={(event) => setProvider(event.target.value)}>
+                  <select
+                    value={provider}
+                    onChange={(event) => {
+                      setProvider(event.target.value);
+                      setModel("");
+                    }}
+                  >
                     <option value="chatgpt">ChatGPT</option>
                     <option value="claude">Claude</option>
                   </select>
                 </label>
+                <ModelSelectLabel
+                  providerOptions={llmProviderOptions}
+                  provider={provider}
+                  model={model}
+                  onChange={setModel}
+                />
                 <button className="btn qa-primary-action" type="submit" disabled={askLoading}>
                   {askLoading ? "Generating..." : "Generate Answer"}
                 </button>
@@ -1388,6 +1510,8 @@ function TLDRStudioPage() {
   const [selectedVideoId, setSelectedVideoId] = useState("");
   const [language, setLanguage] = useState("en");
   const [provider, setProvider] = useState("chatgpt");
+  const [model, setModel] = useState("");
+  const llmProviderOptions = useLlmProviderOptions();
   const [summaryResponse, setSummaryResponse] = useState(null);
   const [summaryError, setSummaryError] = useState("");
   const [isSummarizing, setIsSummarizing] = useState(false);
@@ -1416,7 +1540,7 @@ function TLDRStudioPage() {
           return;
         }
 
-        const saved = String(localStorage.getItem(LAST_VIDEO_KEY) || "").trim();
+        const saved = String(readLocalStorage(LAST_VIDEO_KEY) || "").trim();
         const matched = rows.find((row) => String(row.video_id) === saved);
         setSelectedVideoId(matched ? matched.video_id : rows[0].video_id);
       } catch (error) {
@@ -1456,6 +1580,7 @@ function TLDRStudioPage() {
           video_id: scopedVideoId,
           language,
           provider,
+          model: model || undefined,
           max_points: 5,
         },
       });
@@ -1533,11 +1658,23 @@ function TLDRStudioPage() {
           </label>
           <label>
             <span>Provider</span>
-            <select value={provider} onChange={(event) => setProvider(event.target.value)}>
+            <select
+              value={provider}
+              onChange={(event) => {
+                setProvider(event.target.value);
+                setModel("");
+              }}
+            >
               <option value="chatgpt">ChatGPT</option>
               <option value="claude">Claude</option>
             </select>
           </label>
+          <ModelSelectLabel
+            providerOptions={llmProviderOptions}
+            provider={provider}
+            model={model}
+            onChange={setModel}
+          />
           <label>
             <span>Themes</span>
             <input value="5" disabled readOnly />
@@ -1586,9 +1723,524 @@ function TLDRStudioPage() {
   );
 }
 
+function StudyStudioPage() {
+  const [videos, setVideos] = useState([]);
+  const [videoError, setVideoError] = useState("");
+  const [isLoadingVideos, setIsLoadingVideos] = useState(true);
+  const [selectedVideoId, setSelectedVideoId] = useState("");
+  const [studyMode, setStudyMode] = useState("flashcards");
+  const [language, setLanguage] = useState("en");
+  const [provider, setProvider] = useState("chatgpt");
+  const [model, setModel] = useState("");
+  const [difficulty, setDifficulty] = useState("balanced");
+  const [cardCount, setCardCount] = useState(8);
+  const [focus, setFocus] = useState("");
+  const [focusPreset, setFocusPreset] = useState("main_ideas");
+  const [scope, setScope] = useState("whole_video");
+  const [modelProfile, setModelProfile] = useState("balanced");
+  const [studyResponse, setStudyResponse] = useState(null);
+  const [studyError, setStudyError] = useState("");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [lastFlashcards, setLastFlashcards] = useState([]);
+  const llmProviderOptions = useLlmProviderOptions();
+  const [playerState, setPlayerState] = useState({
+    videoId: "",
+    start: 0,
+    title: "",
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadVideos() {
+      setIsLoadingVideos(true);
+      setVideoError("");
+      try {
+        const payload = await apiRequest("/v1/videos");
+        if (cancelled) {
+          return;
+        }
+        const rows = Array.isArray(payload?.videos) ? payload.videos : [];
+        setVideos(rows);
+        if (!rows.length) {
+          setSelectedVideoId("");
+          return;
+        }
+        const saved = String(localStorage.getItem(LAST_VIDEO_KEY) || "").trim();
+        const matched = rows.find((row) => String(row.video_id) === saved);
+        setSelectedVideoId(matched ? matched.video_id : rows[0].video_id);
+      } catch (error) {
+        if (!cancelled) {
+          setVideoError(String(error?.message || error));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoadingVideos(false);
+        }
+      }
+    }
+    loadVideos();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectedVideo = useMemo(
+    () => videos.find((row) => String(row.video_id) === String(selectedVideoId)) || null,
+    [videos, selectedVideoId],
+  );
+
+  const modeMeta = {
+    flashcards: {
+      label: "Flashcards",
+      action: "Generate Flashcards",
+      loading: "Generating flashcards...",
+    },
+    topics: {
+      label: "Topic Map",
+      action: "Generate Topic Map",
+      loading: "Generating topic map...",
+    },
+    quality: {
+      label: "Quality",
+      action: "Run Quality Evaluation",
+      loading: "Evaluating deck quality...",
+    },
+  };
+  const studyModes = Object.keys(modeMeta);
+  const llmControlsDisabled = studyMode !== "flashcards";
+
+  function selectStudyMode(mode) {
+    setStudyMode(mode);
+    setStudyResponse(null);
+    setStudyError("");
+  }
+
+  function handleStudyTabKey(event, currentMode) {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    const currentIndex = studyModes.indexOf(currentMode);
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowRight") {
+      nextIndex = (currentIndex + 1) % studyModes.length;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex = (currentIndex - 1 + studyModes.length) % studyModes.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = studyModes.length - 1;
+    }
+    selectStudyMode(studyModes[nextIndex]);
+  }
+
+  async function generateStudy(event) {
+    event.preventDefault();
+    const scopedVideoId = String(selectedVideoId || "").trim();
+    if (!scopedVideoId) {
+      return;
+    }
+    setStudyError("");
+    setIsGenerating(true);
+    const safeCardCount = Math.min(20, Math.max(4, Number(cardCount) || 8));
+    try {
+      const payload = await apiRequest("/v1/study/generate", {
+        method: "POST",
+        body: {
+          mode: studyMode,
+          video_id: scopedVideoId,
+          language,
+          provider: studyMode === "flashcards" ? provider : "local",
+          model: studyMode === "flashcards" ? model || undefined : undefined,
+          difficulty,
+          card_count: safeCardCount,
+          focus,
+          focus_preset: focusPreset,
+          scope,
+          model_profile: modelProfile,
+          cards: studyMode === "quality" && lastFlashcards.length ? lastFlashcards : undefined,
+        },
+      });
+      setStudyResponse(payload);
+      if (Array.isArray(payload?.deck?.cards)) {
+        setLastFlashcards(payload.deck.cards);
+      }
+      const firstEvidence =
+        payload?.deck?.cards?.[0]?.evidence
+        || payload?.topics?.[0]?.evidence
+        || null;
+      if (firstEvidence) {
+        setPlayerState({
+          videoId: scopedVideoId,
+          start: Number(firstEvidence.start || 0),
+          title: selectedVideo?.title || scopedVideoId,
+        });
+      }
+      writeLocalStorage(LAST_VIDEO_KEY, scopedVideoId);
+    } catch (error) {
+      setStudyError(String(error?.message || error));
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
+  function playEvidence(evidence) {
+    const scopedVideoId = String(evidence?.video_id || selectedVideoId || "").trim();
+    if (!scopedVideoId) {
+      return;
+    }
+    setPlayerState({
+      videoId: scopedVideoId,
+      start: Number(evidence?.start || 0),
+      title: evidence?.video_title || selectedVideo?.title || scopedVideoId,
+    });
+  }
+
+  const cards = Array.isArray(studyResponse?.deck?.cards) ? studyResponse.deck.cards : [];
+  const topics = Array.isArray(studyResponse?.topics) ? studyResponse.topics : [];
+  const quality = studyResponse?.quality || null;
+  const selectedSections = Array.isArray(studyResponse?.evidence_pack?.selected_sections)
+    ? studyResponse.evidence_pack.selected_sections
+    : [];
+  const focusLabel = studyResponse?.focus?.query
+    || studyResponse?.focus?.preset_label
+    || "Whole video";
+  const activeMeta = modeMeta[studyMode] || modeMeta.flashcards;
+
+  return (
+    <>
+      <header className="hero">
+        <h1>Study Studio</h1>
+        <p className="subtitle">
+          Turn timestamped transcript evidence into flashcards, topic maps, and quality checks for a processed video.
+        </p>
+      </header>
+
+      <section className="panel study-workbench-panel">
+        <div className="qa-workbench-head">
+          <h2 className="section-title">
+            <img src="/icons/icon-library.svg" alt="" aria-hidden="true" />
+            <span>Study Generator</span>
+          </h2>
+          <div className="qa-tabs study-tabs" role="tablist" aria-label="Study mode">
+            {Object.entries(modeMeta).map(([mode, meta]) => (
+              <button
+                key={mode}
+                id={`study-tab-${mode}`}
+                className={`qa-tab ${studyMode === mode ? "active" : ""}`}
+                type="button"
+                role="tab"
+                aria-selected={studyMode === mode}
+                aria-controls={`study-panel-${mode}`}
+                tabIndex={studyMode === mode ? 0 : -1}
+                onClick={() => selectStudyMode(mode)}
+                onKeyDown={(event) => handleStudyTabKey(event, mode)}
+              >
+                {meta.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <form className="study-form" onSubmit={generateStudy}>
+          <label className="study-video-field">
+            <span>Video</span>
+            <select
+              value={selectedVideoId}
+              onChange={(event) => {
+                setSelectedVideoId(event.target.value);
+                setStudyResponse(null);
+                setLastFlashcards([]);
+                setStudyError("");
+              }}
+              disabled={isLoadingVideos || !videos.length}
+              aria-busy={isLoadingVideos}
+              aria-describedby="study-video-status"
+            >
+              {!videos.length ? <option value="">No videos</option> : null}
+              {videos.map((row) => (
+                <option key={row.video_id} value={row.video_id}>
+                  {row.title} ({row.video_id})
+                </option>
+              ))}
+            </select>
+            <span className="sr-only" id="study-video-status" aria-live="polite">
+              {isLoadingVideos ? "Loading videos." : `${videos.length} videos available.`}
+            </span>
+          </label>
+
+          <div className="study-focus-row">
+            <label className="study-focus-field">
+              <span>Focus</span>
+              <input
+                type="text"
+                value={focus}
+                onChange={(event) => {
+                  setFocus(event.target.value);
+                  setStudyResponse(null);
+                }}
+                placeholder="e.g. Serie character interpretation, quiz terms, discussion prompts"
+              />
+            </label>
+            <label>
+              <span>Preset</span>
+              <select
+                value={focusPreset}
+                onChange={(event) => {
+                  setFocusPreset(event.target.value);
+                  setStudyResponse(null);
+                }}
+              >
+                {STUDY_FOCUS_PRESETS.map((row) => (
+                  <option key={row.id} value={row.id}>{row.label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Scope</span>
+              <select
+                value={scope}
+                onChange={(event) => {
+                  setScope(event.target.value);
+                  setStudyResponse(null);
+                }}
+              >
+                {STUDY_SCOPES.map((row) => (
+                  <option key={row.id} value={row.id}>{row.label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Model Profile</span>
+              <select
+                value={modelProfile}
+                onChange={(event) => {
+                  setModelProfile(event.target.value);
+                  setStudyResponse(null);
+                  setModel("");
+                }}
+              >
+                {STUDY_MODEL_PROFILES.map((row) => (
+                  <option key={row.id} value={row.id}>{row.label}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="study-controls-row">
+            <label>
+              <span>Output Language</span>
+              <select value={language} onChange={(event) => setLanguage(event.target.value)}>
+                <option value="en">English</option>
+                <option value="ja">Japanese</option>
+              </select>
+            </label>
+            <label>
+              <span>Provider</span>
+              <select
+                value={provider}
+                onChange={(event) => {
+                  setProvider(event.target.value);
+                  setModel("");
+                }}
+                disabled={llmControlsDisabled}
+              >
+                <option value="chatgpt">ChatGPT</option>
+                <option value="claude">Claude</option>
+              </select>
+            </label>
+            <ModelSelectLabel
+              providerOptions={llmProviderOptions}
+              provider={provider}
+              model={model}
+              onChange={setModel}
+              disabled={llmControlsDisabled}
+            />
+            <label>
+              <span>Difficulty</span>
+              <select value={difficulty} onChange={(event) => setDifficulty(event.target.value)}>
+                <option value="introductory">introductory</option>
+                <option value="balanced">balanced</option>
+                <option value="exam prep">exam prep</option>
+                <option value="deep review">deep review</option>
+              </select>
+            </label>
+            <label>
+              <span>Cards</span>
+              <input
+                type="number"
+                min="4"
+                max="20"
+                value={cardCount}
+                onChange={(event) => setCardCount(event.target.value)}
+                disabled={studyMode !== "flashcards"}
+              />
+            </label>
+            <button className="btn study-primary-action" type="submit" disabled={isGenerating || !selectedVideoId}>
+              {isGenerating ? activeMeta.loading : activeMeta.action}
+            </button>
+          </div>
+        </form>
+        {videoError ? <div className="search-summary">Video load failed: {videoError}</div> : null}
+        {studyError ? <div className="search-summary">Study generation failed: {studyError}</div> : null}
+        {studyResponse ? (
+          <div className="search-summary ask-summary-row">
+            <span>mode: {studyResponse.mode}</span>
+            <span>provider: {studyResponse.provider}</span>
+            <span>model: {studyResponse.model}</span>
+            <span>profile: {studyResponse.focus?.model_profile_label || "-"}</span>
+            <span>focus: {focusLabel}</span>
+            <span>segments: {studyResponse.source?.segment_count ?? "-"}</span>
+            <span>chunks: {studyResponse.source?.chunk_count ?? "-"}</span>
+            <span>sections: {studyResponse.evidence_pack?.selected_section_count ?? "-"}/{studyResponse.evidence_pack?.section_count ?? "-"}</span>
+          </div>
+        ) : null}
+        {selectedSections.length ? (
+          <div className="study-evidence-strip" aria-label="Selected study sections">
+            {selectedSections.map((section) => (
+              <button
+                className="study-section-pill"
+                key={section.section_id || `${section.rank}-${section.title}`}
+                type="button"
+                onClick={() => playEvidence(section)}
+              >
+                <strong>{section.title}</strong>
+                <span>{section.timestamp || formatSeconds(section.start)}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </section>
+
+      <section
+        className="panel"
+        role="tabpanel"
+        id={`study-panel-${studyMode}`}
+        aria-labelledby={`study-tab-${studyMode}`}
+      >
+        <h3 className="chart-heading">{activeMeta.label} Output</h3>
+        {!studyResponse ? (
+          <div className="search-empty">Choose a mode and generate study material from an ingested video.</div>
+        ) : null}
+
+        {studyResponse?.mode === "flashcards" ? (
+          <div className="search-cards study-card-grid">
+            {cards.map((card, index) => (
+              <article className="search-card study-flashcard" key={`study-card-${index}`}>
+                <div className="search-card-head">
+                  <div className="search-rank">#{index + 1}</div>
+                  <div className="search-title">{card.question}</div>
+                  <div className="search-lang">{card.card_type || "card"}</div>
+                </div>
+                <div className="study-card-meta">
+                  {card.learning_objective ? <span>{card.learning_objective}</span> : null}
+                </div>
+                <p className="study-answer">{card.answer}</p>
+                <p className="search-snippet">{card.explanation}</p>
+                {card.why_it_matters ? (
+                  <p className="study-why">Why it matters: {card.why_it_matters}</p>
+                ) : null}
+                {card.language_note ? (
+                  <p className="study-language-note">{card.language_note}</p>
+                ) : null}
+                <div className="chip-row">
+                  {(card.tags || []).map((tag) => (
+                    <span className="chip" key={`${index}-${tag}`}>{tag}</span>
+                  ))}
+                </div>
+                <p className="citation-reason">Source cue: {card.source_cue}</p>
+                <div className="search-actions">
+                  <button className="btn search-link-btn" type="button" onClick={() => playEvidence(card.evidence)}>
+                    Play source {card.evidence?.timestamp || ""}
+                  </button>
+                  {safeExternalUrl(card.evidence?.url) ? (
+                    <a className="citation-link" href={card.evidence.url} target="_blank" rel="noreferrer">
+                      Open source
+                    </a>
+                  ) : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : null}
+
+        {studyResponse?.mode === "topics" ? (
+          <div className="search-cards">
+            {topics.map((topic, index) => (
+              <article className="search-card summary-card" key={`study-topic-${index}`}>
+                <div className="search-card-head">
+                  <div className="search-rank">#{topic.rank ?? index + 1}</div>
+                  <div className="search-title">{topic.title}</div>
+                  <div className="search-lang">{formatSeconds(topic.start)}</div>
+                </div>
+                <p className="search-snippet">{topic.tldr}</p>
+                {Array.isArray(topic.key_points) && topic.key_points.length ? (
+                  <ul className="study-keypoints">
+                    {topic.key_points.map((point) => (
+                      <li key={`${topic.rank}-${point}`}>{point}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                <p className="citation-reason">Source cue: {topic.anchor_text}</p>
+                <div className="search-actions">
+                  <button className="btn search-link-btn" type="button" onClick={() => playEvidence(topic.evidence)}>
+                    Play source {formatSeconds(topic.start)}
+                  </button>
+                  {safeExternalUrl(topic.url) ? (
+                    <a className="citation-link" href={topic.url} target="_blank" rel="noreferrer">
+                      Open source
+                    </a>
+                  ) : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : null}
+
+        {studyResponse?.mode === "quality" && quality ? (
+          <div className="study-quality-wrap">
+            <div className="study-quality-score">
+              <span>Quality score</span>
+              <strong>{Math.round(Number(quality.score || 0) * 100)}%</strong>
+              <em>{quality.verdict}</em>
+            </div>
+            <div className="study-metric-grid">
+              {Object.entries(quality.metrics || {}).map(([key, value]) => (
+                <div className="study-metric-card" key={key}>
+                  <span>{key.replaceAll("_", " ")}</span>
+                  <strong>{String(value)}</strong>
+                </div>
+              ))}
+            </div>
+            <div className="search-cards">
+              {(quality.checks || []).map((check) => (
+                <article className="search-card study-check-card" key={check.name}>
+                  <div className="search-card-head">
+                    <div className={`study-check-status ${check.status}`}>{check.status}</div>
+                    <div className="search-title">{check.name}</div>
+                    <div className="search-lang">{String(check.value)}</div>
+                  </div>
+                </article>
+              ))}
+            </div>
+            <div className="chip-row">
+              {(quality.recommendations || []).map((item) => (
+                <span className="chip" key={item}>{item}</span>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <PlayerPanel videoId={playerState.videoId} startSeconds={playerState.start} title={playerState.title} />
+    </>
+  );
+}
+
 function App() {
   const [route, setRoute] = useState(readHashRoute());
   const [unlocked, setUnlocked] = useState(() => localStorage.getItem(LOCK_KEY) === "1");
+  const [unlockChecked, setUnlockChecked] = useState(() => localStorage.getItem(LOCK_KEY) === "1");
   const [locale, setLocale] = useState(() => {
     const stored = String(localStorage.getItem(LOCALE_STORAGE_KEY) || "").trim();
     return stored === "ja-JP" ? "ja-JP" : "en-US";
@@ -1617,10 +2269,41 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!unlocked && route !== ROUTES.INGEST) {
+    if (unlocked) {
+      setUnlockChecked(true);
+      return undefined;
+    }
+
+    let cancelled = false;
+    apiRequest("/v1/videos")
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        const rows = Array.isArray(payload?.videos) ? payload.videos : [];
+        if (rows.length) {
+          localStorage.setItem(LOCK_KEY, "1");
+          setUnlocked(true);
+        }
+      })
+      .catch(() => {
+        // Keep the locked state when the library cannot be read.
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setUnlockChecked(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [unlocked]);
+
+  useEffect(() => {
+    if (unlockChecked && !unlocked && route !== ROUTES.INGEST) {
       navigate(ROUTES.INGEST);
     }
-  }, [route, unlocked]);
+  }, [route, unlocked, unlockChecked]);
 
   useEffect(() => {
     setRouteAnimationKey((prev) => prev + 1);
@@ -1655,6 +2338,7 @@ function App() {
       localStorage.setItem(LAST_VIDEO_KEY, videoId);
     }
     setUnlocked(true);
+    setUnlockChecked(true);
   }
 
   function isNavItemVisible(item) {
@@ -1777,6 +2461,7 @@ function App() {
         <div className="route-scene" key={`scene-${route}-${routeAnimationKey}`}>
           {route === ROUTES.INGEST ? <IngestPage onSuccess={handleIngestSuccess} /> : null}
           {route === ROUTES.TLDR && unlocked ? <TLDRStudioPage /> : null}
+          {route === ROUTES.STUDY && unlocked ? <StudyStudioPage /> : null}
           {route === ROUTES.QA && unlocked ? <QAStudioPage locale={locale} /> : null}
         </div>
       </main>
