@@ -30,6 +30,7 @@ YT_RAG_FORCE_HASH_EMBEDDINGS=1 python local_preview/local_api.py
 - YouTube video and playlist transcript ingestion.
 - Transcript search with `hybrid`, `dense`, and `lexical` modes.
 - Citation-backed Q&A with grounded evidence and fallback states.
+- Study Studio for flashcards, topic maps, Explain Topic notes, run history, and quality checks.
 - Search-result review with `relevant` and `not_relevant` labels.
 - Reviewed-chunk analytics.
 - Evidence curation reports generated from local pipeline artifacts.
@@ -49,6 +50,7 @@ Local preview writes generated state under `data/`:
 - `data/cache/summaries/` - TLDR cache files.
 
 Evaluation query sets, labels, and run snapshots are stored in browser `localStorage`.
+Study Studio run history is stored in browser `sessionStorage` for the current tab session.
 
 ## Ingestion Verification
 

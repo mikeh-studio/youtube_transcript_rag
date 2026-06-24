@@ -184,11 +184,13 @@ SUMMARY_ANCHOR_MIN_CHARS = 8
 SUMMARY_ANCHOR_TOKEN_MATCH_THRESHOLD = 0.55
 SUMMARY_CACHE_VERSION = 2
 STUDY_MODES = {"flashcards", "topics", "quality"}
+STUDY_TOPIC_DETAIL_LEVELS = {"brief", "explain"}
 STUDY_CARD_COUNT_MIN = 4
 STUDY_CARD_COUNT_MAX = 20
 STUDY_DEFAULT_CARD_COUNT = 8
 STUDY_CARD_TYPES = ("recall", "concept", "detail", "application")
 STUDY_SECTION_CACHE_VERSION = 1
+STUDY_EXPLAIN_TOPIC_MIN_MAX_TOKENS = 2400
 SAKANA_STUDY_MIN_MAX_TOKENS = 4000
 STUDY_DEFAULT_FOCUS_PRESET = "main_ideas"
 STUDY_FOCUS_PRESETS = {
@@ -494,8 +496,8 @@ class LocalRAGService:
         self.lock = threading.Lock()
         self.engine = RAGEngine()
         self.openai_model = (
-            str(os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
-            or "gpt-4o-mini"
+            str(os.environ.get("OPENAI_MODEL") or "gpt-5.4-mini").strip()
+            or "gpt-5.4-mini"
         )
         self.sakana_model = (
             str(os.environ.get("SAKANA_MODEL") or SAKANA_DEFAULT_MODEL).strip()
@@ -4123,6 +4125,11 @@ class LocalRAGService:
         scoped = str(model_profile or "balanced").strip().lower()
         return scoped if scoped in STUDY_MODEL_PROFILES else "balanced"
 
+    @staticmethod
+    def _normalize_study_topic_detail_level(detail_level: str) -> str:
+        scoped = str(detail_level or "brief").strip().lower().replace("-", "_")
+        return scoped if scoped in STUDY_TOPIC_DETAIL_LEVELS else "brief"
+
     def _study_focus_metadata(
         self,
         *,
@@ -5216,6 +5223,300 @@ class LocalRAGService:
             )
         return topics
 
+    def _study_episode_context_pack(self, *, context: dict) -> dict:
+        video = context.get("video") or {}
+        title = self._study_clean_text(video.get("title") or "")
+        cast_names = []
+        cast_match = re.search(r"出演[:：](.+)", title)
+        if cast_match:
+            cast_names = [
+                self._study_clean_text(name)
+                for name in re.split(r"[、,／/]", cast_match.group(1))
+                if self._study_clean_text(name)
+            ][:8]
+
+        intro_text = self._study_clean_text(
+            " ".join(
+                str(row.get("text") or row.get("raw_text") or "")
+                for row in (context.get("segments") or [])[:30]
+            )
+        )
+        role_claims = []
+        for match in re.finditer(
+            r"([ぁ-んァ-ヴー一-龥A-Za-z0-9・ー]{2,20})役の"
+            r"([ぁ-んァ-ヴー一-龥A-Za-z・ー﨑]{2,16})",
+            intro_text,
+        ):
+            role = self._study_clean_text(match.group(1))
+            name = self._study_clean_text(match.group(2))
+            if not role or not name:
+                continue
+            claim = {"name": name, "role": role, "confidence": "intro_text"}
+            if claim not in role_claims:
+                role_claims.append(claim)
+        return {
+            "video_title": title,
+            "video_url": video.get("url") or "",
+            "cast_names_from_title": cast_names,
+            "role_claims_from_intro": role_claims[:8],
+            "intro_excerpt": self._study_clip_text(intro_text, 700),
+        }
+
+    def _study_topic_source_rows(
+        self,
+        *,
+        context: dict,
+        topic: dict,
+        limit: int = 5,
+    ) -> List[dict]:
+        video = context.get("video") or {}
+        rows = video.get("chunks") or context.get("segments") or []
+        topic_start = float(topic.get("start", 0.0) or 0.0)
+        topic_end = float(topic.get("end", topic_start) or topic_start)
+        matches = []
+        for index, row in enumerate(rows):
+            start = float(row.get("start", 0.0) or 0.0)
+            end = float(row.get("end", start) or start)
+            if end < topic_start or start > topic_end:
+                continue
+            text = self._study_clean_text(
+                row.get("raw_text") or row.get("text") or row.get("embed_text") or ""
+            )
+            if not text:
+                continue
+            matches.append(
+                {
+                    "chunk_index": row.get("chunk_index", index),
+                    "timestamp": self._study_timestamp_label(start),
+                    "start": start,
+                    "end": end,
+                    "text": self._study_clip_text(text, 900),
+                    "url": (
+                        f"{video.get('url', '').split('&')[0]}&t={int(start)}s"
+                        if video.get("url")
+                        else ""
+                    ),
+                }
+            )
+        if len(matches) <= limit:
+            return matches
+        selected_indexes = sorted(
+            {
+                0,
+                len(matches) - 1,
+                *[
+                    round(idx * (len(matches) - 1) / max(1, limit - 1))
+                    for idx in range(1, limit - 1)
+                ],
+            }
+        )
+        return [matches[index] for index in selected_indexes[:limit]]
+
+    def _normalize_explained_study_topic(
+        self,
+        *,
+        raw_topic: dict,
+        base_topic: dict,
+    ) -> dict:
+        raw = raw_topic if isinstance(raw_topic, dict) else {}
+        topic = deepcopy(base_topic)
+        source_moments = []
+        for row in raw.get("source_moments") or []:
+            if not isinstance(row, dict):
+                continue
+            quote = self._study_clip_text(row.get("quote") or "", 360)
+            explanation = self._study_clip_text(row.get("explanation") or "", 420)
+            if not quote and not explanation:
+                continue
+            source_moments.append(
+                {
+                    "timestamp": self._study_clip_text(row.get("timestamp") or "", 24),
+                    "speaker": self._study_clip_text(row.get("speaker") or "", 80),
+                    "quote": quote,
+                    "translation": self._study_clip_text(
+                        row.get("translation") or "",
+                        360,
+                    ),
+                    "explanation": explanation,
+                }
+            )
+        who_is_speaking = []
+        for row in raw.get("who_is_speaking") or []:
+            if not isinstance(row, dict):
+                continue
+            name = self._study_clip_text(row.get("name") or "", 80)
+            role = self._study_clip_text(row.get("role") or "", 120)
+            if not name and not role:
+                continue
+            who_is_speaking.append(
+                {
+                    "name": name or "Unknown speaker",
+                    "role": role,
+                    "confidence": self._study_clip_text(
+                        row.get("confidence") or "evidence_based",
+                        80,
+                    ),
+                    "evidence": self._study_clip_text(row.get("evidence") or "", 180),
+                }
+            )
+        topic.update(
+            {
+                "title": self._study_clip_text(
+                    raw.get("title") or topic.get("title"),
+                    140,
+                ),
+                "tldr": self._study_clip_text(
+                    raw.get("tldr") or topic.get("tldr"),
+                    360,
+                ),
+                "topic_detail_level": "explain",
+                "who_is_speaking": who_is_speaking[:5],
+                "what_they_talked_about": self._study_clip_text(
+                    raw.get("what_they_talked_about") or "",
+                    900,
+                ),
+                "source_moments": source_moments[:4],
+                "key_takeaways": [
+                    self._study_clip_text(point, 180)
+                    for point in raw.get("key_takeaways") or []
+                    if self._study_clean_text(point)
+                ][:5],
+                "learning_context": self._study_clip_text(
+                    raw.get("learning_context") or "",
+                    600,
+                ),
+                "review_questions": [
+                    self._study_clip_text(point, 180)
+                    for point in raw.get("review_questions") or []
+                    if self._study_clean_text(point)
+                ][:3],
+                "people_or_terms": [
+                    self._study_clip_text(point, 80)
+                    for point in raw.get("people_or_terms") or []
+                    if self._study_clean_text(point)
+                ][:8],
+                "anchor_text": self._study_clip_text(
+                    raw.get("anchor_text") or topic.get("anchor_text") or "",
+                    300,
+                ),
+            }
+        )
+        evidence = topic.get("evidence")
+        if isinstance(evidence, dict):
+            evidence["text"] = topic.get("anchor_text") or evidence.get("text", "")
+        return topic
+
+    def _llm_explain_topic_from_section(
+        self,
+        *,
+        topics: List[dict],
+        selected_sections: List[dict],
+        context: dict,
+        topic_rank: int,
+        language: str,
+        provider: str,
+        model: Optional[str],
+        focus_meta: dict,
+        model_profile: str,
+    ) -> dict:
+        if not topics:
+            return {"topics": [], "provider": provider, "model": model}
+        safe_rank = max(1, min(int(topic_rank or 1), len(topics)))
+        topic = deepcopy(topics[safe_rank - 1])
+        section = deepcopy(selected_sections[safe_rank - 1]) if selected_sections else {}
+        evidence = deepcopy(section.get("evidence") or topic.get("evidence") or {})
+        base_payload = [
+            {
+                "rank": int(row.get("rank") or idx),
+                "title": row.get("title"),
+                "tldr": row.get("tldr"),
+            }
+            for idx, row in enumerate(topics, start=1)
+        ]
+        topic_payload = {
+            "rank": int(topic.get("rank") or safe_rank),
+            "title": topic.get("title"),
+            "summary": topic.get("tldr"),
+            "key_points": topic.get("key_points") or [],
+            "anchor_text": topic.get("anchor_text") or "",
+            "timestamp": topic.get("timestamp")
+            or self._study_timestamp_label(topic.get("start", 0.0)),
+            "source_url": topic.get("url") or evidence.get("url") or "",
+        }
+        source_rows = self._study_topic_source_rows(
+            context=context,
+            topic=topic,
+            limit=5,
+        )
+        context_pack = self._study_episode_context_pack(context=context)
+        language_rule = (
+            "Write every field in Japanese."
+            if str(language or "").strip().lower() == "ja"
+            else "Write every field in English."
+        )
+        if focus_meta.get("has_focus"):
+            focus_rule = (
+                f"Learner focus: {focus_meta.get('query') or focus_meta.get('preset_label')}. "
+                f"Preset: {focus_meta.get('preset_label')}. Keep the expansion aligned to this focus."
+            )
+        else:
+            focus_rule = "Learner focus: whole-video coverage."
+        system_prompt = (
+            "You explain one study topic from timestamped transcript evidence. "
+            "The learner needs to understand who is speaking, what they talked about, "
+            "the exact source moments, and the key takeaways. Use only supplied evidence. "
+            "If a speaker cannot be attributed, say Unknown speaker and explain why. "
+            "Return strict JSON only."
+        )
+        user_message = (
+            f"{language_rule}\n"
+            f"{focus_rule}\n"
+            f"Explain topic rank {safe_rank}. The other topics are only navigation context.\n"
+            "Prioritize concrete source moments over generic summary prose.\n"
+            "For who_is_speaking, use role_claims_from_intro and cast_names_from_title when they support attribution. "
+            "Do not guess a named speaker from turn order alone.\n"
+            "For each source_moment, include the original quote, an English translation when the quote is not English, "
+            "and a short explanation of what that moment means.\n"
+            "Use this JSON shape: {\"topic\":{\"rank\":1,\"title\":\"...\",\"tldr\":\"...\","
+            "\"who_is_speaking\":[{\"name\":\"...\",\"role\":\"...\",\"confidence\":\"...\",\"evidence\":\"...\"}],"
+            "\"what_they_talked_about\":\"...\",\"source_moments\":[{\"timestamp\":\"0:00\","
+            "\"speaker\":\"...\",\"quote\":\"...\",\"translation\":\"...\",\"explanation\":\"...\"}],"
+            "\"key_takeaways\":[\"...\"],\"learning_context\":\"...\","
+            "\"people_or_terms\":[\"...\"],\"review_questions\":[\"...\"],\"anchor_text\":\"...\"}}.\n\n"
+            f"Episode context:\n{json.dumps(context_pack, ensure_ascii=False, indent=2)}\n\n"
+            f"All topic headings:\n{json.dumps(base_payload, ensure_ascii=False, indent=2)}\n\n"
+            f"Selected topic:\n{json.dumps(topic_payload, ensure_ascii=False, indent=2)}\n\n"
+            f"Raw source rows for selected topic:\n{json.dumps(source_rows, ensure_ascii=False, indent=2)}"
+        )
+        profile = STUDY_MODEL_PROFILES.get(
+            self._normalize_study_model_profile(model_profile),
+            STUDY_MODEL_PROFILES["balanced"],
+        )
+        max_tokens = max(
+            int(profile.get("max_tokens", 2200)),
+            STUDY_EXPLAIN_TOPIC_MIN_MAX_TOKENS,
+        )
+        if provider == "sakana":
+            max_tokens = max(max_tokens, SAKANA_STUDY_MIN_MAX_TOKENS)
+        llm = self._llm_text_response(
+            provider=provider,
+            system_prompt=system_prompt,
+            user_message=user_message,
+            max_tokens=max_tokens,
+            temperature=0.2,
+            model=model,
+        )
+        parsed = _extract_json_payload(llm["text"])
+        explained_topic = self._normalize_explained_study_topic(
+            raw_topic=parsed.get("topic") if isinstance(parsed, dict) else {},
+            base_topic=topic,
+        )
+        return {
+            "topics": [explained_topic],
+            "provider": provider,
+            "model": llm["model"],
+        }
+
     @staticmethod
     def _study_topic_groups(
         evidence_rows: List[dict],
@@ -5340,6 +5641,8 @@ class LocalRAGService:
         focus_preset: str = STUDY_DEFAULT_FOCUS_PRESET,
         scope: str = "whole_video",
         model_profile: str = "balanced",
+        topic_detail_level: str = "brief",
+        topic_rank: int = 1,
     ) -> dict:
         context = self._resolve_study_context(video_id)
         video = context["video"]
@@ -5355,6 +5658,9 @@ class LocalRAGService:
             scope=scope,
             model_profile=model_profile,
         )
+        scoped_detail_level = self._normalize_study_topic_detail_level(
+            topic_detail_level
+        )
         section_bundle = self._get_study_sections(
             context=context,
             language=scoped_language,
@@ -5369,6 +5675,47 @@ class LocalRAGService:
         resolved_provider = "local"
         resolved_model = "deterministic-topic-map"
         generation_mode = "section_cache"
+        fallback_reason = None
+        resolved_request_model = self._study_model_for_profile(
+            provider=scoped_provider,
+            requested_model=model,
+            model_profile=focus_meta["model_profile"],
+        )
+
+        safe_topic_rank = 1
+        if topics:
+            safe_topic_rank = max(1, min(int(topic_rank or 1), len(topics)))
+
+        if scoped_detail_level == "explain":
+            if scoped_provider != "local" and self._study_provider_available(scoped_provider):
+                try:
+                    generated = self._llm_explain_topic_from_section(
+                        topics=topics,
+                        selected_sections=selected_sections,
+                        context=context,
+                        topic_rank=safe_topic_rank,
+                        language=scoped_language,
+                        provider=scoped_provider,
+                        model=resolved_request_model,
+                        focus_meta=focus_meta,
+                        model_profile=focus_meta["model_profile"],
+                    )
+                    topics = generated["topics"]
+                    resolved_provider = generated["provider"]
+                    resolved_model = generated["model"]
+                    generation_mode = "llm_topic_explain"
+                except Exception as exc:
+                    fallback_reason = str(exc)
+                    generation_mode = "section_cache_fallback"
+                    topics = topics[safe_topic_rank - 1 : safe_topic_rank]
+            else:
+                fallback_reason = (
+                    f"{scoped_provider} provider credentials are not configured"
+                    if scoped_provider != "local"
+                    else "local provider does not generate topic explanations"
+                )
+                generation_mode = "section_cache_fallback"
+                topics = topics[safe_topic_rank - 1 : safe_topic_rank]
 
         return {
             "mode": "topics",
@@ -5378,7 +5725,11 @@ class LocalRAGService:
             "provider": resolved_provider,
             "model": resolved_model,
             "generation_mode": generation_mode,
-            "fallback_reason": None,
+            "fallback_reason": fallback_reason,
+            "topic_detail_level": (
+                "explain" if generation_mode == "llm_topic_explain" else "brief"
+            ),
+            "topic_rank": safe_topic_rank,
             "source": {
                 "basis": "transcript",
                 "source_fingerprint": context["source_fingerprint"],
@@ -5709,6 +6060,8 @@ class LocalRAGService:
         focus_preset: str = STUDY_DEFAULT_FOCUS_PRESET,
         scope: str = "whole_video",
         model_profile: str = "balanced",
+        topic_detail_level: str = "brief",
+        topic_rank: int = 1,
     ) -> dict:
         scoped_mode = str(mode or "flashcards").strip().lower()
         if scoped_mode not in STUDY_MODES:
@@ -5736,6 +6089,8 @@ class LocalRAGService:
                 focus_preset=focus_preset,
                 scope=scope,
                 model_profile=model_profile,
+                topic_detail_level=topic_detail_level,
+                topic_rank=topic_rank,
             )
         return self.evaluate_study_quality(
             video_id=video_id,
@@ -6542,6 +6897,10 @@ class Handler(BaseHTTPRequestHandler):
                     ).strip(),
                     scope=str(body.get("scope") or "whole_video").strip(),
                     model_profile=str(body.get("model_profile") or "balanced").strip(),
+                    topic_detail_level=str(
+                        body.get("topic_detail_level") or "brief"
+                    ).strip(),
+                    topic_rank=int(body.get("topic_rank") or 1),
                 )
                 self._json({"ok": True, **result})
                 return

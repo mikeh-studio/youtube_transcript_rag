@@ -31,6 +31,8 @@ SAKANA_MODEL=fugu
 SAKANA_BASE_URL=https://api.sakana.ai/v1
 ```
 
+If `OPENAI_MODEL` is not set, ChatGPT calls default to `gpt-5.4-mini`.
+
 Open the real local app:
 
 - `http://127.0.0.1:8000/index.html` - Main console
@@ -79,7 +81,7 @@ The local workflow lets you:
 - Local FAISS indexes for transcript and OCR evidence.
 - Retrieval modes: `dense`, `lexical`, and `hybrid`.
 - Citation-backed Q&A with fallback states and selectable OpenAI, Claude, or Sakana AI providers.
-- Study Studio for transcript-grounded flashcards, topic maps, and study-quality checks.
+- Study Studio for transcript-grounded flashcards, topic maps, per-topic explanations, run history, and study-quality checks.
 - Search-result review and assisted labeling helpers.
 - Browser-local evaluation query sets, labels, run snapshots, and metrics.
 - Read-only evidence curation reports from local pipeline artifacts.
@@ -111,6 +113,7 @@ local files
   data/runtime/          feedback, ask history, ingest logs, curation artifacts
   data/cache/summaries/  per-video TLDR cache files
   browser localStorage   evaluation query sets, runs, and labels
+  browser sessionStorage Study Studio run history
 ```
 
 ## Project Structure
