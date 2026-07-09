@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 from typing import Callable, List, Optional, Sequence, Tuple
 
 DEFAULT_RERANKER_MODEL = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
@@ -62,6 +63,7 @@ class CrossEncoderReranker:
         )
         self._score_fn = score_fn
         self._load_error: Optional[str] = None
+        self._load_lock = threading.Lock()
 
     @property
     def load_error(self) -> Optional[str]:
@@ -70,19 +72,23 @@ class CrossEncoderReranker:
     def _ensure_score_fn(self):
         if self._score_fn is not None:
             return self._score_fn
-        if self._load_error is not None:
-            return None
-        try:
-            from sentence_transformers import CrossEncoder
+        # Double-checked lock so concurrent first requests load the model once.
+        with self._load_lock:
+            if self._score_fn is not None:
+                return self._score_fn
+            if self._load_error is not None:
+                return None
+            try:
+                from sentence_transformers import CrossEncoder
 
-            model = CrossEncoder(self.model_name)
-            self._score_fn = lambda pairs: [
-                float(score) for score in model.predict(list(pairs))
-            ]
-        except Exception as exc:
-            self._load_error = f"{type(exc).__name__}: {exc}"
-            return None
-        return self._score_fn
+                model = CrossEncoder(self.model_name)
+                self._score_fn = lambda pairs: [
+                    float(score) for score in model.predict(list(pairs))
+                ]
+            except Exception as exc:
+                self._load_error = f"{type(exc).__name__}: {exc}"
+                return None
+            return self._score_fn
 
     def rerank(
         self,

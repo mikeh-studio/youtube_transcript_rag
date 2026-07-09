@@ -111,6 +111,7 @@ HYBRID_PROFILES = {HYBRID_BASELINE_PROFILE, HYBRID_OPTIMIZED_PROFILE}
 HYBRID_PROFILE_ENV = "YT_RAG_HYBRID_PROFILE"
 RERANKER_MODES = {"none", "cross_encoder"}
 RERANKER_ENV = "YT_RAG_RERANKER"
+_RERANKER_INIT_LOCK = threading.Lock()
 AGENTIC_RETRIEVAL_ENV = "YT_RAG_AGENTIC_RETRIEVAL"
 AGENTIC_REWRITE_MAX_TOKENS = 300
 AGENTIC_REWRITE_TEMPERATURE = 0.2
@@ -2404,8 +2405,11 @@ class LocalRAGService:
     def _get_reranker(self) -> CrossEncoderReranker:
         reranker = getattr(self, "_reranker", None)
         if reranker is None:
-            reranker = CrossEncoderReranker()
-            self._reranker = reranker
+            with _RERANKER_INIT_LOCK:
+                reranker = getattr(self, "_reranker", None)
+                if reranker is None:
+                    reranker = CrossEncoderReranker()
+                    self._reranker = reranker
         return reranker
 
     @staticmethod
