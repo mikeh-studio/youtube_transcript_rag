@@ -5,6 +5,8 @@ const LAST_VIDEO_KEY = "yt_rag_last_video_id";
 const FEEDBACK_REVISION_STORAGE_KEY = "youtube-rag-feedback-revision";
 const LOCALE_STORAGE_KEY = "youtube-rag-ui-locale";
 const INTRO_SEEN_SESSION_KEY = "yt_rag_intro_seen";
+const STUDY_HISTORY_SESSION_KEY = "yt_rag_study_history_v1";
+const STUDY_HISTORY_LIMIT = 12;
 const ROUTES = {
   INGEST: "/ingest",
   TLDR: "/tldr",
@@ -26,7 +28,7 @@ const TOOL_NAV_ITEMS = [
 const YOUTUBE_ID_PATTERN = /^[a-zA-Z0-9_-]{11}$/;
 const FALLBACK_LLM_PROVIDER_OPTIONS = {
   chatgpt: {
-    default: "",
+    default: "gpt-5.4-mini",
     models: [
       { id: "gpt-5.4-nano", label: "GPT-5.4 nano" },
       { id: "gpt-5.4-mini", label: "GPT-5.4 mini" },
@@ -68,6 +70,10 @@ const STUDY_MODEL_PROFILES = [
   { id: "economy", label: "Economy" },
   { id: "balanced", label: "Balanced" },
   { id: "quality", label: "Quality" },
+];
+const STUDY_TOPIC_DETAIL_LEVELS = [
+  { id: "brief", label: "Brief Map" },
+  { id: "explain", label: "Explain Topic" },
 ];
 let llmProviderOptionsPromise = null;
 
@@ -213,6 +219,38 @@ function writeLocalStorage(key, value) {
   } catch (_) {
     // best effort only; storage failures should not break generated output
   }
+}
+
+function readStudyHistory() {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(STUDY_HISTORY_SESSION_KEY) || "[]");
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .filter((run) => run && typeof run === "object" && run.id && run.mode && run.payload)
+      .slice(0, STUDY_HISTORY_LIMIT);
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeStudyHistory(runs) {
+  try {
+    sessionStorage.setItem(
+      STUDY_HISTORY_SESSION_KEY,
+      JSON.stringify(runs.slice(0, STUDY_HISTORY_LIMIT)),
+    );
+  } catch (_) {
+    // best effort only; history should not block fresh generations
+  }
+}
+
+function makeStudyRunId() {
+  const randomPart = typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2);
+  return `study-${Date.now()}-${randomPart}`;
 }
 
 function optionalNumber(value) {
@@ -1748,10 +1786,12 @@ function StudyStudioPage() {
   const [focusPreset, setFocusPreset] = useState("main_ideas");
   const [scope, setScope] = useState("whole_video");
   const [modelProfile, setModelProfile] = useState("balanced");
-  const [studyResponse, setStudyResponse] = useState(null);
+  const [topicDetailLevel, setTopicDetailLevel] = useState("brief");
+  const [topicRank, setTopicRank] = useState(1);
+  const [studyRuns, setStudyRuns] = useState(readStudyHistory);
+  const [activeStudyRunId, setActiveStudyRunId] = useState("");
   const [studyError, setStudyError] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
-  const [lastFlashcards, setLastFlashcards] = useState([]);
   const llmProviderOptions = useLlmProviderOptions();
   const [playerState, setPlayerState] = useState({
     videoId: "",
@@ -1817,11 +1857,31 @@ function StudyStudioPage() {
     },
   };
   const studyModes = Object.keys(modeMeta);
-  const llmControlsDisabled = studyMode !== "flashcards";
+  const topicUsesLlm = studyMode === "topics" && topicDetailLevel === "explain";
+  const llmControlsDisabled = studyMode !== "flashcards" && !topicUsesLlm;
+  const activeStudyRun = useMemo(() => {
+    const explicitRun = studyRuns.find((run) => run.id === activeStudyRunId && run.mode === studyMode);
+    if (explicitRun) {
+      return explicitRun;
+    }
+    return studyRuns.find((run) => run.mode === studyMode) || null;
+  }, [activeStudyRunId, studyMode, studyRuns]);
+  const studyResponse = activeStudyRun?.payload || null;
+  const latestFlashcardsForVideo = useMemo(() => {
+    const matchingRun = studyRuns.find((run) => {
+      const cards = run?.payload?.deck?.cards;
+      return (
+        run.mode === "flashcards"
+        && String(run.videoId || run.payload?.video_id || "") === String(selectedVideoId || "")
+        && Array.isArray(cards)
+        && cards.length
+      );
+    });
+    return matchingRun?.payload?.deck?.cards || [];
+  }, [selectedVideoId, studyRuns]);
 
   function selectStudyMode(mode) {
     setStudyMode(mode);
-    setStudyResponse(null);
     setStudyError("");
   }
 
@@ -1860,21 +1920,36 @@ function StudyStudioPage() {
           mode: studyMode,
           video_id: scopedVideoId,
           language,
-          provider: studyMode === "flashcards" ? provider : "local",
-          model: studyMode === "flashcards" ? model || undefined : undefined,
+          provider: studyMode === "flashcards" || topicUsesLlm ? provider : "local",
+          model: studyMode === "flashcards" || topicUsesLlm ? model || undefined : undefined,
           difficulty,
           card_count: safeCardCount,
           focus,
           focus_preset: focusPreset,
           scope,
           model_profile: modelProfile,
-          cards: studyMode === "quality" && lastFlashcards.length ? lastFlashcards : undefined,
+          topic_detail_level: studyMode === "topics" ? topicDetailLevel : undefined,
+          topic_rank: studyMode === "topics" && topicDetailLevel === "explain" ? Number(topicRank) : undefined,
+          cards: studyMode === "quality" && latestFlashcardsForVideo.length ? latestFlashcardsForVideo : undefined,
         },
       });
-      setStudyResponse(payload);
-      if (Array.isArray(payload?.deck?.cards)) {
-        setLastFlashcards(payload.deck.cards);
-      }
+      const nextRun = {
+        id: makeStudyRunId(),
+        createdAt: new Date().toISOString(),
+        mode: payload?.mode || studyMode,
+        videoId: payload?.video_id || scopedVideoId,
+        videoTitle: payload?.video_title || selectedVideo?.title || scopedVideoId,
+        payload,
+      };
+      setStudyRuns((previousRuns) => {
+        const nextRuns = [
+          nextRun,
+          ...previousRuns.filter((run) => run.id !== nextRun.id),
+        ].slice(0, STUDY_HISTORY_LIMIT);
+        writeStudyHistory(nextRuns);
+        return nextRuns;
+      });
+      setActiveStudyRunId(nextRun.id);
       const firstEvidence =
         payload?.deck?.cards?.[0]?.evidence
         || payload?.topics?.[0]?.evidence
@@ -1904,6 +1979,67 @@ function StudyStudioPage() {
       start: Number(evidence?.start || 0),
       title: evidence?.video_title || selectedVideo?.title || scopedVideoId,
     });
+  }
+
+  function restoreStudyRun(run) {
+    if (!run?.id) {
+      return;
+    }
+    const nextMode = run.mode || "flashcards";
+    const nextVideoId = String(run.videoId || run.payload?.video_id || "").trim();
+    setStudyMode(nextMode);
+    setActiveStudyRunId(run.id);
+    setStudyError("");
+    if (nextVideoId && videos.some((row) => String(row.video_id) === nextVideoId)) {
+      setSelectedVideoId(nextVideoId);
+      writeLocalStorage(LAST_VIDEO_KEY, nextVideoId);
+    }
+    const firstEvidence =
+      run.payload?.deck?.cards?.[0]?.evidence
+      || run.payload?.topics?.[0]?.evidence
+      || null;
+    if (firstEvidence) {
+      setPlayerState({
+        videoId: nextVideoId || String(firstEvidence.video_id || selectedVideoId || ""),
+        start: Number(firstEvidence.start || 0),
+        title: firstEvidence.video_title || run.videoTitle || nextVideoId,
+      });
+    }
+  }
+
+  function clearStudyHistory() {
+    setStudyRuns([]);
+    setActiveStudyRunId("");
+    writeStudyHistory([]);
+    setStudyError("");
+  }
+
+  function formatStudyRunTime(value) {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return "";
+    }
+    return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function studyRunMeta(run) {
+    const payload = run?.payload || {};
+    if (payload.mode === "flashcards") {
+      const count = Array.isArray(payload.deck?.cards) ? payload.deck.cards.length : 0;
+      return `${count} cards - ${payload.provider || "local"} / ${payload.model || "-"}`;
+    }
+    if (payload.mode === "topics") {
+      const count = Array.isArray(payload.topics) ? payload.topics.length : 0;
+      const detail = payload.topic_detail_level === "explain"
+        ? `Explain #${payload.topic_rank || 1}`
+        : "Brief map";
+      return `${detail} - ${count} topic${count === 1 ? "" : "s"}`;
+    }
+    if (payload.mode === "quality") {
+      const score = Number(payload.quality?.score || 0);
+      return `${Math.round(score * 100)}% score`;
+    }
+    return payload.mode || "Study run";
   }
 
   const cards = Array.isArray(studyResponse?.deck?.cards) ? studyResponse.deck.cards : [];
@@ -1959,8 +2095,6 @@ function StudyStudioPage() {
               value={selectedVideoId}
               onChange={(event) => {
                 setSelectedVideoId(event.target.value);
-                setStudyResponse(null);
-                setLastFlashcards([]);
                 setStudyError("");
               }}
               disabled={isLoadingVideos || !videos.length}
@@ -1987,7 +2121,6 @@ function StudyStudioPage() {
                 value={focus}
                 onChange={(event) => {
                   setFocus(event.target.value);
-                  setStudyResponse(null);
                 }}
                 placeholder="e.g. Serie character interpretation, quiz terms, discussion prompts"
               />
@@ -1998,7 +2131,6 @@ function StudyStudioPage() {
                 value={focusPreset}
                 onChange={(event) => {
                   setFocusPreset(event.target.value);
-                  setStudyResponse(null);
                 }}
               >
                 {STUDY_FOCUS_PRESETS.map((row) => (
@@ -2012,7 +2144,6 @@ function StudyStudioPage() {
                 value={scope}
                 onChange={(event) => {
                   setScope(event.target.value);
-                  setStudyResponse(null);
                 }}
               >
                 {STUDY_SCOPES.map((row) => (
@@ -2026,7 +2157,6 @@ function StudyStudioPage() {
                 value={modelProfile}
                 onChange={(event) => {
                   setModelProfile(event.target.value);
-                  setStudyResponse(null);
                   setModel("");
                 }}
               >
@@ -2043,6 +2173,34 @@ function StudyStudioPage() {
               <select value={language} onChange={(event) => setLanguage(event.target.value)}>
                 <option value="en">English</option>
                 <option value="ja">Japanese</option>
+              </select>
+            </label>
+            <label>
+              <span>Topic Action</span>
+              <select
+                value={topicDetailLevel}
+                onChange={(event) => {
+                  setTopicDetailLevel(event.target.value);
+                }}
+                disabled={studyMode !== "topics"}
+              >
+                {STUDY_TOPIC_DETAIL_LEVELS.map((row) => (
+                  <option key={row.id} value={row.id}>{row.label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Topic</span>
+              <select
+                value={topicRank}
+                onChange={(event) => {
+                  setTopicRank(event.target.value);
+                }}
+                disabled={studyMode !== "topics" || topicDetailLevel !== "explain"}
+              >
+                {[1, 2, 3, 4, 5].map((rank) => (
+                  <option key={rank} value={rank}>#{rank}</option>
+                ))}
               </select>
             </label>
             <label>
@@ -2073,7 +2231,7 @@ function StudyStudioPage() {
                 <option value="introductory">introductory</option>
                 <option value="balanced">balanced</option>
                 <option value="exam prep">exam prep</option>
-                <option value="deep review">deep review</option>
+                <option value="advanced review">advanced review</option>
               </select>
             </label>
             <label>
@@ -2094,12 +2252,44 @@ function StudyStudioPage() {
         </form>
         {videoError ? <div className="search-summary">Video load failed: {videoError}</div> : null}
         {studyError ? <div className="search-summary">Study generation failed: {studyError}</div> : null}
+        {studyRuns.length ? (
+          <div className="study-history-wrap" aria-label="Study run history">
+            <div className="study-history-head">
+              <strong>Run History</strong>
+              <button className="study-history-clear" type="button" onClick={clearStudyHistory}>
+                Clear
+              </button>
+            </div>
+            <div className="study-history-list">
+              {studyRuns.map((run) => {
+                const runModeLabel = modeMeta[run.mode]?.label || run.mode || "Study";
+                const isActiveRun = activeStudyRun?.id === run.id;
+                return (
+                  <button
+                    className={`study-history-item ${isActiveRun ? "active" : ""}`}
+                    key={run.id}
+                    type="button"
+                    onClick={() => restoreStudyRun(run)}
+                    aria-pressed={isActiveRun}
+                  >
+                    <strong>{runModeLabel}</strong>
+                    <span>{formatStudyRunTime(run.createdAt)} - {run.videoTitle || run.videoId || "Video"}</span>
+                    <em>{studyRunMeta(run)}</em>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
         {studyResponse ? (
           <div className="search-summary ask-summary-row">
             <span>mode: {studyResponse.mode}</span>
             <span>provider: {studyResponse.provider}</span>
             <span>model: {studyResponse.model}</span>
             <span>profile: {studyResponse.focus?.model_profile_label || "-"}</span>
+            {studyResponse.mode === "topics" ? (
+              <span>topic: {studyResponse.topic_detail_level || "brief"}</span>
+            ) : null}
             <span>focus: {focusLabel}</span>
             <span>segments: {studyResponse.source?.segment_count ?? "-"}</span>
             <span>chunks: {studyResponse.source?.chunk_count ?? "-"}</span>
@@ -2185,12 +2375,63 @@ function StudyStudioPage() {
                   <div className="search-lang">{formatSeconds(topic.start)}</div>
                 </div>
                 <p className="search-snippet">{topic.tldr}</p>
+                {Array.isArray(topic.who_is_speaking) && topic.who_is_speaking.length ? (
+                  <div className="study-topic-speakers">
+                    {topic.who_is_speaking.map((speaker) => (
+                      <div className="study-topic-speaker" key={`${topic.rank}-${speaker.name}-${speaker.role}`}>
+                        <strong>{speaker.name}</strong>
+                        {speaker.role ? <span>{speaker.role}</span> : null}
+                        {speaker.confidence ? <em>{speaker.confidence}</em> : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {topic.what_they_talked_about ? (
+                  <p className="study-topic-detail">{topic.what_they_talked_about}</p>
+                ) : null}
+                {Array.isArray(topic.source_moments) && topic.source_moments.length ? (
+                  <div className="study-source-moments">
+                    {topic.source_moments.map((moment, momentIndex) => (
+                      <div className="study-source-moment" key={`${topic.rank}-source-${momentIndex}`}>
+                        <span>{moment.timestamp || formatSeconds(topic.start)}</span>
+                        {moment.speaker ? <strong>{moment.speaker}</strong> : null}
+                        <p>{moment.translation || moment.quote}</p>
+                        {moment.quote && moment.translation ? <em>{moment.quote}</em> : null}
+                        {moment.explanation ? <small>{moment.explanation}</small> : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {Array.isArray(topic.key_takeaways) && topic.key_takeaways.length ? (
+                  <ul className="study-keypoints study-keymoments">
+                    {topic.key_takeaways.map((point) => (
+                      <li key={`${topic.rank}-takeaway-${point}`}>{point}</li>
+                    ))}
+                  </ul>
+                ) : null}
                 {Array.isArray(topic.key_points) && topic.key_points.length ? (
                   <ul className="study-keypoints">
                     {topic.key_points.map((point) => (
                       <li key={`${topic.rank}-${point}`}>{point}</li>
                     ))}
                   </ul>
+                ) : null}
+                {Array.isArray(topic.people_or_terms) && topic.people_or_terms.length ? (
+                  <div className="chip-row">
+                    {topic.people_or_terms.map((term) => (
+                      <span className="chip" key={`${topic.rank}-${term}`}>{term}</span>
+                    ))}
+                  </div>
+                ) : null}
+                {Array.isArray(topic.review_questions) && topic.review_questions.length ? (
+                  <ul className="study-keypoints study-review-questions">
+                    {topic.review_questions.map((question) => (
+                      <li key={`${topic.rank}-question-${question}`}>{question}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                {topic.learning_context ? (
+                  <p className="study-why">Learning context: {topic.learning_context}</p>
                 ) : null}
                 <p className="citation-reason">Source cue: {topic.anchor_text}</p>
                 <div className="search-actions">

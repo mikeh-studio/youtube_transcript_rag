@@ -58,6 +58,10 @@ if load_dotenv is not None:
     load_dotenv(ROOT_DIR / ".env.local", override=True)
 
 from multilingual.rag_engine import RAGEngine  # noqa: E402
+from multilingual.reranker import (  # noqa: E402
+    CrossEncoderReranker,
+    DEFAULT_RERANK_CANDIDATES,
+)
 from multilingual.text_processing import LANGUAGE_CONFIG  # noqa: E402
 from pipelines.embed_ocr import embed_ocr  # noqa: E402
 from pipelines.extract_frames import extract_frames  # noqa: E402
@@ -76,6 +80,11 @@ from feedback_keys import (  # noqa: E402
     feedback_query_hash,
     feedback_record_key,
     normalize_feedback_query,
+)
+from agentic_retrieval import (  # noqa: E402
+    heuristic_query_rewrite,
+    normalize_query_for_compare,
+    run_agentic_retrieval,
 )
 from grounded_answer import (  # noqa: E402
     ANSWER_CONFIDENCE_LEVELS,
@@ -100,6 +109,13 @@ HYBRID_BASELINE_PROFILE = "baseline_rrf"
 HYBRID_OPTIMIZED_PROFILE = "optimized_v1"
 HYBRID_PROFILES = {HYBRID_BASELINE_PROFILE, HYBRID_OPTIMIZED_PROFILE}
 HYBRID_PROFILE_ENV = "YT_RAG_HYBRID_PROFILE"
+RERANKER_MODES = {"none", "cross_encoder"}
+RERANKER_ENV = "YT_RAG_RERANKER"
+_RERANKER_INIT_LOCK = threading.Lock()
+AGENTIC_RETRIEVAL_ENV = "YT_RAG_AGENTIC_RETRIEVAL"
+AGENTIC_REWRITE_MAX_TOKENS = 300
+AGENTIC_REWRITE_TEMPERATURE = 0.2
+AGENTIC_REWRITE_MAX_QUERY_CHARS = 512
 HYBRID_OPTIMIZED_WEIGHTS = {
     "dense": 0.475,
     "lexical": 0.475,
@@ -184,11 +200,13 @@ SUMMARY_ANCHOR_MIN_CHARS = 8
 SUMMARY_ANCHOR_TOKEN_MATCH_THRESHOLD = 0.55
 SUMMARY_CACHE_VERSION = 2
 STUDY_MODES = {"flashcards", "topics", "quality"}
+STUDY_TOPIC_DETAIL_LEVELS = {"brief", "explain"}
 STUDY_CARD_COUNT_MIN = 4
 STUDY_CARD_COUNT_MAX = 20
 STUDY_DEFAULT_CARD_COUNT = 8
 STUDY_CARD_TYPES = ("recall", "concept", "detail", "application")
 STUDY_SECTION_CACHE_VERSION = 1
+STUDY_EXPLAIN_TOPIC_MIN_MAX_TOKENS = 2400
 SAKANA_STUDY_MIN_MAX_TOKENS = 4000
 STUDY_DEFAULT_FOCUS_PRESET = "main_ideas"
 STUDY_FOCUS_PRESETS = {
@@ -377,6 +395,26 @@ def _extract_json_payload(raw_text: str) -> Any:
     raise ValueError("Could not parse JSON payload from LLM output.")
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = str(os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _coerce_request_flag(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    scoped = str(value).strip().lower()
+    if scoped in {"1", "true", "yes", "on"}:
+        return True
+    if scoped in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
 def normalize_language(value: Optional[str], fallback: str = "ja") -> str:
     language = (value or fallback).strip().lower()
     return language if language in LANGUAGE_CONFIG else fallback
@@ -494,8 +532,8 @@ class LocalRAGService:
         self.lock = threading.Lock()
         self.engine = RAGEngine()
         self.openai_model = (
-            str(os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
-            or "gpt-4o-mini"
+            str(os.environ.get("OPENAI_MODEL") or "gpt-5.4-mini").strip()
+            or "gpt-5.4-mini"
         )
         self.sakana_model = (
             str(os.environ.get("SAKANA_MODEL") or SAKANA_DEFAULT_MODEL).strip()
@@ -532,6 +570,14 @@ class LocalRAGService:
         self.legacy_ingest_log_path = self.legacy_data_dir / "ingest_jobs.log"
         self._load_feedback()
         self._load_ask_history()
+        # Pre-warm the cross-encoder off the request path when reranking is
+        # enabled globally, so the first reranked request doesn't stall on a
+        # model download.
+        if self._default_reranker_mode() == "cross_encoder":
+            threading.Thread(
+                target=lambda: self._get_reranker()._ensure_score_fn(),
+                daemon=True,
+            ).start()
 
     @property
     def openai_client(self):
@@ -2344,6 +2390,38 @@ class LocalRAGService:
         return fused[: max(1, int(limit))]
 
     @staticmethod
+    def _default_reranker_mode() -> str:
+        raw = str(os.environ.get(RERANKER_ENV) or "").strip().lower()
+        if raw in {"1", "true", "yes", "on", "cross_encoder"}:
+            return "cross_encoder"
+        return "none"
+
+    @staticmethod
+    def _normalize_reranker_mode(value: Optional[str]) -> str:
+        scoped = str(value or "").strip().lower()
+        if not scoped:
+            return LocalRAGService._default_reranker_mode()
+        if scoped in {"1", "true", "yes", "on"}:
+            return "cross_encoder"
+        if scoped in {"0", "false", "no", "off"}:
+            return "none"
+        if scoped in RERANKER_MODES:
+            return scoped
+        raise ValueError(
+            f"reranker must be one of: {', '.join(sorted(RERANKER_MODES))}"
+        )
+
+    def _get_reranker(self) -> CrossEncoderReranker:
+        reranker = getattr(self, "_reranker", None)
+        if reranker is None:
+            with _RERANKER_INIT_LOCK:
+                reranker = getattr(self, "_reranker", None)
+                if reranker is None:
+                    reranker = CrossEncoderReranker()
+                    self._reranker = reranker
+        return reranker
+
+    @staticmethod
     def _default_hybrid_profile() -> str:
         configured = os.getenv(HYBRID_PROFILE_ENV, HYBRID_BASELINE_PROFILE)
         return LocalRAGService._normalize_hybrid_profile(
@@ -2550,12 +2628,14 @@ class LocalRAGService:
         retrieval_mode: str = "hybrid",
         video_id: Optional[str] = None,
         retrieval_profile: Optional[str] = None,
+        reranker: Optional[str] = None,
     ) -> dict:
         mode = (retrieval_mode or "hybrid").strip().lower()
         if mode not in RETRIEVAL_MODES:
             raise ValueError(
                 f"retrieval_mode must be one of: {', '.join(sorted(RETRIEVAL_MODES))}"
             )
+        reranker_mode = self._normalize_reranker_mode(reranker)
         hybrid_profile = None
         if mode == "hybrid":
             hybrid_profile = (
@@ -2627,6 +2707,27 @@ class LocalRAGService:
             else:
                 candidate_rows = lexical_results
 
+        reranker_details = {
+            "requested": reranker_mode,
+            "applied": False,
+            "model": None,
+            "scored_count": 0,
+            "error": None,
+        }
+        if reranker_mode == "cross_encoder" and candidate_rows:
+            rerank_outcome = self._get_reranker().rerank(
+                query, candidate_rows, top_n=DEFAULT_RERANK_CANDIDATES
+            )
+            candidate_rows = rerank_outcome["rows"]
+            reranker_details.update(
+                {
+                    "applied": bool(rerank_outcome["applied"]),
+                    "model": rerank_outcome["model"],
+                    "scored_count": int(rerank_outcome["scored_count"]),
+                    "error": rerank_outcome["error"],
+                }
+            )
+
         pre_rerank_count = len(candidate_rows)
         reranked = self._apply_feedback_rerank(query=query, rows=candidate_rows)
         reranked_rows = reranked["results"]
@@ -2651,6 +2752,7 @@ class LocalRAGService:
                 if mode == "hybrid" and hybrid_profile == HYBRID_OPTIMIZED_PROFILE
                 else None
             ),
+            "reranker": reranker_details,
             "dense_candidates": len(dense_results),
             "lexical_candidates": len(lexical_results),
             "candidate_k": candidate_k,
@@ -2681,6 +2783,133 @@ class LocalRAGService:
             "details": details,
             "results": results,
         }
+
+    def _rewrite_query_for_retrieval(
+        self,
+        *,
+        question: str,
+        previous_query: str,
+        attempted_queries: set,
+        language: str,
+        provider: str,
+        model: Optional[str] = None,
+    ) -> Optional[str]:
+        """Produce a retrieval-focused rewrite of a weak query.
+
+        Tries an LLM rewrite first and falls back to the deterministic
+        heuristic when no provider key is configured or the call fails.
+        """
+        system_prompt = (
+            "You rewrite search queries for transcript retrieval.\n"
+            "Keep the rewritten query in the same language as the question.\n"
+            "Prefer distinctive content keywords over question phrasing.\n"
+            "Do not invent terms unrelated to the question.\n"
+            'Return strict JSON only: {"query": "rewritten query"}'
+        )
+        attempted_lines = "\n".join(f"- {item}" for item in sorted(attempted_queries))
+        user_message = (
+            f"Question:\n{question.strip()}\n\n"
+            f"Previous query that returned weak evidence:\n{previous_query.strip()}\n\n"
+            f"Already tried queries:\n{attempted_lines}\n\n"
+            "Return strict JSON only."
+        )
+        try:
+            llm = self._llm_text_response(
+                provider=provider,
+                system_prompt=system_prompt,
+                user_message=user_message,
+                max_tokens=AGENTIC_REWRITE_MAX_TOKENS,
+                temperature=AGENTIC_REWRITE_TEMPERATURE,
+                model=model,
+            )
+            parsed = _extract_json_payload(llm["text"])
+            if isinstance(parsed, dict):
+                # Cap length so a pathological model output cannot flow
+                # unbounded into embedding calls, BM25, and ask history.
+                candidate = str(parsed.get("query") or "").strip()[
+                    :AGENTIC_REWRITE_MAX_QUERY_CHARS
+                ].strip()
+                if (
+                    candidate
+                    and normalize_query_for_compare(candidate) not in attempted_queries
+                ):
+                    return candidate
+        except Exception:
+            pass
+        return heuristic_query_rewrite(previous_query, language=language)
+
+    def retrieve_agentic(
+        self,
+        question: str,
+        k: int = 5,
+        language: Optional[str] = None,
+        retrieval_mode: str = "hybrid",
+        video_id: Optional[str] = None,
+        retrieval_profile: Optional[str] = None,
+        reranker: Optional[str] = None,
+        provider: str = DEFAULT_ASK_PROVIDER,
+        model: Optional[str] = None,
+    ) -> dict:
+        """Retrieve with evidence-driven retries for grounded answering.
+
+        Runs the agentic retrieval loop: assess evidence after each attempt
+        and retry with a rewritten query, a different retrieval mode, or a
+        broader top-k until the evidence is sufficient or the attempt budget
+        runs out. The attempt trace is embedded in the retrieval details as
+        details['agentic_retrieval'].
+        """
+        answer_language = self._infer_query_language(question)
+
+        def retrieve_fn(*, query: str, retrieval_mode: str, k: int) -> dict:
+            return self.retrieve(
+                query,
+                k=k,
+                language=language,
+                retrieval_mode=retrieval_mode,
+                retrieval_profile=retrieval_profile,
+                video_id=video_id,
+                reranker=reranker,
+            )
+
+        def assess_fn(*, rows: List[dict], retrieval_mode: str) -> dict:
+            return assess_grounded_answer_evidence(
+                question=question,
+                rows=rows,
+                retrieval_mode=retrieval_mode,
+                tokenize_fn=self._tokenize_for_lexical,
+                answer_language=answer_language,
+            )
+
+        def rewrite_fn(*, query: str, attempted_queries: set) -> Optional[str]:
+            return self._rewrite_query_for_retrieval(
+                question=question,
+                previous_query=query,
+                attempted_queries=attempted_queries,
+                language=answer_language,
+                provider=provider,
+                model=model,
+            )
+
+        outcome = run_agentic_retrieval(
+            question=question,
+            retrieve_fn=retrieve_fn,
+            assess_fn=assess_fn,
+            rewrite_fn=rewrite_fn,
+            k=k,
+            retrieval_mode=retrieval_mode,
+        )
+        details = outcome["retrieval"].setdefault("details", {})
+        details["agentic_retrieval"] = {
+            "enabled": True,
+            "applied": bool(outcome["agentic_applied"]),
+            "sufficient": bool(outcome["sufficient"]),
+            "stopped_reason": outcome["stopped_reason"],
+            "final_query": outcome["final_query"],
+            "final_retrieval_mode": outcome["final_mode"],
+            "final_k": outcome["final_k"],
+            "attempts": outcome["attempts"],
+        }
+        return outcome
 
     def _resolve_llm_model(self, provider: str, model: Optional[str]) -> str:
         scoped_provider = str(provider or DEFAULT_ASK_PROVIDER).strip().lower()
@@ -4123,6 +4352,11 @@ class LocalRAGService:
         scoped = str(model_profile or "balanced").strip().lower()
         return scoped if scoped in STUDY_MODEL_PROFILES else "balanced"
 
+    @staticmethod
+    def _normalize_study_topic_detail_level(detail_level: str) -> str:
+        scoped = str(detail_level or "brief").strip().lower().replace("-", "_")
+        return scoped if scoped in STUDY_TOPIC_DETAIL_LEVELS else "brief"
+
     def _study_focus_metadata(
         self,
         *,
@@ -5216,6 +5450,300 @@ class LocalRAGService:
             )
         return topics
 
+    def _study_episode_context_pack(self, *, context: dict) -> dict:
+        video = context.get("video") or {}
+        title = self._study_clean_text(video.get("title") or "")
+        cast_names = []
+        cast_match = re.search(r"出演[:：](.+)", title)
+        if cast_match:
+            cast_names = [
+                self._study_clean_text(name)
+                for name in re.split(r"[、,／/]", cast_match.group(1))
+                if self._study_clean_text(name)
+            ][:8]
+
+        intro_text = self._study_clean_text(
+            " ".join(
+                str(row.get("text") or row.get("raw_text") or "")
+                for row in (context.get("segments") or [])[:30]
+            )
+        )
+        role_claims = []
+        for match in re.finditer(
+            r"([ぁ-んァ-ヴー一-龥A-Za-z0-9・ー]{2,20})役の"
+            r"([ぁ-んァ-ヴー一-龥A-Za-z・ー﨑]{2,16})",
+            intro_text,
+        ):
+            role = self._study_clean_text(match.group(1))
+            name = self._study_clean_text(match.group(2))
+            if not role or not name:
+                continue
+            claim = {"name": name, "role": role, "confidence": "intro_text"}
+            if claim not in role_claims:
+                role_claims.append(claim)
+        return {
+            "video_title": title,
+            "video_url": video.get("url") or "",
+            "cast_names_from_title": cast_names,
+            "role_claims_from_intro": role_claims[:8],
+            "intro_excerpt": self._study_clip_text(intro_text, 700),
+        }
+
+    def _study_topic_source_rows(
+        self,
+        *,
+        context: dict,
+        topic: dict,
+        limit: int = 5,
+    ) -> List[dict]:
+        video = context.get("video") or {}
+        rows = video.get("chunks") or context.get("segments") or []
+        topic_start = float(topic.get("start", 0.0) or 0.0)
+        topic_end = float(topic.get("end", topic_start) or topic_start)
+        matches = []
+        for index, row in enumerate(rows):
+            start = float(row.get("start", 0.0) or 0.0)
+            end = float(row.get("end", start) or start)
+            if end < topic_start or start > topic_end:
+                continue
+            text = self._study_clean_text(
+                row.get("raw_text") or row.get("text") or row.get("embed_text") or ""
+            )
+            if not text:
+                continue
+            matches.append(
+                {
+                    "chunk_index": row.get("chunk_index", index),
+                    "timestamp": self._study_timestamp_label(start),
+                    "start": start,
+                    "end": end,
+                    "text": self._study_clip_text(text, 900),
+                    "url": (
+                        f"{video.get('url', '').split('&')[0]}&t={int(start)}s"
+                        if video.get("url")
+                        else ""
+                    ),
+                }
+            )
+        if len(matches) <= limit:
+            return matches
+        selected_indexes = sorted(
+            {
+                0,
+                len(matches) - 1,
+                *[
+                    round(idx * (len(matches) - 1) / max(1, limit - 1))
+                    for idx in range(1, limit - 1)
+                ],
+            }
+        )
+        return [matches[index] for index in selected_indexes[:limit]]
+
+    def _normalize_explained_study_topic(
+        self,
+        *,
+        raw_topic: dict,
+        base_topic: dict,
+    ) -> dict:
+        raw = raw_topic if isinstance(raw_topic, dict) else {}
+        topic = deepcopy(base_topic)
+        source_moments = []
+        for row in raw.get("source_moments") or []:
+            if not isinstance(row, dict):
+                continue
+            quote = self._study_clip_text(row.get("quote") or "", 360)
+            explanation = self._study_clip_text(row.get("explanation") or "", 420)
+            if not quote and not explanation:
+                continue
+            source_moments.append(
+                {
+                    "timestamp": self._study_clip_text(row.get("timestamp") or "", 24),
+                    "speaker": self._study_clip_text(row.get("speaker") or "", 80),
+                    "quote": quote,
+                    "translation": self._study_clip_text(
+                        row.get("translation") or "",
+                        360,
+                    ),
+                    "explanation": explanation,
+                }
+            )
+        who_is_speaking = []
+        for row in raw.get("who_is_speaking") or []:
+            if not isinstance(row, dict):
+                continue
+            name = self._study_clip_text(row.get("name") or "", 80)
+            role = self._study_clip_text(row.get("role") or "", 120)
+            if not name and not role:
+                continue
+            who_is_speaking.append(
+                {
+                    "name": name or "Unknown speaker",
+                    "role": role,
+                    "confidence": self._study_clip_text(
+                        row.get("confidence") or "evidence_based",
+                        80,
+                    ),
+                    "evidence": self._study_clip_text(row.get("evidence") or "", 180),
+                }
+            )
+        topic.update(
+            {
+                "title": self._study_clip_text(
+                    raw.get("title") or topic.get("title"),
+                    140,
+                ),
+                "tldr": self._study_clip_text(
+                    raw.get("tldr") or topic.get("tldr"),
+                    360,
+                ),
+                "topic_detail_level": "explain",
+                "who_is_speaking": who_is_speaking[:5],
+                "what_they_talked_about": self._study_clip_text(
+                    raw.get("what_they_talked_about") or "",
+                    900,
+                ),
+                "source_moments": source_moments[:4],
+                "key_takeaways": [
+                    self._study_clip_text(point, 180)
+                    for point in raw.get("key_takeaways") or []
+                    if self._study_clean_text(point)
+                ][:5],
+                "learning_context": self._study_clip_text(
+                    raw.get("learning_context") or "",
+                    600,
+                ),
+                "review_questions": [
+                    self._study_clip_text(point, 180)
+                    for point in raw.get("review_questions") or []
+                    if self._study_clean_text(point)
+                ][:3],
+                "people_or_terms": [
+                    self._study_clip_text(point, 80)
+                    for point in raw.get("people_or_terms") or []
+                    if self._study_clean_text(point)
+                ][:8],
+                "anchor_text": self._study_clip_text(
+                    raw.get("anchor_text") or topic.get("anchor_text") or "",
+                    300,
+                ),
+            }
+        )
+        # Keep evidence["text"] as the transcript-derived excerpt; the LLM's
+        # anchor_text lives on the topic itself and must not overwrite the
+        # provenance field with unverified model output.
+        return topic
+
+    def _llm_explain_topic_from_section(
+        self,
+        *,
+        topics: List[dict],
+        selected_sections: List[dict],
+        context: dict,
+        topic_rank: int,
+        language: str,
+        provider: str,
+        model: Optional[str],
+        focus_meta: dict,
+        model_profile: str,
+    ) -> dict:
+        if not topics:
+            return {"topics": [], "provider": provider, "model": model}
+        safe_rank = max(1, min(int(topic_rank or 1), len(topics)))
+        topic = deepcopy(topics[safe_rank - 1])
+        section = deepcopy(selected_sections[safe_rank - 1]) if selected_sections else {}
+        evidence = deepcopy(section.get("evidence") or topic.get("evidence") or {})
+        base_payload = [
+            {
+                "rank": int(row.get("rank") or idx),
+                "title": row.get("title"),
+                "tldr": row.get("tldr"),
+            }
+            for idx, row in enumerate(topics, start=1)
+        ]
+        topic_payload = {
+            "rank": int(topic.get("rank") or safe_rank),
+            "title": topic.get("title"),
+            "summary": topic.get("tldr"),
+            "key_points": topic.get("key_points") or [],
+            "anchor_text": topic.get("anchor_text") or "",
+            "timestamp": topic.get("timestamp")
+            or self._study_timestamp_label(topic.get("start", 0.0)),
+            "source_url": topic.get("url") or evidence.get("url") or "",
+        }
+        source_rows = self._study_topic_source_rows(
+            context=context,
+            topic=topic,
+            limit=5,
+        )
+        context_pack = self._study_episode_context_pack(context=context)
+        language_rule = (
+            "Write every field in Japanese."
+            if str(language or "").strip().lower() == "ja"
+            else "Write every field in English."
+        )
+        if focus_meta.get("has_focus"):
+            focus_rule = (
+                f"Learner focus: {focus_meta.get('query') or focus_meta.get('preset_label')}. "
+                f"Preset: {focus_meta.get('preset_label')}. Keep the expansion aligned to this focus."
+            )
+        else:
+            focus_rule = "Learner focus: whole-video coverage."
+        system_prompt = (
+            "You explain one study topic from timestamped transcript evidence. "
+            "The learner needs to understand who is speaking, what they talked about, "
+            "the exact source moments, and the key takeaways. Use only supplied evidence. "
+            "If a speaker cannot be attributed, say Unknown speaker and explain why. "
+            "Return strict JSON only."
+        )
+        user_message = (
+            f"{language_rule}\n"
+            f"{focus_rule}\n"
+            f"Explain topic rank {safe_rank}. The other topics are only navigation context.\n"
+            "Prioritize concrete source moments over generic summary prose.\n"
+            "For who_is_speaking, use role_claims_from_intro and cast_names_from_title when they support attribution. "
+            "Do not guess a named speaker from turn order alone.\n"
+            "For each source_moment, include the original quote, an English translation when the quote is not English, "
+            "and a short explanation of what that moment means.\n"
+            "Use this JSON shape: {\"topic\":{\"rank\":1,\"title\":\"...\",\"tldr\":\"...\","
+            "\"who_is_speaking\":[{\"name\":\"...\",\"role\":\"...\",\"confidence\":\"...\",\"evidence\":\"...\"}],"
+            "\"what_they_talked_about\":\"...\",\"source_moments\":[{\"timestamp\":\"0:00\","
+            "\"speaker\":\"...\",\"quote\":\"...\",\"translation\":\"...\",\"explanation\":\"...\"}],"
+            "\"key_takeaways\":[\"...\"],\"learning_context\":\"...\","
+            "\"people_or_terms\":[\"...\"],\"review_questions\":[\"...\"],\"anchor_text\":\"...\"}}.\n\n"
+            f"Episode context:\n{json.dumps(context_pack, ensure_ascii=False, indent=2)}\n\n"
+            f"All topic headings:\n{json.dumps(base_payload, ensure_ascii=False, indent=2)}\n\n"
+            f"Selected topic:\n{json.dumps(topic_payload, ensure_ascii=False, indent=2)}\n\n"
+            f"Raw source rows for selected topic:\n{json.dumps(source_rows, ensure_ascii=False, indent=2)}"
+        )
+        profile = STUDY_MODEL_PROFILES.get(
+            self._normalize_study_model_profile(model_profile),
+            STUDY_MODEL_PROFILES["balanced"],
+        )
+        max_tokens = max(
+            int(profile.get("max_tokens", 2200)),
+            STUDY_EXPLAIN_TOPIC_MIN_MAX_TOKENS,
+        )
+        if provider == "sakana":
+            max_tokens = max(max_tokens, SAKANA_STUDY_MIN_MAX_TOKENS)
+        llm = self._llm_text_response(
+            provider=provider,
+            system_prompt=system_prompt,
+            user_message=user_message,
+            max_tokens=max_tokens,
+            temperature=0.2,
+            model=model,
+        )
+        parsed = _extract_json_payload(llm["text"])
+        explained_topic = self._normalize_explained_study_topic(
+            raw_topic=parsed.get("topic") if isinstance(parsed, dict) else {},
+            base_topic=topic,
+        )
+        return {
+            "topics": [explained_topic],
+            "provider": provider,
+            "model": llm["model"],
+        }
+
     @staticmethod
     def _study_topic_groups(
         evidence_rows: List[dict],
@@ -5340,6 +5868,8 @@ class LocalRAGService:
         focus_preset: str = STUDY_DEFAULT_FOCUS_PRESET,
         scope: str = "whole_video",
         model_profile: str = "balanced",
+        topic_detail_level: str = "brief",
+        topic_rank: int = 1,
     ) -> dict:
         context = self._resolve_study_context(video_id)
         video = context["video"]
@@ -5355,6 +5885,9 @@ class LocalRAGService:
             scope=scope,
             model_profile=model_profile,
         )
+        scoped_detail_level = self._normalize_study_topic_detail_level(
+            topic_detail_level
+        )
         section_bundle = self._get_study_sections(
             context=context,
             language=scoped_language,
@@ -5369,6 +5902,47 @@ class LocalRAGService:
         resolved_provider = "local"
         resolved_model = "deterministic-topic-map"
         generation_mode = "section_cache"
+        fallback_reason = None
+        resolved_request_model = self._study_model_for_profile(
+            provider=scoped_provider,
+            requested_model=model,
+            model_profile=focus_meta["model_profile"],
+        )
+
+        safe_topic_rank = 1
+        if topics:
+            safe_topic_rank = max(1, min(int(topic_rank or 1), len(topics)))
+
+        if scoped_detail_level == "explain":
+            if scoped_provider != "local" and self._study_provider_available(scoped_provider):
+                try:
+                    generated = self._llm_explain_topic_from_section(
+                        topics=topics,
+                        selected_sections=selected_sections,
+                        context=context,
+                        topic_rank=safe_topic_rank,
+                        language=scoped_language,
+                        provider=scoped_provider,
+                        model=resolved_request_model,
+                        focus_meta=focus_meta,
+                        model_profile=focus_meta["model_profile"],
+                    )
+                    topics = generated["topics"]
+                    resolved_provider = generated["provider"]
+                    resolved_model = generated["model"]
+                    generation_mode = "llm_topic_explain"
+                except Exception as exc:
+                    fallback_reason = str(exc)
+                    generation_mode = "section_cache_fallback"
+                    topics = topics[safe_topic_rank - 1 : safe_topic_rank]
+            else:
+                fallback_reason = (
+                    f"{scoped_provider} provider credentials are not configured"
+                    if scoped_provider != "local"
+                    else "local provider does not generate topic explanations"
+                )
+                generation_mode = "section_cache_fallback"
+                topics = topics[safe_topic_rank - 1 : safe_topic_rank]
 
         return {
             "mode": "topics",
@@ -5378,7 +5952,11 @@ class LocalRAGService:
             "provider": resolved_provider,
             "model": resolved_model,
             "generation_mode": generation_mode,
-            "fallback_reason": None,
+            "fallback_reason": fallback_reason,
+            "topic_detail_level": (
+                "explain" if generation_mode == "llm_topic_explain" else "brief"
+            ),
+            "topic_rank": safe_topic_rank,
             "source": {
                 "basis": "transcript",
                 "source_fingerprint": context["source_fingerprint"],
@@ -5709,6 +6287,8 @@ class LocalRAGService:
         focus_preset: str = STUDY_DEFAULT_FOCUS_PRESET,
         scope: str = "whole_video",
         model_profile: str = "balanced",
+        topic_detail_level: str = "brief",
+        topic_rank: int = 1,
     ) -> dict:
         scoped_mode = str(mode or "flashcards").strip().lower()
         if scoped_mode not in STUDY_MODES:
@@ -5736,6 +6316,8 @@ class LocalRAGService:
                 focus_preset=focus_preset,
                 scope=scope,
                 model_profile=model_profile,
+                topic_detail_level=topic_detail_level,
+                topic_rank=topic_rank,
             )
         return self.evaluate_study_quality(
             video_id=video_id,
@@ -6542,6 +7124,10 @@ class Handler(BaseHTTPRequestHandler):
                     ).strip(),
                     scope=str(body.get("scope") or "whole_video").strip(),
                     model_profile=str(body.get("model_profile") or "balanced").strip(),
+                    topic_detail_level=str(
+                        body.get("topic_detail_level") or "brief"
+                    ).strip(),
+                    topic_rank=int(body.get("topic_rank") or 1),
                 )
                 self._json({"ok": True, **result})
                 return
@@ -6778,6 +7364,7 @@ class Handler(BaseHTTPRequestHandler):
                     language=normalize_language(language) if language else None,
                     retrieval_mode=retrieval_mode,
                     retrieval_profile=retrieval_profile,
+                    reranker=body.get("reranker"),
                 )
                 self._json(
                     {
@@ -6842,20 +7429,40 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     return
 
-                retrieval = SERVICE.retrieve(
-                    question,
-                    k=k,
-                    language=normalize_language(language) if language else None,
-                    retrieval_mode=retrieval_mode,
-                    retrieval_profile=retrieval_profile,
-                    video_id=video_id,
+                model_override = str(body.get("model") or "").strip() or None
+                agentic = _coerce_request_flag(
+                    body.get("agentic", body.get("agentic_retrieval")),
+                    default=_env_flag(AGENTIC_RETRIEVAL_ENV),
                 )
+                if agentic:
+                    agentic_outcome = SERVICE.retrieve_agentic(
+                        question,
+                        k=k,
+                        language=normalize_language(language) if language else None,
+                        retrieval_mode=retrieval_mode,
+                        retrieval_profile=retrieval_profile,
+                        video_id=video_id,
+                        reranker=body.get("reranker"),
+                        provider=provider,
+                        model=model_override,
+                    )
+                    retrieval = agentic_outcome["retrieval"]
+                else:
+                    retrieval = SERVICE.retrieve(
+                        question,
+                        k=k,
+                        language=normalize_language(language) if language else None,
+                        retrieval_mode=retrieval_mode,
+                        retrieval_profile=retrieval_profile,
+                        video_id=video_id,
+                        reranker=body.get("reranker"),
+                    )
                 result = SERVICE.ask_with_sources(
                     question,
                     retrieval["results"],
                     provider=provider,
                     retrieval_mode=retrieval["retrieval_mode"],
-                    model=str(body.get("model") or "").strip() or None,
+                    model=model_override,
                 )
                 if video_id:
                     SERVICE.save_ask_history(

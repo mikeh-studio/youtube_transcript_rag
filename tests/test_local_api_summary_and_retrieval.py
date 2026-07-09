@@ -38,7 +38,7 @@ def _make_service(enabled=True):
     service.legacy_data_dir = legacy_dir
     service.feedback_path = runtime_dir / "search_feedback.json"
     service.legacy_feedback_path = legacy_dir / "search_feedback.json"
-    service.openai_model = "gpt-4o-mini"
+    service.openai_model = "gpt-5.4-mini"
     service.sakana_model = "fugu"
     service.sakana_base_url = local_api.SAKANA_DEFAULT_BASE_URL
     service._sakana_client = None
@@ -565,7 +565,81 @@ def test_generate_study_topics_accepts_local_provider_without_llm_validation():
 
     assert topics["provider"] == "local"
     assert topics["generation_mode"] == "section_cache"
+    assert topics["topic_detail_level"] == "brief"
     assert topics["topics"]
+
+
+def test_generate_study_topics_explain_uses_llm_when_key_is_configured(monkeypatch):
+    monkeypatch.setattr(local_api, "OpenAI", object())
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
+    service = _make_study_service()
+    captured = {}
+
+    def fake_llm_explain_topic(**kwargs):
+        captured.update(kwargs)
+        topic = dict(kwargs["topics"][kwargs["topic_rank"] - 1])
+        topic.update(
+            {
+                "topic_detail_level": "explain",
+                "who_is_speaking": [
+                    {
+                        "name": "Guest",
+                        "role": "Serie voice actor",
+                        "confidence": "intro_text",
+                        "evidence": "role claim from intro",
+                    }
+                ],
+                "what_they_talked_about": (
+                    "The speaker explains what makes the selected topic useful "
+                    "for understanding the episode."
+                ),
+                "source_moments": [
+                    {
+                        "timestamp": "10:35",
+                        "quote": "source quote",
+                        "translation": "source translation",
+                        "explanation": "why the source moment matters",
+                    }
+                ],
+                "key_takeaways": ["A concrete takeaway from the evidence."],
+                "learning_context": "It gives the learner a stronger review target.",
+                "people_or_terms": ["Serie"],
+                "review_questions": ["What should the learner remember here?"],
+            }
+        )
+        return {
+            "provider": kwargs["provider"],
+            "model": kwargs["model"],
+            "topics": [topic],
+        }
+
+    service._llm_explain_topic_from_section = fake_llm_explain_topic
+
+    topics = service.generate_study_artifact(
+        mode="topics",
+        video_id="vidStudy001",
+        language="en",
+        provider="chatgpt",
+        model="gpt-5.4-mini",
+        card_count=4,
+        difficulty="balanced",
+        topic_detail_level="explain",
+        topic_rank=3,
+        model_profile="balanced",
+    )
+
+    assert captured["provider"] == "chatgpt"
+    assert captured["model"] == "gpt-5.4-mini"
+    assert captured["topic_rank"] == 3
+    assert len(captured["selected_sections"]) == 5
+    assert topics["provider"] == "chatgpt"
+    assert topics["model"] == "gpt-5.4-mini"
+    assert topics["generation_mode"] == "llm_topic_explain"
+    assert topics["topic_detail_level"] == "explain"
+    assert topics["topic_rank"] == 3
+    assert len(topics["topics"]) == 1
+    assert topics["topics"][0]["who_is_speaking"]
+    assert topics["topics"][0]["source_moments"]
 
 
 def test_study_topics_preserve_explicit_zero_end_timestamp():
@@ -1092,7 +1166,9 @@ def test_answer_route_alias_returns_grounded_answer_payload(monkeypatch):
             retrieval_mode,
             retrieval_profile=None,
             video_id=None,
+            reranker=None,
         ):
+            assert reranker is None
             assert query == "What is the product intent?"
             assert k == 4
             assert retrieval_mode == "hybrid"
@@ -1213,7 +1289,9 @@ def test_search_route_plumbs_retrieval_profile():
             retrieval_mode,
             retrieval_profile=None,
             video_id=None,
+            reranker=None,
         ):
+            assert reranker is None
             assert query == "semantic query"
             assert k == 3
             assert retrieval_mode == "hybrid"
@@ -2340,8 +2418,8 @@ def test_resolve_llm_model_defaults_to_provider_default():
     service = _make_service(enabled=False)
     service.engine = _ModelSelectionEngine()
 
-    assert service._resolve_llm_model("chatgpt", None) == "gpt-4o-mini"
-    assert service._resolve_llm_model("chatgpt", "") == "gpt-4o-mini"
+    assert service._resolve_llm_model("chatgpt", None) == "gpt-5.4-mini"
+    assert service._resolve_llm_model("chatgpt", "") == "gpt-5.4-mini"
     assert service._resolve_llm_model("claude", None) == "claude-sonnet-4-5-20250929"
     assert service._resolve_llm_model("sakana", None) == "fugu"
 
@@ -2357,12 +2435,13 @@ def test_resolve_llm_model_accepts_listed_and_default_models():
         service._resolve_llm_model("sakana", "fugu-ultra-20260615")
         == "fugu-ultra-20260615"
     )
-    # The env-configured default stays valid even when it is not in the list.
-    assert service._resolve_llm_model("chatgpt", "gpt-4o-mini") == "gpt-4o-mini"
     assert (
         service._resolve_llm_model("claude", "claude-sonnet-4-5-20250929")
         == "claude-sonnet-4-5-20250929"
     )
+    # The env-configured default stays valid even when it is not in the list.
+    service.openai_model = "gpt-4o-mini"
+    assert service._resolve_llm_model("chatgpt", "gpt-4o-mini") == "gpt-4o-mini"
 
 
 def test_resolve_llm_model_rejects_unknown_model():
@@ -2536,7 +2615,7 @@ def test_summary_cache_key_includes_model():
 
 def test_llm_options_route_returns_models_and_defaults():
     class StubService:
-        openai_model = "gpt-4o-mini"
+        openai_model = "gpt-5.4-mini"
         sakana_model = "fugu"
         engine = _ModelSelectionEngine()
 
@@ -2566,14 +2645,13 @@ def test_llm_options_route_returns_models_and_defaults():
     assert payload["ok"] is True
     providers = payload["providers"]
     assert set(providers) == {"chatgpt", "claude", "sakana"}
-    assert providers["chatgpt"]["default"] == "gpt-4o-mini"
+    assert providers["chatgpt"]["default"] == "gpt-5.4-mini"
     assert providers["claude"]["default"] == "claude-sonnet-4-5-20250929"
     assert providers["sakana"]["default"] == "fugu"
     chatgpt_ids = [row["id"] for row in providers["chatgpt"]["models"]]
     claude_ids = [row["id"] for row in providers["claude"]["models"]]
     sakana_ids = [row["id"] for row in providers["sakana"]["models"]]
-    # Defaults are prepended when not already listed.
-    assert chatgpt_ids[0] == "gpt-4o-mini"
+    assert chatgpt_ids[1] == "gpt-5.4-mini"
     assert claude_ids[0] == "claude-sonnet-4-5-20250929"
     assert {"gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.5"} <= set(chatgpt_ids)
     assert {"claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"} <= set(

@@ -66,6 +66,11 @@ the default app profile. To try it locally, pass
 `retrieval_profile: "optimized_v1"` to the local API request body or set
 `YT_RAG_HYBRID_PROFILE=optimized_v1` before starting `local_preview/local_api.py`.
 
+Run configs may also set `reranker: "cross_encoder"` to benchmark the opt-in
+cross-encoder reranking stage. Reranking needs the model download; on offline
+machines it is skipped gracefully and the run reports pass-through results
+with the load error recorded in `retrieval_details.reranker`.
+
 The weighted profile is intentionally treated as candidate evidence only. The
 checked-in fixture uses deterministic, hand-authored dense scores so it is useful
 for regression testing the harness, not for proving that a new default

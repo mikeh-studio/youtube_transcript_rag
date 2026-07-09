@@ -31,6 +31,8 @@ SAKANA_MODEL=fugu
 SAKANA_BASE_URL=https://api.sakana.ai/v1
 ```
 
+If `OPENAI_MODEL` is not set, ChatGPT calls default to `gpt-5.4-mini`.
+
 Open the real local app:
 
 - `http://127.0.0.1:8000/index.html` - Main console
@@ -78,8 +80,10 @@ The local workflow lets you:
 - Timestamped chunking with strategy comparison in Chunking Lab.
 - Local FAISS indexes for transcript and OCR evidence.
 - Retrieval modes: `dense`, `lexical`, and `hybrid`.
+- Opt-in cross-encoder reranking stage for retrieval candidates.
+- Opt-in agentic retrieval loop that retries weak-evidence questions with query rewrites, retrieval-mode switches, and broader top-k.
 - Citation-backed Q&A with fallback states and selectable OpenAI, Claude, or Sakana AI providers.
-- Study Studio for transcript-grounded flashcards, topic maps, and study-quality checks.
+- Study Studio for transcript-grounded flashcards, topic maps, per-topic explanations, run history, and study-quality checks.
 - Search-result review and assisted labeling helpers.
 - Browser-local evaluation query sets, labels, run snapshots, and metrics.
 - Read-only evidence curation reports from local pipeline artifacts.
@@ -111,6 +115,7 @@ local files
   data/runtime/          feedback, ask history, ingest logs, curation artifacts
   data/cache/summaries/  per-video TLDR cache files
   browser localStorage   evaluation query sets, runs, and labels
+  browser sessionStorage Study Studio run history
 ```
 
 ## Project Structure
@@ -153,6 +158,28 @@ Open `http://127.0.0.1:8000/evidence.html` to inspect the generated artifacts.
 `local_preview/review_agent_workflow.py` batches live `/v1/search` results, renders reviewer prompts, builds adjudication inputs, and applies approved labels through `/v1/feedback/search-review`.
 
 See [`local_preview/README.md`](local_preview/README.md) for the full local operator flow.
+
+## Retrieval Add-ons
+
+Both add-ons are opt-in; the default retrieval pipeline is unchanged.
+
+Cross-encoder reranking rescores fused candidates with a multilingual
+cross-encoder (default `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`) before
+feedback tuning and diversity selection. Enable it per request with
+`"reranker": "cross_encoder"` on `/v1/search` or `/v1/ask`, or globally with
+`YT_RAG_RERANKER=1`. Override the model with `YT_RAG_RERANKER_MODEL`. If the
+model cannot be downloaded, reranking is skipped and the load error is
+reported in `retrieval_details.reranker`.
+
+The agentic retrieval loop retries `/v1/ask` retrieval when the grounded
+evidence check finds the results too weak: it rewrites the query (with the
+selected LLM provider, falling back to a deterministic heuristic), switches
+retrieval mode, or broadens top-k, for up to three attempts. Enable it per
+request with `"agentic": true` or globally with `YT_RAG_AGENTIC_RETRIEVAL=1`.
+The attempt trace is returned in `retrieval_details.agentic_retrieval`. If no
+attempt reaches sufficient evidence, the attempt with the most retrieved
+evidence (the original query on ties) is returned and the normal
+insufficient-evidence answer applies.
 
 ## Offline Retrieval Benchmark
 

@@ -289,6 +289,7 @@ def run_one_config(
     name = str(run_config.get("name") or run_config.get("retrieval_mode") or "run")
     mode = str(run_config.get("retrieval_mode") or "hybrid")
     profile = run_config.get("retrieval_profile")
+    reranker = run_config.get("reranker")
     top_k = int(run_config.get("top_k") or default_top_k)
 
     query_scores: List[dict] = []
@@ -308,6 +309,7 @@ def run_one_config(
                     language=query_case.get("language"),
                     retrieval_mode=mode,
                     retrieval_profile=profile,
+                    reranker=reranker,
                 )
                 iteration_latencies.append((time.perf_counter() - started) * 1000.0)
             latency_ms = float(median(iteration_latencies))
@@ -359,10 +361,37 @@ def run_one_config(
     metrics = aggregate_query_scores(
         query_scores, latencies_ms, failed_query_count=len(failures)
     )
+
+    # When a reranker is configured but silently unavailable (e.g. model
+    # download failed), the metrics are actually baseline numbers. Flag it
+    # loudly instead of letting the leaderboard mislabel the run.
+    reranker_applied = None
+    if reranker:
+        applied_flags = [
+            bool(((row.get("retrieval_details") or {}).get("reranker") or {}).get("applied"))
+            for row in per_query
+            if not row.get("error")
+        ]
+        reranker_applied = bool(applied_flags) and all(applied_flags)
+        if not reranker_applied:
+            failures.append(
+                {
+                    "run": name,
+                    "query_id": "(config)",
+                    "query": "(reranker availability check)",
+                    "error": (
+                        f"reranker '{reranker}' was configured but not applied; "
+                        "metrics reflect the unreranked baseline"
+                    ),
+                }
+            )
+
     return {
         "name": name,
         "retrieval_mode": mode,
         "retrieval_profile": profile,
+        "reranker": reranker,
+        "reranker_applied": reranker_applied,
         "baseline": bool(run_config.get("baseline", False)),
         "metrics": metrics,
         "per_query": per_query,

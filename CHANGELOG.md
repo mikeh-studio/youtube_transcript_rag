@@ -4,6 +4,13 @@ Historical release notes moved out of the README so the project landing page can
 
 ## Previous README What's New
 
+### Retrieval Add-ons
+
+- Added an opt-in **cross-encoder reranking stage** that rescores fused retrieval candidates before feedback tuning and diversity selection (`reranker: "cross_encoder"` per request or `YT_RAG_RERANKER=1` globally), with graceful pass-through when the model cannot be loaded offline.
+- Added an opt-in **agentic retrieval loop** for `/v1/ask` that retries weak-evidence questions with LLM query rewrites (deterministic heuristic fallback), retrieval-mode switches, and broader top-k, returning the full attempt trace in `retrieval_details.agentic_retrieval`.
+- Eval run configs now accept a `reranker` key so the reranking stage can be benchmarked against existing retrieval profiles.
+- Reranker model loading is guarded against concurrent first requests, and both add-ons ship with unit and handler-level test coverage.
+
 ### Evaluation Workspace
 
 - Added an **Evaluation page** for reproducible retrieval runs.
@@ -20,6 +27,8 @@ Historical release notes moved out of the README so the project landing page can
 - Cache entries automatically refresh when transcript content changes, preventing stale summaries from being reused.
 - TLDR, Q&A, and Study generation can use selectable OpenAI, Claude, or Sakana AI providers.
 - Study Studio now turns transcript sections into flashcards, topic maps, and study-quality checks.
+- Study Studio topic maps now support an **Explain Topic** action for one speaker-aware, source-grounded topic expansion.
+- Study Studio keeps recent generated results in session history so users can switch tabs and revisit prior runs.
 - TLDR Studio now generates a fixed **5-theme** TLDR for more reliable output quality.
 - Theme output is ranked by **importance to the full video**, not auto-sorted by timeline order.
 - Each TLDR point now uses a paragraph-style summary for stronger contextual detail.
