@@ -304,3 +304,85 @@ def test_retrieve_agentic_prefers_llm_rewrite_when_available():
 
     assert retrieve_calls[1] == "llm rewritten query"
     assert outcome["sufficient"] is False
+
+
+def test_coerce_request_flag_parses_common_values():
+    assert local_api._coerce_request_flag(True) is True
+    assert local_api._coerce_request_flag("true") is True
+    assert local_api._coerce_request_flag("1") is True
+    assert local_api._coerce_request_flag("off") is False
+    assert local_api._coerce_request_flag(None) is False
+    assert local_api._coerce_request_flag(None, default=True) is True
+    assert local_api._coerce_request_flag("garbage", default=True) is True
+
+
+def test_env_flag_reads_environment(monkeypatch):
+    monkeypatch.delenv(local_api.AGENTIC_RETRIEVAL_ENV, raising=False)
+    assert local_api._env_flag(local_api.AGENTIC_RETRIEVAL_ENV) is False
+    monkeypatch.setenv(local_api.AGENTIC_RETRIEVAL_ENV, "1")
+    assert local_api._env_flag(local_api.AGENTIC_RETRIEVAL_ENV) is True
+    monkeypatch.setenv(local_api.AGENTIC_RETRIEVAL_ENV, "off")
+    assert local_api._env_flag(local_api.AGENTIC_RETRIEVAL_ENV) is False
+
+
+class _FakeHandler:
+    def __init__(self, path, body):
+        self.path = path
+        self._body = body
+        self.response_status = None
+        self.response_payload = None
+
+    def _read_json_body(self):
+        return self._body
+
+    def _json(self, payload, status=200):
+        self.response_status = status
+        self.response_payload = payload
+
+
+def test_ask_route_uses_agentic_retrieval_when_flag_set(monkeypatch):
+    calls = {"agentic": 0, "plain": 0}
+
+    class StubService:
+        def retrieve_agentic(self, question, **kwargs):
+            calls["agentic"] += 1
+            assert kwargs.get("provider") == "chatgpt"
+            return {
+                "retrieval": {
+                    "retrieval_mode": "hybrid",
+                    "details": {"agentic_retrieval": {"applied": False}},
+                    "results": [],
+                },
+                "final_mode": "hybrid",
+            }
+
+        def retrieve(self, question, **kwargs):
+            calls["plain"] += 1
+            return {"retrieval_mode": "hybrid", "details": {}, "results": []}
+
+        def ask_with_sources(self, question, sources, **kwargs):
+            return {
+                "status": "insufficient_evidence",
+                "answer": "n/a",
+                "confidence": "low",
+                "citations": [],
+                "retrieved_chunks": [],
+                "warnings": [],
+                "sources": [],
+                "provider": "chatgpt",
+                "model": "test-model",
+            }
+
+    monkeypatch.delenv(local_api.AGENTIC_RETRIEVAL_ENV, raising=False)
+    monkeypatch.setattr(local_api, "SERVICE", StubService())
+
+    handler = _FakeHandler("/v1/ask", {"question": "q?", "agentic": True, "provider": "chatgpt"})
+    local_api.Handler.do_POST(handler)
+    assert handler.response_status == 200
+    assert calls == {"agentic": 1, "plain": 0}
+    assert "agentic_retrieval" in handler.response_payload["retrieval_details"]
+
+    handler = _FakeHandler("/v1/ask", {"question": "q?", "provider": "chatgpt"})
+    local_api.Handler.do_POST(handler)
+    assert handler.response_status == 200
+    assert calls == {"agentic": 1, "plain": 1}

@@ -238,3 +238,13 @@ def test_retrieve_reports_reranker_load_failure_and_falls_back():
     assert reranker_details["applied"] is False
     assert reranker_details["error"] == "OSError: offline"
     assert result["results"][0]["chunk_index"] == 0
+
+
+def test_rerank_passes_through_on_mismatched_score_count():
+    reranker = CrossEncoderReranker(model_name="fake-model", score_fn=lambda pairs: [0.5])
+    rows = _rows()
+    outcome = reranker.rerank("query", rows)
+
+    assert outcome["applied"] is False
+    assert outcome["rows"] is rows
+    assert "mismatched" in outcome["error"]
