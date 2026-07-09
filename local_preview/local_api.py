@@ -81,6 +81,11 @@ from feedback_keys import (  # noqa: E402
     feedback_record_key,
     normalize_feedback_query,
 )
+from agentic_retrieval import (  # noqa: E402
+    heuristic_query_rewrite,
+    normalize_query_for_compare,
+    run_agentic_retrieval,
+)
 from grounded_answer import (  # noqa: E402
     ANSWER_CONFIDENCE_LEVELS,
     ANSWER_STATUSES,
@@ -106,6 +111,9 @@ HYBRID_PROFILES = {HYBRID_BASELINE_PROFILE, HYBRID_OPTIMIZED_PROFILE}
 HYBRID_PROFILE_ENV = "YT_RAG_HYBRID_PROFILE"
 RERANKER_MODES = {"none", "cross_encoder"}
 RERANKER_ENV = "YT_RAG_RERANKER"
+AGENTIC_RETRIEVAL_ENV = "YT_RAG_AGENTIC_RETRIEVAL"
+AGENTIC_REWRITE_MAX_TOKENS = 300
+AGENTIC_REWRITE_TEMPERATURE = 0.2
 HYBRID_OPTIMIZED_WEIGHTS = {
     "dense": 0.475,
     "lexical": 0.475,
@@ -383,6 +391,26 @@ def _extract_json_payload(raw_text: str) -> Any:
                 continue
 
     raise ValueError("Could not parse JSON payload from LLM output.")
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = str(os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _coerce_request_flag(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    scoped = str(value).strip().lower()
+    if scoped in {"1", "true", "yes", "on"}:
+        return True
+    if scoped in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
 
 
 def normalize_language(value: Optional[str], fallback: str = "ja") -> str:
@@ -2742,6 +2770,129 @@ class LocalRAGService:
             "details": details,
             "results": results,
         }
+
+    def _rewrite_query_for_retrieval(
+        self,
+        *,
+        question: str,
+        previous_query: str,
+        attempted_queries: set,
+        language: str,
+        provider: str,
+        model: Optional[str] = None,
+    ) -> Optional[str]:
+        """Produce a retrieval-focused rewrite of a weak query.
+
+        Tries an LLM rewrite first and falls back to the deterministic
+        heuristic when no provider key is configured or the call fails.
+        """
+        system_prompt = (
+            "You rewrite search queries for transcript retrieval.\n"
+            "Keep the rewritten query in the same language as the question.\n"
+            "Prefer distinctive content keywords over question phrasing.\n"
+            "Do not invent terms unrelated to the question.\n"
+            'Return strict JSON only: {"query": "rewritten query"}'
+        )
+        attempted_lines = "\n".join(f"- {item}" for item in sorted(attempted_queries))
+        user_message = (
+            f"Question:\n{question.strip()}\n\n"
+            f"Previous query that returned weak evidence:\n{previous_query.strip()}\n\n"
+            f"Already tried queries:\n{attempted_lines}\n\n"
+            "Return strict JSON only."
+        )
+        try:
+            llm = self._llm_text_response(
+                provider=provider,
+                system_prompt=system_prompt,
+                user_message=user_message,
+                max_tokens=AGENTIC_REWRITE_MAX_TOKENS,
+                temperature=AGENTIC_REWRITE_TEMPERATURE,
+                model=model,
+            )
+            parsed = _extract_json_payload(llm["text"])
+            if isinstance(parsed, dict):
+                candidate = str(parsed.get("query") or "").strip()
+                if (
+                    candidate
+                    and normalize_query_for_compare(candidate) not in attempted_queries
+                ):
+                    return candidate
+        except Exception:
+            pass
+        return heuristic_query_rewrite(previous_query, language=language)
+
+    def retrieve_agentic(
+        self,
+        question: str,
+        k: int = 5,
+        language: Optional[str] = None,
+        retrieval_mode: str = "hybrid",
+        video_id: Optional[str] = None,
+        retrieval_profile: Optional[str] = None,
+        reranker: Optional[str] = None,
+        provider: str = DEFAULT_ASK_PROVIDER,
+        model: Optional[str] = None,
+    ) -> dict:
+        """Retrieve with evidence-driven retries for grounded answering.
+
+        Runs the agentic retrieval loop: assess evidence after each attempt
+        and retry with a rewritten query, a different retrieval mode, or a
+        broader top-k until the evidence is sufficient or the attempt budget
+        runs out. The attempt trace is embedded in the retrieval details as
+        details['agentic_retrieval'].
+        """
+        answer_language = self._infer_query_language(question)
+
+        def retrieve_fn(*, query: str, retrieval_mode: str, k: int) -> dict:
+            return self.retrieve(
+                query,
+                k=k,
+                language=language,
+                retrieval_mode=retrieval_mode,
+                retrieval_profile=retrieval_profile,
+                video_id=video_id,
+                reranker=reranker,
+            )
+
+        def assess_fn(*, rows: List[dict], retrieval_mode: str) -> dict:
+            return assess_grounded_answer_evidence(
+                question=question,
+                rows=rows,
+                retrieval_mode=retrieval_mode,
+                tokenize_fn=self._tokenize_for_lexical,
+                answer_language=answer_language,
+            )
+
+        def rewrite_fn(*, query: str, attempted_queries: set) -> Optional[str]:
+            return self._rewrite_query_for_retrieval(
+                question=question,
+                previous_query=query,
+                attempted_queries=attempted_queries,
+                language=answer_language,
+                provider=provider,
+                model=model,
+            )
+
+        outcome = run_agentic_retrieval(
+            question=question,
+            retrieve_fn=retrieve_fn,
+            assess_fn=assess_fn,
+            rewrite_fn=rewrite_fn,
+            k=k,
+            retrieval_mode=retrieval_mode,
+        )
+        details = outcome["retrieval"].setdefault("details", {})
+        details["agentic_retrieval"] = {
+            "enabled": True,
+            "applied": bool(outcome["agentic_applied"]),
+            "sufficient": bool(outcome["sufficient"]),
+            "stopped_reason": outcome["stopped_reason"],
+            "final_query": outcome["final_query"],
+            "final_retrieval_mode": outcome["final_mode"],
+            "final_k": outcome["final_k"],
+            "attempts": outcome["attempts"],
+        }
+        return outcome
 
     def _resolve_llm_model(self, provider: str, model: Optional[str]) -> str:
         scoped_provider = str(provider or DEFAULT_ASK_PROVIDER).strip().lower()
@@ -7261,21 +7412,40 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     return
 
-                retrieval = SERVICE.retrieve(
-                    question,
-                    k=k,
-                    language=normalize_language(language) if language else None,
-                    retrieval_mode=retrieval_mode,
-                    retrieval_profile=retrieval_profile,
-                    video_id=video_id,
-                    reranker=body.get("reranker"),
+                model_override = str(body.get("model") or "").strip() or None
+                agentic = _coerce_request_flag(
+                    body.get("agentic", body.get("agentic_retrieval")),
+                    default=_env_flag(AGENTIC_RETRIEVAL_ENV),
                 )
+                if agentic:
+                    agentic_outcome = SERVICE.retrieve_agentic(
+                        question,
+                        k=k,
+                        language=normalize_language(language) if language else None,
+                        retrieval_mode=retrieval_mode,
+                        retrieval_profile=retrieval_profile,
+                        video_id=video_id,
+                        reranker=body.get("reranker"),
+                        provider=provider,
+                        model=model_override,
+                    )
+                    retrieval = agentic_outcome["retrieval"]
+                else:
+                    retrieval = SERVICE.retrieve(
+                        question,
+                        k=k,
+                        language=normalize_language(language) if language else None,
+                        retrieval_mode=retrieval_mode,
+                        retrieval_profile=retrieval_profile,
+                        video_id=video_id,
+                        reranker=body.get("reranker"),
+                    )
                 result = SERVICE.ask_with_sources(
                     question,
                     retrieval["results"],
                     provider=provider,
                     retrieval_mode=retrieval["retrieval_mode"],
-                    model=str(body.get("model") or "").strip() or None,
+                    model=model_override,
                 )
                 if video_id:
                     SERVICE.save_ask_history(
