@@ -58,6 +58,10 @@ if load_dotenv is not None:
     load_dotenv(ROOT_DIR / ".env.local", override=True)
 
 from multilingual.rag_engine import RAGEngine  # noqa: E402
+from multilingual.reranker import (  # noqa: E402
+    CrossEncoderReranker,
+    DEFAULT_RERANK_CANDIDATES,
+)
 from multilingual.text_processing import LANGUAGE_CONFIG  # noqa: E402
 from pipelines.embed_ocr import embed_ocr  # noqa: E402
 from pipelines.extract_frames import extract_frames  # noqa: E402
@@ -100,6 +104,8 @@ HYBRID_BASELINE_PROFILE = "baseline_rrf"
 HYBRID_OPTIMIZED_PROFILE = "optimized_v1"
 HYBRID_PROFILES = {HYBRID_BASELINE_PROFILE, HYBRID_OPTIMIZED_PROFILE}
 HYBRID_PROFILE_ENV = "YT_RAG_HYBRID_PROFILE"
+RERANKER_MODES = {"none", "cross_encoder"}
+RERANKER_ENV = "YT_RAG_RERANKER"
 HYBRID_OPTIMIZED_WEIGHTS = {
     "dense": 0.475,
     "lexical": 0.475,
@@ -2346,6 +2352,35 @@ class LocalRAGService:
         return fused[: max(1, int(limit))]
 
     @staticmethod
+    def _default_reranker_mode() -> str:
+        raw = str(os.environ.get(RERANKER_ENV) or "").strip().lower()
+        if raw in {"1", "true", "yes", "on", "cross_encoder"}:
+            return "cross_encoder"
+        return "none"
+
+    @staticmethod
+    def _normalize_reranker_mode(value: Optional[str]) -> str:
+        scoped = str(value or "").strip().lower()
+        if not scoped:
+            return LocalRAGService._default_reranker_mode()
+        if scoped in {"1", "true", "yes", "on"}:
+            return "cross_encoder"
+        if scoped in {"0", "false", "no", "off"}:
+            return "none"
+        if scoped in RERANKER_MODES:
+            return scoped
+        raise ValueError(
+            f"reranker must be one of: {', '.join(sorted(RERANKER_MODES))}"
+        )
+
+    def _get_reranker(self) -> CrossEncoderReranker:
+        reranker = getattr(self, "_reranker", None)
+        if reranker is None:
+            reranker = CrossEncoderReranker()
+            self._reranker = reranker
+        return reranker
+
+    @staticmethod
     def _default_hybrid_profile() -> str:
         configured = os.getenv(HYBRID_PROFILE_ENV, HYBRID_BASELINE_PROFILE)
         return LocalRAGService._normalize_hybrid_profile(
@@ -2552,12 +2587,14 @@ class LocalRAGService:
         retrieval_mode: str = "hybrid",
         video_id: Optional[str] = None,
         retrieval_profile: Optional[str] = None,
+        reranker: Optional[str] = None,
     ) -> dict:
         mode = (retrieval_mode or "hybrid").strip().lower()
         if mode not in RETRIEVAL_MODES:
             raise ValueError(
                 f"retrieval_mode must be one of: {', '.join(sorted(RETRIEVAL_MODES))}"
             )
+        reranker_mode = self._normalize_reranker_mode(reranker)
         hybrid_profile = None
         if mode == "hybrid":
             hybrid_profile = (
@@ -2629,6 +2666,27 @@ class LocalRAGService:
             else:
                 candidate_rows = lexical_results
 
+        reranker_details = {
+            "requested": reranker_mode,
+            "applied": False,
+            "model": None,
+            "scored_count": 0,
+            "error": None,
+        }
+        if reranker_mode == "cross_encoder" and candidate_rows:
+            rerank_outcome = self._get_reranker().rerank(
+                query, candidate_rows, top_n=DEFAULT_RERANK_CANDIDATES
+            )
+            candidate_rows = rerank_outcome["rows"]
+            reranker_details.update(
+                {
+                    "applied": bool(rerank_outcome["applied"]),
+                    "model": rerank_outcome["model"],
+                    "scored_count": int(rerank_outcome["scored_count"]),
+                    "error": rerank_outcome["error"],
+                }
+            )
+
         pre_rerank_count = len(candidate_rows)
         reranked = self._apply_feedback_rerank(query=query, rows=candidate_rows)
         reranked_rows = reranked["results"]
@@ -2653,6 +2711,7 @@ class LocalRAGService:
                 if mode == "hybrid" and hybrid_profile == HYBRID_OPTIMIZED_PROFILE
                 else None
             ),
+            "reranker": reranker_details,
             "dense_candidates": len(dense_results),
             "lexical_candidates": len(lexical_results),
             "candidate_k": candidate_k,
@@ -7137,6 +7196,7 @@ class Handler(BaseHTTPRequestHandler):
                     language=normalize_language(language) if language else None,
                     retrieval_mode=retrieval_mode,
                     retrieval_profile=retrieval_profile,
+                    reranker=body.get("reranker"),
                 )
                 self._json(
                     {
@@ -7208,6 +7268,7 @@ class Handler(BaseHTTPRequestHandler):
                     retrieval_mode=retrieval_mode,
                     retrieval_profile=retrieval_profile,
                     video_id=video_id,
+                    reranker=body.get("reranker"),
                 )
                 result = SERVICE.ask_with_sources(
                     question,

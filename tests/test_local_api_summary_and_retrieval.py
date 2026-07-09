@@ -1166,7 +1166,9 @@ def test_answer_route_alias_returns_grounded_answer_payload(monkeypatch):
             retrieval_mode,
             retrieval_profile=None,
             video_id=None,
+            reranker=None,
         ):
+            assert reranker is None
             assert query == "What is the product intent?"
             assert k == 4
             assert retrieval_mode == "hybrid"
@@ -1287,7 +1289,9 @@ def test_search_route_plumbs_retrieval_profile():
             retrieval_mode,
             retrieval_profile=None,
             video_id=None,
+            reranker=None,
         ):
+            assert reranker is None
             assert query == "semantic query"
             assert k == 3
             assert retrieval_mode == "hybrid"
