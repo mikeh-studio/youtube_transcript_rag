@@ -386,3 +386,27 @@ def test_ask_route_uses_agentic_retrieval_when_flag_set(monkeypatch):
     local_api.Handler.do_POST(handler)
     assert handler.response_status == 200
     assert calls == {"agentic": 1, "plain": 1}
+
+
+def test_heuristic_query_rewrite_strips_longest_ja_phrase_first():
+    assert heuristic_query_rewrite("これは何ですか") == "これは"
+
+
+def test_never_sufficient_prefers_attempt_with_most_evidence():
+    def retrieve_fn(*, query, retrieval_mode, k):
+        if query == "question":
+            return _retrieval([])
+        return _retrieval([_row(5, "retry row a"), _row(6, "retry row b")])
+
+    rewrites = iter(["second query", "third query"])
+
+    outcome = run_agentic_retrieval(
+        question="question",
+        retrieve_fn=retrieve_fn,
+        assess_fn=lambda *, rows, retrieval_mode: _assessment(False, "no_results" if not rows else "thin_support"),
+        rewrite_fn=lambda *, query, attempted_queries: next(rewrites),
+    )
+
+    assert outcome["sufficient"] is False
+    assert len(outcome["rows"]) == 2
+    assert outcome["final_query"] == "second query"

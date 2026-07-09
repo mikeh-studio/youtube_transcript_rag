@@ -13,11 +13,13 @@ from __future__ import annotations
 import math
 import os
 import threading
+import time
 from typing import Callable, List, Optional, Sequence, Tuple
 
 DEFAULT_RERANKER_MODEL = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 RERANKER_MODEL_ENV = "YT_RAG_RERANKER_MODEL"
 DEFAULT_RERANK_CANDIDATES = 50
+LOAD_RETRY_COOLDOWN_SECONDS = 300.0
 
 
 def _sigmoid(value: float) -> float:
@@ -27,16 +29,22 @@ def _sigmoid(value: float) -> float:
     return exp_value / (1.0 + exp_value)
 
 
-def _normalize_scores(raw_scores: List[float]) -> List[float]:
-    """Map raw cross-encoder outputs to a 0..1 scale.
+def _remap_tail_scores(tail: List[dict], head_floor: float) -> List[dict]:
+    """Bound unscored tail rows strictly below the reranked head.
 
-    Some cross-encoder checkpoints emit probabilities and others emit raw
-    logits; only apply the sigmoid when scores fall outside [0, 1] so both
-    kinds end up on the same scale as dense cosine scores.
+    Tail rows keep their original raw scores (e.g. unbounded BM25), which
+    would otherwise jump above the 0..1 rerank scores when downstream
+    stages re-sort the full candidate list by score. Preserve the tail's
+    relative order but squeeze its scores into [0, head_floor).
     """
-    if all(0.0 <= score <= 1.0 for score in raw_scores):
-        return raw_scores
-    return [_sigmoid(score) for score in raw_scores]
+    remapped: List[dict] = []
+    count = len(tail)
+    for idx, row in enumerate(tail):
+        item = dict(row)
+        item["pre_rerank_score"] = row.get("score")
+        item["score"] = max(0.0, head_floor) * (count - idx) / (count + 1)
+        remapped.append(item)
+    return remapped
 
 
 class CrossEncoderReranker:
@@ -63,7 +71,12 @@ class CrossEncoderReranker:
         )
         self._score_fn = score_fn
         self._load_error: Optional[str] = None
+        self._load_error_at: Optional[float] = None
         self._load_lock = threading.Lock()
+        # Sticky: once any batch emits scores outside [0, 1] the checkpoint
+        # is treated as logit-emitting and every batch is sigmoid-normalized,
+        # so score semantics stay consistent across queries.
+        self._force_sigmoid = False
 
     @property
     def load_error(self) -> Optional[str]:
@@ -77,7 +90,13 @@ class CrossEncoderReranker:
             if self._score_fn is not None:
                 return self._score_fn
             if self._load_error is not None:
-                return None
+                # Transient failures (network blips) retry after a cooldown
+                # instead of disabling reranking until process restart.
+                elapsed = time.monotonic() - (self._load_error_at or 0.0)
+                if elapsed < LOAD_RETRY_COOLDOWN_SECONDS:
+                    return None
+                self._load_error = None
+                self._load_error_at = None
             try:
                 from sentence_transformers import CrossEncoder
 
@@ -87,8 +106,24 @@ class CrossEncoderReranker:
                 ]
             except Exception as exc:
                 self._load_error = f"{type(exc).__name__}: {exc}"
+                self._load_error_at = time.monotonic()
                 return None
             return self._score_fn
+
+    def _normalize_scores(self, raw_scores: List[float]) -> List[float]:
+        """Map raw cross-encoder outputs to a 0..1 scale.
+
+        Some checkpoints emit probabilities and others raw logits. The first
+        batch with out-of-range values marks the model as logit-emitting for
+        the lifetime of this instance (see _force_sigmoid).
+        """
+        if not self._force_sigmoid and any(
+            score < 0.0 or score > 1.0 for score in raw_scores
+        ):
+            self._force_sigmoid = True
+        if self._force_sigmoid:
+            return [_sigmoid(score) for score in raw_scores]
+        return raw_scores
 
     def rerank(
         self,
@@ -134,7 +169,7 @@ class CrossEncoderReranker:
             outcome["error"] = "reranker returned a mismatched score count"
             return outcome
 
-        normalized_scores = _normalize_scores(raw_scores)
+        normalized_scores = self._normalize_scores(raw_scores)
         reranked: List[dict] = []
         for row, rerank_score in zip(head, normalized_scores):
             item = dict(row)
@@ -151,7 +186,10 @@ class CrossEncoderReranker:
             ),
             reverse=True,
         )
-        merged = reranked + [dict(row) for row in tail]
+        head_floor = min(
+            (float(item.get("rerank_score", 0.0)) for item in reranked), default=0.0
+        )
+        merged = reranked + _remap_tail_scores(tail, head_floor)
         for idx, row in enumerate(merged, start=1):
             row["rank"] = idx
 

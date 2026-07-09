@@ -4,8 +4,9 @@ Reuses the grounded-answer evidence assessment as the control signal.
 Each insufficient attempt picks a follow-up strategy from the assessment
 reason code (rewrite the query, switch retrieval mode, or broaden top-k),
 retries, and stops at the first sufficient evidence set. If no attempt is
-sufficient, the initial attempt's rows are returned so the standard
-insufficient-evidence handling still applies to the original query.
+sufficient, the attempt with the most retrieved evidence (earliest on ties,
+so the original query wins in the common case) is returned and the standard
+insufficient-evidence handling still applies.
 """
 
 from __future__ import annotations
@@ -44,24 +45,31 @@ _EN_QUESTION_STOPWORDS = {
     "your", "we", "us", "our",
 }
 
-# Longer phrases first so e.g. "について教えてください" is removed before "ください".
-_JA_QUESTION_PHRASES = (
-    "について教えてください",
-    "について教えて",
-    "を教えてください",
-    "を教えて",
-    "とは何ですか",
-    "とはなんですか",
-    "とは何か",
-    "でしょうか",
-    "ですか",
-    "ますか",
-    "ください",
-    "何ですか",
-    "どのように",
-    "どうやって",
-    "どうして",
-    "なぜ",
+# Sorted longest-first so e.g. "何ですか" is removed before "ですか" and no
+# filler fragment is left behind in the rewritten query.
+_JA_QUESTION_PHRASES = tuple(
+    sorted(
+        (
+            "について教えてください",
+            "について教えて",
+            "を教えてください",
+            "を教えて",
+            "とは何ですか",
+            "とはなんですか",
+            "とは何か",
+            "でしょうか",
+            "ですか",
+            "ますか",
+            "ください",
+            "何ですか",
+            "どのように",
+            "どうやって",
+            "どうして",
+            "なぜ",
+        ),
+        key=len,
+        reverse=True,
+    )
 )
 
 
@@ -225,7 +233,7 @@ def run_agentic_retrieval(
     attempted_queries = {normalize_query_for_compare(current["query"])}
     attempted_modes = {scoped_mode}
     attempts: List[dict] = []
-    first_outcome: Optional[dict] = None
+    best_outcome: Optional[dict] = None
     attempt_budget = max(1, int(max_attempts))
 
     for attempt_no in range(1, attempt_budget + 1):
@@ -257,8 +265,11 @@ def run_agentic_retrieval(
             "mode": current["mode"],
             "k": current["k"],
         }
-        if first_outcome is None:
-            first_outcome = outcome
+        # Fallback candidate when no attempt is sufficient: the attempt with
+        # the most retrieved evidence, earliest on ties (so the original
+        # query wins unless a retry found strictly more rows).
+        if best_outcome is None or len(rows) > len(best_outcome["rows"]):
+            best_outcome = outcome
         if assessment.get("sufficient"):
             return _final_payload(
                 outcome, attempts, question, stopped_reason=STOPPED_SUFFICIENT
@@ -278,7 +289,7 @@ def run_agentic_retrieval(
         )
         if step is None:
             return _final_payload(
-                first_outcome,
+                best_outcome,
                 attempts,
                 question,
                 stopped_reason=STOPPED_NO_NEW_STRATEGY,
@@ -293,5 +304,5 @@ def run_agentic_retrieval(
         attempted_modes.add(step["mode"])
 
     return _final_payload(
-        first_outcome, attempts, question, stopped_reason=STOPPED_MAX_ATTEMPTS
+        best_outcome, attempts, question, stopped_reason=STOPPED_MAX_ATTEMPTS
     )

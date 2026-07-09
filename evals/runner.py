@@ -361,11 +361,37 @@ def run_one_config(
     metrics = aggregate_query_scores(
         query_scores, latencies_ms, failed_query_count=len(failures)
     )
+
+    # When a reranker is configured but silently unavailable (e.g. model
+    # download failed), the metrics are actually baseline numbers. Flag it
+    # loudly instead of letting the leaderboard mislabel the run.
+    reranker_applied = None
+    if reranker:
+        applied_flags = [
+            bool(((row.get("retrieval_details") or {}).get("reranker") or {}).get("applied"))
+            for row in per_query
+            if not row.get("error")
+        ]
+        reranker_applied = bool(applied_flags) and all(applied_flags)
+        if not reranker_applied:
+            failures.append(
+                {
+                    "run": name,
+                    "query_id": "(config)",
+                    "query": "(reranker availability check)",
+                    "error": (
+                        f"reranker '{reranker}' was configured but not applied; "
+                        "metrics reflect the unreranked baseline"
+                    ),
+                }
+            )
+
     return {
         "name": name,
         "retrieval_mode": mode,
         "retrieval_profile": profile,
         "reranker": reranker,
+        "reranker_applied": reranker_applied,
         "baseline": bool(run_config.get("baseline", False)),
         "metrics": metrics,
         "per_query": per_query,

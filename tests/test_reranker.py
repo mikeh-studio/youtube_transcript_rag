@@ -82,8 +82,11 @@ def test_rerank_only_scores_top_n_and_keeps_tail_order():
 
 
 def test_rerank_passes_through_when_model_unavailable():
+    import time
+
     reranker = CrossEncoderReranker(model_name="fake-model")
     reranker._load_error = "OSError: offline"
+    reranker._load_error_at = time.monotonic()
 
     rows = _rows()
     outcome = reranker.rerank("query", rows)
@@ -223,9 +226,12 @@ def test_retrieve_rejects_unknown_reranker():
 
 
 def test_retrieve_reports_reranker_load_failure_and_falls_back():
+    import time
+
     service = _make_service()
     service._reranker = CrossEncoderReranker(model_name="fake-model")
     service._reranker._load_error = "OSError: offline"
+    service._reranker._load_error_at = time.monotonic()
 
     result = service.retrieve(
         "Jetson Orin エッジAI 推論",
@@ -248,3 +254,37 @@ def test_rerank_passes_through_on_mismatched_score_count():
     assert outcome["applied"] is False
     assert outcome["rows"] is rows
     assert "mismatched" in outcome["error"]
+
+
+def test_rerank_clamps_unscored_tail_below_reranked_head():
+    # Tail rows keep raw lexical-scale scores (e.g. BM25 ~8.0) which must not
+    # outrank the 0..1 rerank scores when downstream stages re-sort by score.
+    rows = _rows()
+    rows[2]["score"] = 8.0
+    reranker = CrossEncoderReranker(
+        model_name="fake-model", score_fn=lambda pairs: [0.9, 0.4]
+    )
+
+    outcome = reranker.rerank("query", rows, top_n=2)
+
+    head_floor = min(r["rerank_score"] for r in outcome["rows"][:2])
+    tail = outcome["rows"][2]
+    assert tail["score"] < head_floor
+    assert tail["pre_rerank_score"] == 8.0
+    resorted = sorted(outcome["rows"], key=lambda r: r["score"], reverse=True)
+    assert [r["chunk_index"] for r in resorted] == [0, 1, 2]
+
+
+def test_rerank_sigmoid_is_sticky_across_batches():
+    scores_by_call = iter([[4.0, 0.0, -4.0], [0.2, 0.5, 0.8]])
+    reranker = CrossEncoderReranker(
+        model_name="fake-model", score_fn=lambda pairs: next(scores_by_call)
+    )
+
+    first = reranker.rerank("query", _rows())
+    second = reranker.rerank("query", _rows())
+
+    assert all(0.0 <= r["rerank_score"] <= 1.0 for r in first["rows"])
+    # In-range scores in the second batch are still sigmoided because the
+    # model already proved itself logit-emitting.
+    assert all(0.549 < r["rerank_score"] < 0.7 for r in second["rows"])

@@ -177,8 +177,9 @@ selected LLM provider, falling back to a deterministic heuristic), switches
 retrieval mode, or broadens top-k, for up to three attempts. Enable it per
 request with `"agentic": true` or globally with `YT_RAG_AGENTIC_RETRIEVAL=1`.
 The attempt trace is returned in `retrieval_details.agentic_retrieval`. If no
-attempt reaches sufficient evidence, the original query's results are returned
-and the normal insufficient-evidence answer applies.
+attempt reaches sufficient evidence, the attempt with the most retrieved
+evidence (the original query on ties) is returned and the normal
+insufficient-evidence answer applies.
 
 ## Offline Retrieval Benchmark
 

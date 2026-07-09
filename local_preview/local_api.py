@@ -115,6 +115,7 @@ _RERANKER_INIT_LOCK = threading.Lock()
 AGENTIC_RETRIEVAL_ENV = "YT_RAG_AGENTIC_RETRIEVAL"
 AGENTIC_REWRITE_MAX_TOKENS = 300
 AGENTIC_REWRITE_TEMPERATURE = 0.2
+AGENTIC_REWRITE_MAX_QUERY_CHARS = 512
 HYBRID_OPTIMIZED_WEIGHTS = {
     "dense": 0.475,
     "lexical": 0.475,
@@ -569,6 +570,14 @@ class LocalRAGService:
         self.legacy_ingest_log_path = self.legacy_data_dir / "ingest_jobs.log"
         self._load_feedback()
         self._load_ask_history()
+        # Pre-warm the cross-encoder off the request path when reranking is
+        # enabled globally, so the first reranked request doesn't stall on a
+        # model download.
+        if self._default_reranker_mode() == "cross_encoder":
+            threading.Thread(
+                target=lambda: self._get_reranker()._ensure_score_fn(),
+                daemon=True,
+            ).start()
 
     @property
     def openai_client(self):
@@ -2815,7 +2824,11 @@ class LocalRAGService:
             )
             parsed = _extract_json_payload(llm["text"])
             if isinstance(parsed, dict):
-                candidate = str(parsed.get("query") or "").strip()
+                # Cap length so a pathological model output cannot flow
+                # unbounded into embedding calls, BM25, and ask history.
+                candidate = str(parsed.get("query") or "").strip()[
+                    :AGENTIC_REWRITE_MAX_QUERY_CHARS
+                ].strip()
                 if (
                     candidate
                     and normalize_query_for_compare(candidate) not in attempted_queries
@@ -5615,9 +5628,9 @@ class LocalRAGService:
                 ),
             }
         )
-        evidence = topic.get("evidence")
-        if isinstance(evidence, dict):
-            evidence["text"] = topic.get("anchor_text") or evidence.get("text", "")
+        # Keep evidence["text"] as the transcript-derived excerpt; the LLM's
+        # anchor_text lives on the topic itself and must not overwrite the
+        # provenance field with unverified model output.
         return topic
 
     def _llm_explain_topic_from_section(
