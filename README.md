@@ -1,6 +1,14 @@
 # YouTube Transcript Retrieval Evaluation Workbench
 
+[![CI](https://github.com/mikeh-studio/youtube_transcript_rag/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mikeh-studio/youtube_transcript_rag/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Local-first RAG workbench for YouTube transcripts that evaluates retrieval quality before the answer layer. It ingests English and Japanese transcripts, chunks them with timestamps, builds local FAISS indexes, and supports dense, lexical, and hybrid retrieval for citation-backed Q&A.
+
+**Benchmark snapshot:** optimized hybrid improved nDCG@10 from 0.845 to 1.000
+(+18.3%) versus baseline RRF on the checked-in eight-query Japanese regression
+fixture; baseline RRF remains the application default. See the
+[benchmark details](evals/README.md#fixture-result).
 
 ![Evaluation Metrics](docs/media/02-evaluation-metrics.png)
 
