@@ -15,13 +15,20 @@ const ROUTES = {
 };
 const CORE_NAV_ITEMS = [
   { key: "ingest", label: "Ingest", icon: "/icons/icon-upload.svg", route: ROUTES.INGEST },
-  { key: "tldr", label: "TLDR Studio", icon: "/icons/icon-chat.svg", route: ROUTES.TLDR, requiresUnlock: true },
-  { key: "study", label: "Study Studio", icon: "/icons/icon-library.svg", route: ROUTES.STUDY, requiresUnlock: true },
-  { key: "qa", label: "Q&A Studio", icon: "/icons/icon-search.svg", route: ROUTES.QA, requiresUnlock: true },
+  {
+    key: "studio",
+    label: "Studio",
+    icon: "/icons/icon-chat.svg",
+    route: ROUTES.QA,
+    activeRoutes: [ROUTES.QA, ROUTES.STUDY, ROUTES.TLDR],
+    requiresUnlock: true,
+  },
 ];
-const TOOL_NAV_ITEMS = [
+const LIBRARY_NAV_ITEMS = [
   { key: "reviews", label: "Reviews", icon: "/icons/icon-library.svg", href: "/reviews.html", requiresUnlock: true },
   { key: "evidence", label: "Evidence", icon: "/icons/icon-library.svg", href: "/evidence.html", requiresUnlock: true },
+];
+const MORE_NAV_ITEMS = [
   { key: "evaluation", label: "Evaluation", icon: "/icons/icon-jobs.svg", href: "/evaluation.html", requiresUnlock: true },
   { key: "chunking", label: "Chunking", icon: "/icons/icon-jobs.svg", href: "/chunking.html", requiresUnlock: true },
 ];
@@ -977,11 +984,175 @@ function PlayerPanel({ videoId, startSeconds, title }) {
   );
 }
 
+const RETRIEVAL_STRATEGY_LABELS = {
+  initial: "Initial retrieval",
+  rewrite_query: "Rewritten query",
+  switch_mode: "Mode switch",
+  broaden_top_k: "Broader search",
+};
+
+const RETRIEVAL_REASON_LABELS = {
+  multi_chunk_support: "Multiple supporting chunks",
+  strong_single_chunk: "One strong supporting chunk",
+  no_results: "No matching evidence",
+  thin_support: "Evidence too thin",
+  single_weak_chunk: "One weak chunk",
+  mixed_signals: "Retrieval signals disagree",
+};
+
+function finiteNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function RetrievalAttemptTimeline({ details }) {
+  const trace = details?.agentic_retrieval;
+  const attempts = Array.isArray(trace?.attempts) ? trace.attempts : [];
+  if (!attempts.length) {
+    return null;
+  }
+
+  const selectedAttempt = attempts.findIndex((attempt) => (
+    String(attempt.query || "") === String(trace.final_query || "")
+    && String(attempt.retrieval_mode || "") === String(trace.final_retrieval_mode || "")
+    && Number(attempt.k) === Number(trace.final_k)
+  ));
+
+  return (
+    <section className="retrieval-visual-block agentic-trace" data-testid="agentic-attempt-timeline">
+      <div className="retrieval-visual-heading">
+        <div>
+          <h3>Agentic attempt timeline</h3>
+          <p>See why retrieval retried and which attempt supplied the final evidence.</p>
+        </div>
+        <span className={`retrieval-outcome ${trace.sufficient ? "sufficient" : "limited"}`}>
+          {trace.sufficient ? "Evidence ready" : "Best available evidence"}
+        </span>
+      </div>
+      <ol
+        className="agentic-attempt-list"
+        aria-label={`${attempts.length} retrieval attempt${attempts.length === 1 ? "" : "s"}`}
+      >
+        {attempts.map((attempt, index) => {
+          const isSelected = index === selectedAttempt;
+          const reason = RETRIEVAL_REASON_LABELS[attempt.reason_code]
+            || String(attempt.reason_code || "Evidence assessed").replaceAll("_", " ");
+          return (
+            <li
+              className={`agentic-attempt ${attempt.sufficient ? "sufficient" : ""} ${isSelected ? "selected" : ""}`}
+              key={`${attempt.attempt}-${attempt.strategy}-${attempt.query}`}
+            >
+              <div className="agentic-attempt-marker" aria-hidden="true">
+                {attempt.sufficient ? "✓" : attempt.attempt}
+              </div>
+              <div className="agentic-attempt-copy">
+                <div className="agentic-attempt-head">
+                  <strong>{RETRIEVAL_STRATEGY_LABELS[attempt.strategy] || attempt.strategy}</strong>
+                  {isSelected ? <span>Selected</span> : null}
+                </div>
+                <p className="agentic-attempt-query">{attempt.query || "-"}</p>
+                <div className="agentic-attempt-meta">
+                  <span>{attempt.retrieval_mode}</span>
+                  <span>top {attempt.k}</span>
+                  <span>{attempt.result_count} result{Number(attempt.result_count) === 1 ? "" : "s"}</span>
+                </div>
+                <p className="agentic-attempt-reason">{reason}</p>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+      <p className="retrieval-visual-foot">
+        Stopped: {String(trace.stopped_reason || "completed").replaceAll("_", " ")}
+      </p>
+    </section>
+  );
+}
+
+function ResultRankingProfile({ rows }) {
+  const rankedRows = (Array.isArray(rows) ? rows : [])
+    .map((row, index) => {
+      const score = finiteNumber(row?.rerank_score ?? row?.score);
+      if (score === null) {
+        return null;
+      }
+      return {
+        row,
+        score,
+        finalRank: finiteNumber(row?.rank ?? row?.citation_id) ?? index + 1,
+        preRank: finiteNumber(row?.pre_rerank_rank),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+  if (!rankedRows.length) {
+    return null;
+  }
+
+  const maxScore = Math.max(0.000001, ...rankedRows.map((item) => Math.max(0, item.score)));
+
+  return (
+    <section className="retrieval-visual-block" data-testid="result-ranking-profile">
+      <div className="retrieval-visual-heading">
+        <div>
+          <h3>Result ranking profile</h3>
+          <p>Compare final relevance and see which results moved after reranking.</p>
+        </div>
+        <span className="retrieval-scale-note">relative to top result</span>
+      </div>
+      <div className="ranking-profile-list">
+        {rankedRows.map(({ row, score, finalRank, preRank }, index) => {
+          const movement = preRank === null ? 0 : preRank - finalRank;
+          const label = row.video_title || row.video_id || `Result ${index + 1}`;
+          return (
+            <div className="ranking-profile-row" key={`${row.video_id || "result"}-${row.chunk_index ?? row.frame_id ?? index}`}>
+              <span className="ranking-profile-rank">#{finalRank}</span>
+              <span className="ranking-profile-title">{label}</span>
+              <span className="ranking-profile-track" aria-hidden="true">
+                <span
+                  className="ranking-profile-fill"
+                  style={{ width: `${Math.max(2, (Math.max(0, score) / maxScore) * 100)}%` }}
+                />
+              </span>
+              <strong>{score.toFixed(3)}</strong>
+              {preRank !== null ? (
+                <span className={`ranking-movement ${movement > 0 ? "up" : movement < 0 ? "down" : "same"}`}>
+                  {movement > 0 ? `↑${movement}` : movement < 0 ? `↓${Math.abs(movement)}` : "—"}
+                  <span className="sr-only">
+                    {movement > 0
+                      ? `moved up ${movement} places`
+                      : movement < 0
+                        ? `moved down ${Math.abs(movement)} places`
+                        : "rank unchanged"}
+                  </span>
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function RetrievalVisuals({ response, rows }) {
+  if (!response) {
+    return null;
+  }
+  return (
+    <div className="retrieval-visuals" aria-label="Retrieval diagnostics">
+      <RetrievalAttemptTimeline details={response.retrieval_details} />
+      <ResultRankingProfile rows={rows} />
+    </div>
+  );
+}
+
 function QAStudioPage({ locale }) {
   const [query, setQuery] = useState("");
   const [kSearch, setKSearch] = useState(5);
   const [searchMode, setSearchMode] = useState("hybrid");
   const [searchSourceMode, setSearchSourceMode] = useState("transcript");
+  const [searchReranker, setSearchReranker] = useState("none");
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchResponse, setSearchResponse] = useState(null);
   const [searchError, setSearchError] = useState("");
@@ -990,6 +1161,8 @@ function QAStudioPage({ locale }) {
   const [kAsk, setKAsk] = useState(5);
   const [askMode, setAskMode] = useState("hybrid");
   const [askSourceMode, setAskSourceMode] = useState("transcript");
+  const [askAgentic, setAskAgentic] = useState(false);
+  const [askReranker, setAskReranker] = useState("none");
   const [provider, setProvider] = useState("chatgpt");
   const [model, setModel] = useState("");
   const llmProviderOptions = useLlmProviderOptions();
@@ -1131,6 +1304,7 @@ function QAStudioPage({ locale }) {
           k: Number(kSearch || 5),
           retrieval_mode: searchMode,
           source_mode: searchSourceMode,
+          reranker: searchSourceMode === "transcript" ? searchReranker : "none",
         },
       });
       setSearchResponse(payload);
@@ -1160,6 +1334,8 @@ function QAStudioPage({ locale }) {
           source_mode: askSourceMode,
           provider,
           model: model || undefined,
+          agentic: askSourceMode === "transcript" ? askAgentic : false,
+          reranker: askSourceMode === "transcript" ? askReranker : "none",
         },
       });
       setAskResponse(payload);
@@ -1293,6 +1469,38 @@ function QAStudioPage({ locale }) {
                   {askLoading ? "Generating..." : "Generate Answer"}
                 </button>
               </div>
+              <fieldset className="qa-addon-controls">
+                <legend>Retrieval add-ons</legend>
+                <label className="qa-addon-switch">
+                  <input
+                    type="checkbox"
+                    checked={askAgentic}
+                    onChange={(event) => setAskAgentic(event.target.checked)}
+                    disabled={askSourceMode !== "transcript"}
+                  />
+                  <span>
+                    <strong>Agentic retry</strong>
+                    <small>Retry weak evidence with a rewrite, mode switch, or broader top K.</small>
+                  </span>
+                </label>
+                <label className="qa-addon-select">
+                  <span>
+                    <strong>Reranker</strong>
+                    <small>Rescore candidates with a multilingual cross-encoder.</small>
+                  </span>
+                  <select
+                    value={askReranker}
+                    onChange={(event) => setAskReranker(event.target.value)}
+                    disabled={askSourceMode !== "transcript"}
+                  >
+                    <option value="none">Off</option>
+                    <option value="cross_encoder">Cross-encoder</option>
+                  </select>
+                </label>
+                {askSourceMode !== "transcript" ? (
+                  <p>Retrieval add-ons currently apply to transcript evidence only.</p>
+                ) : null}
+              </fieldset>
             </form>
 
             {askError ? (
@@ -1324,6 +1532,7 @@ function QAStudioPage({ locale }) {
                     ))}
                   </div>
                 ) : null}
+                <RetrievalVisuals response={askResponse} rows={answerEvidence} />
                 <div className="ask-evidence-header">
                   <h3 className="ask-evidence-title">{qaAnswerText(locale, "answerSupportingEvidence")}</h3>
                   <button
@@ -1469,6 +1678,26 @@ function QAStudioPage({ locale }) {
                   {searchLoading ? "Searching..." : "Run Search"}
                 </button>
               </div>
+              <fieldset className="qa-addon-controls qa-addon-controls-search">
+                <legend>Retrieval add-ons</legend>
+                <label className="qa-addon-select">
+                  <span>
+                    <strong>Reranker</strong>
+                    <small>Rescore candidates with a multilingual cross-encoder.</small>
+                  </span>
+                  <select
+                    value={searchReranker}
+                    onChange={(event) => setSearchReranker(event.target.value)}
+                    disabled={searchSourceMode !== "transcript"}
+                  >
+                    <option value="none">Off</option>
+                    <option value="cross_encoder">Cross-encoder</option>
+                  </select>
+                </label>
+                {searchSourceMode !== "transcript" ? (
+                  <p>Reranking currently applies to transcript evidence only.</p>
+                ) : null}
+              </fieldset>
             </form>
 
             {searchError ? <div className="search-summary">Search failed: {searchError}</div> : null}
@@ -1477,6 +1706,7 @@ function QAStudioPage({ locale }) {
                 {searchResponse.result_count} result(s) for "{searchResponse.query}"
               </div>
             ) : null}
+            <RetrievalVisuals response={searchResponse} rows={searchResponse?.results || []} />
             <div className="search-cards">
               {(searchResponse?.results || []).map((row, index) => {
                 const key = resultIdentity(row);
@@ -2489,6 +2719,50 @@ function StudyStudioPage() {
   );
 }
 
+const STUDIO_MODES = [
+  { route: ROUTES.QA, label: "Ask", icon: "/icons/icon-search.svg" },
+  { route: ROUTES.STUDY, label: "Study", icon: "/icons/icon-library.svg" },
+  { route: ROUTES.TLDR, label: "Summarize", icon: "/icons/icon-chat.svg" },
+];
+
+function StudioWorkspace({ route, locale }) {
+  const activeMode = STUDIO_MODES.find((mode) => mode.route === route) || STUDIO_MODES[0];
+  const panelId = `studio-panel-${activeMode.label.toLowerCase()}`;
+
+  return (
+    <section className="studio-workspace">
+      <header className="hero studio-hero">
+        <h1>Studio</h1>
+        <p className="subtitle">Ask questions, build study material, or summarize an ingested video.</p>
+      </header>
+      <div className="studio-mode-tabs" role="tablist" aria-label="Studio mode">
+        {STUDIO_MODES.map((mode) => {
+          const active = mode.route === activeMode.route;
+          return (
+            <button
+              className={`studio-mode-tab ${active ? "active" : ""}`}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              aria-controls={active ? panelId : undefined}
+              onClick={() => navigate(mode.route)}
+              key={mode.route}
+            >
+              <img src={mode.icon} alt="" aria-hidden="true" />
+              <span>{mode.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="studio-mode-content" id={panelId} role="tabpanel">
+        {route === ROUTES.QA ? <QAStudioPage locale={locale} /> : null}
+        {route === ROUTES.STUDY ? <StudyStudioPage /> : null}
+        {route === ROUTES.TLDR ? <TLDRStudioPage /> : null}
+      </div>
+    </section>
+  );
+}
+
 function App() {
   const [route, setRoute] = useState(readHashRoute());
   const [unlocked, setUnlocked] = useState(() => localStorage.getItem(LOCK_KEY) === "1");
@@ -2598,7 +2872,11 @@ function App() {
   }
 
   function isNavItemActive(item) {
-    return !!item.route && route === item.route;
+    if (!item.route) {
+      return false;
+    }
+    const activeRoutes = Array.isArray(item.activeRoutes) ? item.activeRoutes : [item.route];
+    return activeRoutes.includes(route);
   }
 
   function NavItem({ item, mobile = false }) {
@@ -2630,21 +2908,21 @@ function App() {
     );
   }
 
-  function ToolsMenu({ mobile = false }) {
-    const visibleTools = TOOL_NAV_ITEMS.filter(isNavItemVisible);
-    if (!visibleTools.length) {
+  function NavMenu({ label, icon, items, mobile = false }) {
+    const visibleItems = items.filter(isNavItemVisible);
+    if (!visibleItems.length) {
       return null;
     }
 
     if (mobile) {
       return (
-        <details className="bottom-tools-menu">
+        <details className="bottom-tools-menu" data-nav-group={label.toLowerCase()}>
           <summary className="bottom-tab-link">
-            <img className="bottom-tab-icon" src="/icons/icon-library.svg" alt="" aria-hidden="true" />
-            <span className="bottom-tab-label">Tools</span>
+            <img className="bottom-tab-icon" src={icon} alt="" aria-hidden="true" />
+            <span className="bottom-tab-label">{label}</span>
           </summary>
           <div className="bottom-tools-panel">
-            {visibleTools.map((item) => (
+            {visibleItems.map((item) => (
               <a className="bottom-tools-link" href={item.href} key={`bottom-tool-${item.key}`}>
                 <img className="bottom-tab-icon" src={item.icon} alt="" aria-hidden="true" />
                 <span>{item.label}</span>
@@ -2656,13 +2934,13 @@ function App() {
     }
 
     return (
-      <details className="nav-tools-menu">
+      <details className="nav-tools-menu" data-nav-group={label.toLowerCase()}>
         <summary className="app-nav-link nav-btn nav-tools-summary">
-          <img className="nav-icon" src="/icons/icon-library.svg" alt="" aria-hidden="true" />
-          <span className="nav-label">Tools</span>
+          <img className="nav-icon" src={icon} alt="" aria-hidden="true" />
+          <span className="nav-label">{label}</span>
         </summary>
         <div className="nav-tools-panel">
-          {visibleTools.map((item) => (
+          {visibleItems.map((item) => (
             <a className="nav-tools-link" href={item.href} key={`tool-${item.key}`}>
               <img className="nav-icon" src={item.icon} alt="" aria-hidden="true" />
               <span>{item.label}</span>
@@ -2697,7 +2975,8 @@ function App() {
             {CORE_NAV_ITEMS.filter(isNavItemVisible).map((item) => (
               <NavItem key={item.key} item={item} />
             ))}
-            <ToolsMenu />
+            <NavMenu label="Library" icon="/icons/icon-library.svg" items={LIBRARY_NAV_ITEMS} />
+            <NavMenu label="More" icon="/icons/icon-jobs.svg" items={MORE_NAV_ITEMS} />
           </nav>
           <label className="locale-switch">
             <span>Language</span>
@@ -2712,9 +2991,7 @@ function App() {
       <main className={`shell react-shell-main ${route === ROUTES.INGEST ? "ingest-route" : ""}`}>
         <div className="route-scene" key={`scene-${route}-${routeAnimationKey}`}>
           {route === ROUTES.INGEST ? <IngestPage onSuccess={handleIngestSuccess} /> : null}
-          {route === ROUTES.TLDR && unlocked ? <TLDRStudioPage /> : null}
-          {route === ROUTES.STUDY && unlocked ? <StudyStudioPage /> : null}
-          {route === ROUTES.QA && unlocked ? <QAStudioPage locale={locale} /> : null}
+          {route !== ROUTES.INGEST && unlocked ? <StudioWorkspace route={route} locale={locale} /> : null}
         </div>
       </main>
 
@@ -2722,7 +2999,8 @@ function App() {
         {CORE_NAV_ITEMS.filter(isNavItemVisible).map((item) => (
           <NavItem key={`mobile-${item.key}`} item={item} mobile />
         ))}
-        <ToolsMenu mobile />
+        <NavMenu label="Library" icon="/icons/icon-library.svg" items={LIBRARY_NAV_ITEMS} mobile />
+        <NavMenu label="More" icon="/icons/icon-jobs.svg" items={MORE_NAV_ITEMS} mobile />
       </nav>
     </div>
   );

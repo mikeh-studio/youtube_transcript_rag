@@ -141,6 +141,9 @@ def build_citation_catalog(rows: List[dict]) -> List[dict]:
                 "dense_score": row.get("dense_score"),
                 "lexical_score": row.get("lexical_score"),
                 "hybrid_score": row.get("hybrid_score"),
+                "pre_rerank_rank": row.get("pre_rerank_rank"),
+                "pre_rerank_score": row.get("pre_rerank_score"),
+                "rerank_score": row.get("rerank_score"),
                 "text": str(row.get("text") or "").strip(),
             }
         )
@@ -182,6 +185,9 @@ def build_retrieved_chunks_payload(rows: List[dict]) -> List[dict]:
             ).strip(),
             "rank": int(row.get("rank") or 0) or None,
             "score": row.get("score"),
+            "pre_rerank_rank": row.get("pre_rerank_rank"),
+            "pre_rerank_score": row.get("pre_rerank_score"),
+            "rerank_score": row.get("rerank_score"),
             "snippet": _truncate_snippet(row.get("text") or "", max_chars=180),
         }
         for row in rows or []

@@ -185,3 +185,134 @@ test("renders localized answer panel copy in Japanese locale", async ({ page }) 
     "https://www.youtube.com/watch?v=vid-ja-1&t=182s",
   );
 });
+
+test("visualizes agentic attempts and reranked results", async ({ page }) => {
+  let requestBody = null;
+  await page.route("**/v1/ask", async (route) => {
+    requestBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        question: "How is the retrieval update different?",
+        k: 5,
+        status: "answered",
+        answer: "The system retries weak retrieval and reranks candidate evidence [1] [2].",
+        confidence: "high",
+        citations: [
+          {
+            citation_id: 1,
+            video_id: "vid1",
+            video_title: "Retrieval Architecture",
+            chunk_index: 7,
+            start_seconds: 65,
+            end_seconds: 88,
+            timestamp_range_label: "1:05-1:28",
+            snippet: "Weak evidence triggers a rewritten query before answer generation.",
+            reason: "Supports the retry loop.",
+            url: "https://www.youtube.com/watch?v=vid1&t=65s",
+            language: "en",
+            rank: 1,
+            pre_rerank_rank: 3,
+            pre_rerank_score: 0.42,
+            rerank_score: 0.94,
+            score: 0.94,
+          },
+          {
+            citation_id: 2,
+            video_id: "vid2",
+            video_title: "Ranking Pipeline",
+            chunk_index: 2,
+            start_seconds: 12,
+            end_seconds: 30,
+            timestamp_range_label: "0:12-0:30",
+            snippet: "A cross-encoder rescored the fused candidate pool.",
+            reason: "Supports the reranking stage.",
+            url: "https://www.youtube.com/watch?v=vid2&t=12s",
+            language: "en",
+            rank: 2,
+            pre_rerank_rank: 1,
+            pre_rerank_score: 0.81,
+            rerank_score: 0.78,
+            score: 0.78,
+          },
+        ],
+        retrieved_chunks: [],
+        warnings: [],
+        provider: "chatgpt",
+        model: "gpt-5.4-mini",
+        retrieval_mode: "hybrid",
+        retrieval_details: {
+          fusion: "rrf",
+          dense_candidates: 30,
+          lexical_candidates: 30,
+          pre_rerank_candidate_count: 42,
+          post_feedback_candidate_count: 42,
+          feedback_tuning: { enabled: true, adjusted_results: 2 },
+          reranker: {
+            requested: "cross_encoder",
+            applied: true,
+            model: "cross-encoder/test-model",
+            scored_count: 42,
+            error: null,
+          },
+          agentic_retrieval: {
+            enabled: true,
+            applied: true,
+            sufficient: true,
+            stopped_reason: "sufficient_evidence",
+            final_query: "retrieval retry reranking",
+            final_retrieval_mode: "hybrid",
+            final_k: 5,
+            attempts: [
+              {
+                attempt: 1,
+                strategy: "initial",
+                query: "How is the retrieval update different?",
+                retrieval_mode: "hybrid",
+                k: 5,
+                result_count: 1,
+                sufficient: false,
+                reason_code: "single_weak_chunk",
+                confidence_cap: "low",
+              },
+              {
+                attempt: 2,
+                strategy: "rewrite_query",
+                query: "retrieval retry reranking",
+                retrieval_mode: "hybrid",
+                k: 5,
+                result_count: 5,
+                sufficient: true,
+                reason_code: "multi_chunk_support",
+                confidence_cap: "high",
+              },
+            ],
+          },
+        },
+        result_count: 2,
+      }),
+    });
+  });
+
+  await prepareQAStudio(page);
+  await page.getByLabel("Question").fill("How is the retrieval update different?");
+  await page.getByLabel("Agentic retry").check();
+  await page.getByLabel("Reranker").selectOption("cross_encoder");
+  await page.getByRole("button", { name: "Generate Answer" }).click();
+
+  expect(requestBody).toMatchObject({
+    agentic: true,
+    reranker: "cross_encoder",
+    retrieval_mode: "hybrid",
+  });
+  await expect(page.getByTestId("agentic-attempt-timeline")).toBeVisible();
+  await expect(page.locator(".agentic-attempt")).toHaveCount(2);
+  await expect(page.getByTestId("agentic-attempt-timeline").getByText("Rewritten query")).toBeVisible();
+  await expect(page.getByTestId("retrieval-stage-funnel")).toHaveCount(0);
+  await expect(page.getByTestId("result-ranking-profile")).toContainText("↑2");
+  await expect(page.getByTestId("result-ranking-profile")).toContainText("↓1");
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});

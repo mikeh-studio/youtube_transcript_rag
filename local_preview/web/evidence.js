@@ -13,15 +13,13 @@ const els = {
   homeBrandLink: document.getElementById("homeBrandLink"),
   eyebrowText: document.getElementById("eyebrowText"),
   homeNavLink: document.getElementById("homeNavLink"),
-  tldrNavLink: document.getElementById("tldrNavLink"),
-  qaNavLink: document.getElementById("qaNavLink"),
+  studioNavLink: document.getElementById("studioNavLink"),
   reviewsNavLink: document.getElementById("reviewsNavLink"),
   evidenceNavLink: document.getElementById("evidenceNavLink"),
   evaluationNavLink: document.getElementById("evaluationNavLink"),
   chunkingNavLink: document.getElementById("chunkingNavLink"),
   mobileHomeNavText: document.getElementById("mobileHomeNavText"),
-  mobileTldrNavText: document.getElementById("mobileTldrNavText"),
-  mobileQaNavText: document.getElementById("mobileQaNavText"),
+  mobileStudioNavText: document.getElementById("mobileStudioNavText"),
   mobileReviewsNavText: document.getElementById("mobileReviewsNavText"),
   mobileEvidenceNavText: document.getElementById("mobileEvidenceNavText"),
   mobileEvaluationNavText: document.getElementById("mobileEvaluationNavText"),
@@ -89,8 +87,7 @@ const I18N = {
     localeLabel: "Language",
     eyebrowText: "YouTube Transcript RAG",
     navIngest: "Ingest",
-    navTLDR: "TLDR Studio",
-    navQA: "Q&A Studio",
+    navStudio: "Studio",
     navReviews: "Reviews",
     navEvidence: "Evidence",
     navEvaluation: "Evaluation",
@@ -163,8 +160,7 @@ const I18N = {
     localeLabel: "言語",
     eyebrowText: "YouTube Transcript RAG",
     navIngest: "取り込み",
-    navTLDR: "TLDR Studio",
-    navQA: "Q&A Studio",
+    navStudio: "Studio",
     navReviews: "レビュー",
     navEvidence: "エビデンス",
     navEvaluation: "評価",
@@ -736,15 +732,13 @@ function applyI18n() {
   els.localeLabel.textContent = t("localeLabel");
   els.eyebrowText.textContent = t("eyebrowText");
   setNavLabel(els.homeNavLink, t("navIngest"));
-  setNavLabel(els.tldrNavLink, t("navTLDR"));
-  setNavLabel(els.qaNavLink, t("navQA"));
+  setNavLabel(els.studioNavLink, t("navStudio"));
   setNavLabel(els.reviewsNavLink, t("navReviews"));
   setNavLabel(els.evidenceNavLink, t("navEvidence"));
   setNavLabel(els.evaluationNavLink, t("navEvaluation"));
   setNavLabel(els.chunkingNavLink, t("navChunking"));
   els.mobileHomeNavText.textContent = t("navIngest");
-  els.mobileTldrNavText.textContent = t("navTLDR");
-  els.mobileQaNavText.textContent = t("navQA");
+  els.mobileStudioNavText.textContent = t("navStudio");
   els.mobileReviewsNavText.textContent = t("navReviews");
   els.mobileEvidenceNavText.textContent = t("navEvidence");
   els.mobileEvaluationNavText.textContent = t("navEvaluation");
