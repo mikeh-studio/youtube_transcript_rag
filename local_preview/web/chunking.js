@@ -52,8 +52,7 @@ const I18N = {
     paramTokenCount: "Token Count",
     paramOverlapFraction: "Overlap Fraction",
     navIngest: "Ingest",
-    navTLDR: "TLDR Studio",
-    navQA: "Q&A Studio",
+    navStudio: "Studio",
     navReviews: "Reviews",
     navEvidence: "Evidence",
     navEvaluation: "Evaluation",
@@ -99,8 +98,7 @@ const I18N = {
     paramTokenCount: "トークン数",
     paramOverlapFraction: "オーバーラップ率",
     navIngest: "取り込み",
-    navTLDR: "TLDR スタジオ",
-    navQA: "Q&A スタジオ",
+    navStudio: "Studio",
     navReviews: "レビュー",
     navEvidence: "エビデンス",
     navEvaluation: "評価",
@@ -157,15 +155,13 @@ const els = {
   exportStatus: document.getElementById("exportStatus"),
   // nav
   homeNavLink: document.getElementById("homeNavLink"),
-  tldrNavLink: document.getElementById("tldrNavLink"),
-  qaNavLink: document.getElementById("qaNavLink"),
+  studioNavLink: document.getElementById("studioNavLink"),
   reviewsNavLink: document.getElementById("reviewsNavLink"),
   evidenceNavLink: document.getElementById("evidenceNavLink"),
   evaluationNavLink: document.getElementById("evaluationNavLink"),
   chunkingNavLink: document.getElementById("chunkingNavLink"),
   mobileHomeNavText: document.getElementById("mobileHomeNavText"),
-  mobileTldrNavText: document.getElementById("mobileTldrNavText"),
-  mobileQaNavText: document.getElementById("mobileQaNavText"),
+  mobileStudioNavText: document.getElementById("mobileStudioNavText"),
   mobileReviewsNavText: document.getElementById("mobileReviewsNavText"),
   mobileEvidenceNavText: document.getElementById("mobileEvidenceNavText"),
   mobileEvaluationNavText: document.getElementById("mobileEvaluationNavText"),
@@ -573,15 +569,13 @@ function applyLocale() {
 
   // nav labels
   setNavLabel(els.homeNavLink, t("navIngest"));
-  setNavLabel(els.tldrNavLink, t("navTLDR"));
-  setNavLabel(els.qaNavLink, t("navQA"));
+  setNavLabel(els.studioNavLink, t("navStudio"));
   setNavLabel(els.reviewsNavLink, t("navReviews"));
   setNavLabel(els.evidenceNavLink, t("navEvidence"));
   setNavLabel(els.evaluationNavLink, t("navEvaluation"));
   setNavLabel(els.chunkingNavLink, t("navChunking"));
   if (els.mobileHomeNavText) els.mobileHomeNavText.textContent = t("navIngest");
-  if (els.mobileTldrNavText) els.mobileTldrNavText.textContent = t("navTLDR");
-  if (els.mobileQaNavText) els.mobileQaNavText.textContent = t("navQA");
+  if (els.mobileStudioNavText) els.mobileStudioNavText.textContent = t("navStudio");
   if (els.mobileReviewsNavText) els.mobileReviewsNavText.textContent = t("navReviews");
   if (els.mobileEvidenceNavText) els.mobileEvidenceNavText.textContent = t("navEvidence");
   if (els.mobileEvaluationNavText) els.mobileEvaluationNavText.textContent = t("navEvaluation");

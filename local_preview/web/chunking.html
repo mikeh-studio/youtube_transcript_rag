@@ -25,18 +25,14 @@
             <img class="nav-icon" src="./icons/icon-upload.svg" alt="" aria-hidden="true" />
             <span class="nav-label nav-label-text">Ingest</span>
           </a>
-          <a id="tldrNavLink" class="app-nav-link" href="./index.html#/tldr">
+          <a id="studioNavLink" class="app-nav-link" href="./index.html#/qa">
             <img class="nav-icon" src="./icons/icon-chat.svg" alt="" aria-hidden="true" />
-            <span class="nav-label nav-label-text">TLDR Studio</span>
+            <span class="nav-label nav-label-text">Studio</span>
           </a>
-          <a id="qaNavLink" class="app-nav-link" href="./index.html#/qa">
-            <img class="nav-icon" src="./icons/icon-search.svg" alt="" aria-hidden="true" />
-            <span class="nav-label nav-label-text">Q&amp;A Studio</span>
-          </a>
-          <details class="nav-tools-menu">
-            <summary class="app-nav-link nav-btn nav-tools-summary active">
+          <details class="nav-tools-menu" data-nav-group="library">
+            <summary class="app-nav-link nav-btn nav-tools-summary">
               <img class="nav-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
-              <span class="nav-label">Tools</span>
+              <span class="nav-label">Library</span>
             </summary>
             <div class="nav-tools-panel">
               <a id="reviewsNavLink" class="nav-tools-link" href="./reviews.html">
@@ -47,6 +43,14 @@
                 <img class="nav-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
                 <span class="nav-label-text">Evidence</span>
               </a>
+            </div>
+          </details>
+          <details class="nav-tools-menu" data-nav-group="more">
+            <summary class="app-nav-link nav-btn nav-tools-summary active">
+              <img class="nav-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+              <span class="nav-label">More</span>
+            </summary>
+            <div class="nav-tools-panel">
               <a id="evaluationNavLink" class="nav-tools-link" href="./evaluation.html">
                 <img class="nav-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
                 <span class="nav-label-text">Evaluation</span>
@@ -183,18 +187,14 @@
         <img class="bottom-tab-icon" src="./icons/icon-upload.svg" alt="" aria-hidden="true" />
         <span id="mobileHomeNavText" class="bottom-tab-label">Ingest</span>
       </a>
-      <a id="mobileTldrNavLink" class="bottom-tab-link" href="./index.html#/tldr">
+      <a id="mobileStudioNavLink" class="bottom-tab-link" href="./index.html#/qa">
         <img class="bottom-tab-icon" src="./icons/icon-chat.svg" alt="" aria-hidden="true" />
-        <span id="mobileTldrNavText" class="bottom-tab-label">TLDR Studio</span>
+        <span id="mobileStudioNavText" class="bottom-tab-label">Studio</span>
       </a>
-      <a id="mobileQaNavLink" class="bottom-tab-link" href="./index.html#/qa">
-        <img class="bottom-tab-icon" src="./icons/icon-search.svg" alt="" aria-hidden="true" />
-        <span id="mobileQaNavText" class="bottom-tab-label">Q&amp;A Studio</span>
-      </a>
-      <details class="bottom-tools-menu">
-        <summary class="bottom-tab-link active">
+      <details class="bottom-tools-menu" data-nav-group="library">
+        <summary class="bottom-tab-link">
           <img class="bottom-tab-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
-          <span class="bottom-tab-label">Tools</span>
+          <span class="bottom-tab-label">Library</span>
         </summary>
         <div class="bottom-tools-panel">
           <a id="mobileReviewsNavLink" class="bottom-tools-link" href="./reviews.html">
@@ -205,6 +205,14 @@
             <img class="bottom-tab-icon" src="./icons/icon-library.svg" alt="" aria-hidden="true" />
             <span id="mobileEvidenceNavText">Evidence</span>
           </a>
+        </div>
+      </details>
+      <details class="bottom-tools-menu" data-nav-group="more">
+        <summary class="bottom-tab-link active">
+          <img class="bottom-tab-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+          <span class="bottom-tab-label">More</span>
+        </summary>
+        <div class="bottom-tools-panel">
           <a id="mobileEvaluationNavLink" class="bottom-tools-link" href="./evaluation.html">
             <img class="bottom-tab-icon" src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
             <span id="mobileEvaluationNavText">Evaluation</span>

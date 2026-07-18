@@ -25,15 +25,16 @@ test.describe("mobile bottom tabs", () => {
     await expect(tabBar).toBeVisible();
     await expect(tabBar.locator(".bottom-tab-link")).toHaveCount(4);
 
-    await tabBar.getByRole("button", { name: "TLDR Studio" }).click();
-    await expect(page).toHaveURL(/#\/tldr$/);
-    await expect(tabBar.locator(".bottom-tab-link.active")).toContainText("TLDR Studio");
+    await tabBar.getByRole("button", { name: "Studio" }).click();
+    await expect(page).toHaveURL(/#\/qa$/);
+    await expect(tabBar.locator(".bottom-tab-link.active")).toContainText("Studio");
   });
 });
 
 test("header menu labels are consistent across pages", async ({ page }) => {
-  const expectedPrimaryLabels = ["Ingest", "TLDR Studio", "Q&A Studio", "Tools"];
-  const expectedToolLabels = ["Reviews", "Evidence", "Evaluation", "Chunking"];
+  const expectedPrimaryLabels = ["Ingest", "Studio", "Library", "More"];
+  const expectedLibraryLabels = ["Reviews", "Evidence"];
+  const expectedMoreLabels = ["Evaluation", "Chunking"];
 
   async function expectGroupedNav(nav) {
     const directItems = nav.locator(":scope > .app-nav-link, :scope > .nav-tools-menu > summary");
@@ -42,10 +43,16 @@ test("header menu labels are consistent across pages", async ({ page }) => {
       await expect(directItems.getByText(label, { exact: true })).toBeVisible();
     }
 
-    const toolsMenu = nav.locator(".nav-tools-menu");
-    await toolsMenu.evaluate((element) => element.setAttribute("open", ""));
-    for (const label of expectedToolLabels) {
-      await expect(toolsMenu.getByText(label, { exact: true })).toBeVisible();
+    const libraryMenu = nav.locator('[data-nav-group="library"]');
+    await libraryMenu.evaluate((element) => element.setAttribute("open", ""));
+    for (const label of expectedLibraryLabels) {
+      await expect(libraryMenu.getByText(label, { exact: true })).toBeVisible();
+    }
+
+    const moreMenu = nav.locator('[data-nav-group="more"]');
+    await moreMenu.evaluate((element) => element.setAttribute("open", ""));
+    for (const label of expectedMoreLabels) {
+      await expect(moreMenu.getByText(label, { exact: true })).toBeVisible();
     }
   }
 
@@ -61,4 +68,22 @@ test("header menu labels are consistent across pages", async ({ page }) => {
 
   await page.goto("/evaluation.html");
   await expectGroupedNav(page.locator(".appbar-nav"));
+});
+
+test("switches Ask, Study, and Summarize inside Studio", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("yt_rag_ingest_unlocked", "1");
+  });
+  await page.goto("/index.html#/qa");
+
+  const studioTabs = page.getByRole("tablist", { name: "Studio mode" });
+  await expect(studioTabs.getByRole("tab")).toHaveCount(3);
+  await expect(studioTabs.getByRole("tab", { name: "Ask" })).toHaveAttribute("aria-selected", "true");
+
+  await studioTabs.getByRole("tab", { name: "Study" }).click();
+  await expect(page).toHaveURL(/#\/study$/);
+  await expect(page.locator(".appbar-nav").getByRole("button", { name: "Studio" })).toHaveClass(/active/);
+
+  await page.getByRole("tab", { name: "Summarize" }).click();
+  await expect(page).toHaveURL(/#\/tldr$/);
 });

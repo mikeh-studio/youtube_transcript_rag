@@ -19,6 +19,10 @@ local_api = importlib.import_module("local_api")
 LocalRAGService = local_api.LocalRAGService
 
 from multilingual.reranker import CrossEncoderReranker  # noqa: E402
+from grounded_answer import (  # noqa: E402
+    build_citation_catalog,
+    build_retrieved_chunks_payload,
+)
 
 
 def _rows():
@@ -49,6 +53,30 @@ def test_rerank_reorders_rows_and_annotates_scores():
     assert top["rerank_score"] == 0.9
     assert top["score"] == 0.9
     assert [row["rank"] for row in outcome["rows"]] == [1, 2, 3]
+
+
+def test_grounded_answer_payload_preserves_reranking_diagnostics():
+    row = {
+        "video_id": "vid1",
+        "video_title": "Ranking demo",
+        "chunk_index": 2,
+        "text": "Jetson Orin edge inference",
+        "start": 20,
+        "end": 30,
+        "rank": 1,
+        "score": 0.9,
+        "pre_rerank_rank": 3,
+        "pre_rerank_score": 0.7,
+        "rerank_score": 0.9,
+    }
+
+    citation = build_citation_catalog([row])[0]
+    retrieved_chunk = build_retrieved_chunks_payload([row])[0]
+
+    for payload in (citation, retrieved_chunk):
+        assert payload["pre_rerank_rank"] == 3
+        assert payload["pre_rerank_score"] == 0.7
+        assert payload["rerank_score"] == 0.9
 
 
 def test_rerank_probability_scores_are_used_as_is():
