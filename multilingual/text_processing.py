@@ -151,6 +151,10 @@ class TextProcessor:
             "yes",
             "on",
         }:
+            # Hash embeddings must not change when YT_RAG_EMBED_MODEL changes.
+            # Model-specific prefixes only belong to sentence-transformer spaces.
+            self.query_prefix = ""
+            self.passage_prefix = ""
             print("Using local hashing embeddings; embedding model startup skipped.")
             return
 
@@ -165,6 +169,8 @@ class TextProcessor:
             print(f"  Warning: embedding model unavailable ({e}). Falling back to local hashing embeddings.")
             self.embed_model = None
             self.embedding_backend = "hashing"
+            self.query_prefix = ""
+            self.passage_prefix = ""
 
     def embedding_metadata(self):
         """Describe the active embedding space (used for index compatibility checks)."""

@@ -718,20 +718,29 @@ class VideoLibrary:
             saved.get(key) == current.get(key) for key in ("backend", "model", "dim")
         )
         count_ok = int(self.index.ntotal) == len(self.chunk_map)
+        index_dim_ok = int(self.index.d) == int(current.get("dim") or 0)
 
-        if matches and count_ok:
+        if matches and count_ok and index_dim_ok:
             self.index_embedding_metadata = saved
             return
 
         if current.get("backend") == "sentence_transformers":
-            reason = (
-                f"embedding model changed from {saved.get('model')} "
-                f"(dim {saved.get('dim')}) to {current.get('model')} "
-                f"(dim {current.get('dim')})"
-                if not matches
-                else f"index has {int(self.index.ntotal)} vectors "
-                f"but library has {len(self.chunk_map)} chunks"
-            )
+            if not matches:
+                reason = (
+                    f"embedding model changed from {saved.get('model')} "
+                    f"(dim {saved.get('dim')}) to {current.get('model')} "
+                    f"(dim {current.get('dim')})"
+                )
+            elif not index_dim_ok:
+                reason = (
+                    f"index dimension is {int(self.index.d)} but the active "
+                    f"embedding space expects {current.get('dim')}"
+                )
+            else:
+                reason = (
+                    f"index has {int(self.index.ntotal)} vectors "
+                    f"but library has {len(self.chunk_map)} chunks"
+                )
             print(f"Index is stale ({reason}); rebuilding from persisted chunks.")
             self._rebuild_index()
             self.save()

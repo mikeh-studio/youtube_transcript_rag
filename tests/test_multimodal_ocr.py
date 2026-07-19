@@ -539,6 +539,53 @@ def test_ocr_retriever_skips_legacy_dim_mismatch(tmp_path, capsys):
     assert "Skipping" in capsys.readouterr().out
 
 
+def test_ocr_retriever_skips_sidecar_index_dim_mismatch(tmp_path, capsys):
+    import json
+
+    from pipelines.video_ocr_common import ocr_index_embed_meta_path
+
+    data_dir = tmp_path / "data"
+    video_id = "demo_001"
+    index_path = _write_ocr_index_fixture(data_dir, video_id)
+
+    # The sidecar matches the processor, but the FAISS file itself is stale.
+    stale = faiss.IndexFlatIP(3)
+    stale.add(np.asarray([[1.0, 0.0, 0.0]], dtype="float32"))
+    faiss.write_index(stale, str(index_path))
+    ocr_index_embed_meta_path(index_path).write_text(
+        json.dumps({"backend": "hashing", "model": "local_hash", "dim": 2})
+    )
+
+    retriever = OCREvidenceRetriever(data_dir=data_dir, processor=FakeProcessor())
+    results = retriever.search("inflation slide", video_id=video_id, top_k=1)
+
+    assert results == []
+    assert "FAISS index dimension is 3" in capsys.readouterr().out
+
+
+def test_ocr_retriever_skips_vector_metadata_count_mismatch(tmp_path, capsys):
+    import json
+
+    from pipelines.video_ocr_common import ocr_index_embed_meta_path
+
+    data_dir = tmp_path / "data"
+    video_id = "demo_001"
+    index_path = _write_ocr_index_fixture(data_dir, video_id)
+
+    stale = faiss.IndexFlatIP(2)
+    stale.add(np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype="float32"))
+    faiss.write_index(stale, str(index_path))
+    ocr_index_embed_meta_path(index_path).write_text(
+        json.dumps({"backend": "hashing", "model": "local_hash", "dim": 2})
+    )
+
+    retriever = OCREvidenceRetriever(data_dir=data_dir, processor=FakeProcessor())
+    results = retriever.search("inflation slide", video_id=video_id, top_k=1)
+
+    assert results == []
+    assert "2 vectors but 1 metadata rows" in capsys.readouterr().out
+
+
 def test_ocr_retriever_accepts_matching_sidecar(tmp_path):
     import json
 

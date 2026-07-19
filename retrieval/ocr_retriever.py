@@ -53,32 +53,46 @@ class OCREvidenceRetriever:
         # Never search across mismatched embedding spaces: skip indexes built
         # with a different model than the active processor.
         current = self.processor.embedding_metadata()
+        current_dim = int(current.get("dim") or 0)
+        index_dim = int(index.d)
         embed_meta_path = ocr_index_embed_meta_path(index_path)
         if embed_meta_path.exists():
             try:
                 saved = json.loads(embed_meta_path.read_text(encoding="utf-8"))
             except Exception:
                 saved = {}
-            if any(
+            metadata_mismatch = any(
                 saved.get(key) != current.get(key)
                 for key in ("backend", "model", "dim")
-            ):
+            )
+            if metadata_mismatch or index_dim != current_dim:
                 print(
                     f"Warning: OCR index for {scoped_video_id} was built with "
                     f"{saved.get('model')} (dim {saved.get('dim')}) but the active "
-                    f"model is {current.get('model')} (dim {current.get('dim')}). "
+                    f"model is {current.get('model')} (dim {current_dim}); the "
+                    f"FAISS index dimension is {index_dim}. "
                     f"Skipping; rebuild with: python pipelines/embed_ocr.py "
                     f"--video-id {scoped_video_id}"
                 )
                 self._cache[scoped_video_id] = (None, [])
                 return self._cache[scoped_video_id]
-        elif int(index.d) != int(current.get("dim") or 0):
+        elif index_dim != current_dim:
             # Legacy index without a sidecar: dimension mismatch is the only
             # detectable signal (an equal-dim model change cannot be detected).
             print(
-                f"Warning: OCR index for {scoped_video_id} has dim {index.d} but "
-                f"the active model expects {current.get('dim')}. Skipping; rebuild "
+                f"Warning: OCR index for {scoped_video_id} has dim {index_dim} but "
+                f"the active model expects {current_dim}. Skipping; rebuild "
                 f"with: python pipelines/embed_ocr.py --video-id {scoped_video_id}"
+            )
+            self._cache[scoped_video_id] = (None, [])
+            return self._cache[scoped_video_id]
+
+        if int(index.ntotal) != len(records):
+            print(
+                f"Warning: OCR index for {scoped_video_id} has "
+                f"{int(index.ntotal)} vectors but {len(records)} metadata rows. "
+                f"Skipping; rebuild with: python pipelines/embed_ocr.py "
+                f"--video-id {scoped_video_id}"
             )
             self._cache[scoped_video_id] = (None, [])
             return self._cache[scoped_video_id]

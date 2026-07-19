@@ -675,6 +675,25 @@ class TestEmbeddingMetadataReconciliation:
         assert lib2.index.ntotal == expected_chunks
 
     @patch("multilingual.video_library.YouTubeTranscriptApi")
+    def test_index_dimension_drift_triggers_rebuild(
+        self, mock_api_cls, tmp_data_dir
+    ):
+        from multilingual.video_library import VideoLibrary
+
+        lib = self._build_library(tmp_data_dir, mock_api_cls)
+        expected_chunks = len(lib.chunk_map)
+
+        # Keep matching manifest metadata but replace the FAISS file with a
+        # different dimension, as can happen after a partial/corrupt write.
+        stale = faiss.IndexFlatIP(128)
+        stale.add(np.zeros((expected_chunks, 128), dtype="float32"))
+        faiss.write_index(stale, self._index_path(tmp_data_dir))
+
+        lib2 = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        assert lib2.index.d == 768
+        assert lib2.index.ntotal == expected_chunks
+
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
     def test_hash_fallback_preserves_model_built_index(self, mock_api_cls, tmp_data_dir):
         from multilingual.video_library import VideoLibrary
 
