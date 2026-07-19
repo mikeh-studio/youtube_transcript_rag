@@ -66,6 +66,11 @@ def ocr_index_metadata_path(data_dir: Path | str, video_id: str) -> Path:
     return ocr_index_dir(data_dir) / f"{validate_video_id(video_id)}.jsonl"
 
 
+def ocr_index_embed_meta_path(index_path: Path | str) -> Path:
+    """Sidecar JSON recording which embedding model built an OCR index."""
+    return Path(index_path).with_suffix(".embed_meta.json")
+
+
 def write_jsonl(path: Path | str, rows: Iterable[dict]) -> int:
     """Write dictionaries as UTF-8 JSONL and return the row count."""
     scoped_path = Path(path)

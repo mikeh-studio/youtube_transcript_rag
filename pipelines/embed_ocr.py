@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -18,6 +19,7 @@ if str(ROOT_DIR) not in sys.path:
 from multilingual.text_processing import TextProcessor
 from pipelines.video_ocr_common import (
     DEFAULT_DATA_DIR,
+    ocr_index_embed_meta_path,
     ocr_index_metadata_path,
     ocr_index_path,
     ocr_output_path,
@@ -110,10 +112,13 @@ def embed_ocr(
     scoped_index_path = Path(index_path)
     scoped_index_path.parent.mkdir(parents=True, exist_ok=True)
     scoped_metadata_path = Path(metadata_path)
+    embed_meta_path = ocr_index_embed_meta_path(scoped_index_path)
     if not records:
         write_jsonl(scoped_metadata_path, records)
         if scoped_index_path.exists():
             scoped_index_path.unlink()
+        if embed_meta_path.exists():
+            embed_meta_path.unlink()
         print(f"No OCR text rows found. Wrote empty metadata to {scoped_metadata_path}")
         return records
 
@@ -129,6 +134,10 @@ def embed_ocr(
     index = faiss.IndexFlatIP(embeddings.shape[1])
     index.add(embeddings)
     faiss.write_index(index, str(scoped_index_path))
+    embed_meta_path.write_text(
+        json.dumps(text_processor.embedding_metadata(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     print(f"Wrote {len(records)} OCR vectors to {scoped_index_path}")
     print(f"Wrote OCR index metadata to {scoped_metadata_path}")
     return records

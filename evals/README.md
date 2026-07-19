@@ -104,3 +104,9 @@ Known scoring caveat: `optimized_v1` uses min-max normalization over the current
 candidate pool. Rankings can shift if `candidate_k` or corpus scope changes, and
 the lowest returned dense or lexical candidate normalizes to the same `0.0`
 value used for a chunk absent from that signal.
+
+Fixture calibration note: the hand-authored `dense_scores` in
+`fixtures/jp_core_v1_corpus.json` are calibrated against the morphological
+(fugashi) lexical tokenizer's BM25 score distribution. If lexical tokenization
+changes, adversarial scenarios (a distractor with the top dense score that
+lexical evidence must overcome, e.g. `jp_core_003`) may need recalibrating.
