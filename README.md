@@ -53,8 +53,18 @@ Notes:
 
 - `.env` and `.env.local` are gitignored. `.env.example` is the checked-in template.
 - `local_preview/local_api.py` loads `.env`, then `.env.local`; `.env.local` wins for machine-specific overrides.
-- If model download is unavailable, local preview can fall back to local hashing embeddings.
+- The default embedding model is `intfloat/multilingual-e5-large` (~2.2 GB download
+  on first start). Override it with `YT_RAG_EMBED_MODEL` (E5-family models get the
+  `query:`/`passage:` prefixes automatically; other models such as `BAAI/bge-m3`
+  are embedded without prefixes). Changing the model triggers a one-time automatic
+  rebuild of the transcript index on the next start; OCR indexes are skipped with
+  a warning until re-embedded per video with `python pipelines/embed_ocr.py --video-id <id>`.
+- If model download is unavailable, local preview can fall back to local hashing
+  embeddings. A saved model-built index is preserved on disk (dense search is
+  disabled, lexical search keeps working) until the model is available again.
 - For fully offline startup, run `YT_RAG_FORCE_HASH_EMBEDDINGS=1 python local_preview/local_api.py`.
+- Japanese lexical (BM25) search tokenizes with fugashi morphological analysis,
+  falling back to character bigrams if fugashi is unavailable.
 
 ## What It Solves
 

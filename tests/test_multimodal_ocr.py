@@ -32,6 +32,9 @@ LOCAL_PREVIEW_DIR = ROOT_DIR / "local_preview"
 
 
 class FakeProcessor:
+    def embedding_metadata(self):
+        return {"backend": "hashing", "model": "local_hash", "dim": 2}
+
     def clean_text(self, text):
         return " ".join(str(text or "").split())
 
@@ -421,3 +424,135 @@ def test_grounded_answer_citation_payload_preserves_ocr_metadata():
     assert "transcript and OCR evidence" in system_prompt
     assert "Frame: data/frames/demo_001/frame_000010.jpg" in user_message
     assert "OCR: Inflation expectations" in user_message
+
+
+def test_embed_ocr_writes_embedding_sidecar(tmp_path):
+    import json
+
+    from pipelines.video_ocr_common import ocr_index_embed_meta_path
+
+    data_dir = tmp_path / "data"
+    video_id = "demo_001"
+    ocr_path = ocr_output_path(data_dir, video_id)
+    write_jsonl(
+        ocr_path,
+        [
+            {
+                "video_id": video_id,
+                "frame_id": "frame_000010",
+                "timestamp_sec": 10,
+                "timestamp_hhmmss": "00:00:10",
+                "frame_path": "data/frames/demo_001/frame_000010.jpg",
+                "ocr_text": "Inflation expectations",
+                "ocr_confidence": 0.91,
+                "ocr_engine": "easyocr",
+            }
+        ],
+    )
+
+    index_path = ocr_index_path(data_dir, video_id)
+    embed_ocr(
+        video_id=video_id,
+        ocr_path=ocr_path,
+        index_path=index_path,
+        metadata_path=ocr_index_metadata_path(data_dir, video_id),
+        processor=FakeProcessor(),
+    )
+
+    sidecar = ocr_index_embed_meta_path(index_path)
+    assert sidecar.exists()
+    assert json.loads(sidecar.read_text()) == {
+        "backend": "hashing",
+        "model": "local_hash",
+        "dim": 2,
+    }
+
+
+def _write_ocr_index_fixture(data_dir, video_id):
+    metadata_path = ocr_index_metadata_path(data_dir, video_id)
+    index_path = ocr_index_path(data_dir, video_id)
+    write_jsonl(
+        metadata_path,
+        [
+            {
+                "id": f"{video_id}:frame_000010:ocr",
+                "video_id": video_id,
+                "frame_id": "frame_000010",
+                "timestamp_sec": 10.0,
+                "timestamp_hhmmss": "00:00:10",
+                "text": "Inflation expectations",
+                "source_type": "ocr",
+                "frame_path": f"data/frames/{video_id}/frame_000010.jpg",
+                "ocr_confidence": 0.91,
+                "ocr_engine": "easyocr",
+            }
+        ],
+    )
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index = faiss.IndexFlatIP(2)
+    index.add(np.asarray([[1.0, 0.0]], dtype="float32"))
+    faiss.write_index(index, str(index_path))
+    return index_path
+
+
+def test_ocr_retriever_skips_sidecar_model_mismatch(tmp_path, capsys):
+    import json
+
+    from pipelines.video_ocr_common import ocr_index_embed_meta_path
+
+    data_dir = tmp_path / "data"
+    video_id = "demo_001"
+    index_path = _write_ocr_index_fixture(data_dir, video_id)
+    ocr_index_embed_meta_path(index_path).write_text(
+        json.dumps(
+            {
+                "backend": "sentence_transformers",
+                "model": "intfloat/multilingual-e5-base",
+                "dim": 2,
+            }
+        )
+    )
+
+    retriever = OCREvidenceRetriever(data_dir=data_dir, processor=FakeProcessor())
+    results = retriever.search("inflation slide", video_id=video_id, top_k=1)
+
+    assert results == []
+    assert "Skipping" in capsys.readouterr().out
+
+
+def test_ocr_retriever_skips_legacy_dim_mismatch(tmp_path, capsys):
+    data_dir = tmp_path / "data"
+    video_id = "demo_001"
+    # Legacy index (no sidecar) with dim 3 vs processor dim 2.
+    metadata_path = ocr_index_metadata_path(data_dir, video_id)
+    index_path = ocr_index_path(data_dir, video_id)
+    write_jsonl(metadata_path, [{"id": "x", "video_id": video_id, "text": "t"}])
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index = faiss.IndexFlatIP(3)
+    index.add(np.asarray([[1.0, 0.0, 0.0]], dtype="float32"))
+    faiss.write_index(index, str(index_path))
+
+    retriever = OCREvidenceRetriever(data_dir=data_dir, processor=FakeProcessor())
+    results = retriever.search("inflation slide", video_id=video_id, top_k=1)
+
+    assert results == []
+    assert "Skipping" in capsys.readouterr().out
+
+
+def test_ocr_retriever_accepts_matching_sidecar(tmp_path):
+    import json
+
+    from pipelines.video_ocr_common import ocr_index_embed_meta_path
+
+    data_dir = tmp_path / "data"
+    video_id = "demo_001"
+    index_path = _write_ocr_index_fixture(data_dir, video_id)
+    ocr_index_embed_meta_path(index_path).write_text(
+        json.dumps({"backend": "hashing", "model": "local_hash", "dim": 2})
+    )
+
+    retriever = OCREvidenceRetriever(data_dir=data_dir, processor=FakeProcessor())
+    results = retriever.search("inflation slide", video_id=video_id, top_k=1)
+
+    assert len(results) == 1
+    assert results[0]["ocr_text"] == "Inflation expectations"

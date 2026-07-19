@@ -38,6 +38,13 @@ CHUNK_OVERLAP_SECONDS = 15
 CHUNKING_VERSION = "time_v2_60s_15s"
 LEGACY_CHUNKING_VERSION = "time_v1_45s_15s"
 LIBRARY_FORMAT_VERSION = 2
+# Manifests written before embedding metadata existed were always built with
+# this hardcoded model.
+LEGACY_EMBEDDING_METADATA = {
+    "backend": "sentence_transformers",
+    "model": "intfloat/multilingual-e5-base",
+    "dim": 768,
+}
 
 
 def _chmod_private(path: str) -> None:
@@ -70,6 +77,11 @@ class VideoLibrary:
         self.index = None  # FAISS index
         self.chunk_map = []  # Maps global index position -> (video_id, chunk_index)
         self.library_metadata = {"chunking": self.current_chunking_metadata()}
+        # Metadata describing the embedding space that built self.index. When
+        # running on the hashing fallback with a good model-built index on
+        # disk, _preserve_saved_index keeps save() from clobbering it.
+        self.index_embedding_metadata = None
+        self._preserve_saved_index = False
 
         # Try to auto-load saved library
         if self._save_exists():
@@ -494,6 +506,8 @@ class VideoLibrary:
 
         if not all_chunks:
             self.index = None
+            self.index_embedding_metadata = self.processor.embedding_metadata()
+            self._preserve_saved_index = False
             return
 
         print(f"Generating embeddings for {len(all_chunks)} total chunks...")
@@ -503,6 +517,8 @@ class VideoLibrary:
         dim = embeddings.shape[1]
         self.index = faiss.IndexFlatIP(dim)
         self.index.add(embeddings)
+        self.index_embedding_metadata = self.processor.embedding_metadata()
+        self._preserve_saved_index = False
         print(f"FAISS index rebuilt with {self.index.ntotal} vectors")
 
     def _dominant_language(self):
@@ -589,7 +605,7 @@ class VideoLibrary:
         index_path = self._index_path()
         if self.index is not None:
             faiss.write_index(self.index, index_path)
-        elif os.path.exists(index_path):
+        elif os.path.exists(index_path) and not self._preserve_saved_index:
             os.remove(index_path)
 
         # Save library manifest
@@ -597,6 +613,8 @@ class VideoLibrary:
             "format_version": LIBRARY_FORMAT_VERSION,
             "library_metadata": {
                 "chunking": self.current_chunking_metadata(),
+                "embedding": self.index_embedding_metadata
+                or self.processor.embedding_metadata(),
             },
             "videos": list(self.videos.keys()),
         }
@@ -671,17 +689,86 @@ class VideoLibrary:
             self.index = None
             print(f"Loaded library: {len(self.videos)} videos (no index)")
 
+        self._reconcile_index_embedding(
+            getattr(self, "_loaded_embedding_metadata", None)
+        )
+
+    def _reconcile_index_embedding(self, saved_metadata):
+        """Ensure the loaded index matches the active embedding space.
+
+        Rebuilds the index from persisted chunks when the embedding model
+        changed, and preserves a model-built on-disk index (dense search
+        disabled) when running degraded on the hashing fallback.
+        """
+        current = self.processor.embedding_metadata()
+
+        if self.index is None:
+            self.index_embedding_metadata = None
+            if self.chunk_map and current.get("backend") == "sentence_transformers":
+                print("No saved index but chunks exist; rebuilding index.")
+                self._rebuild_index()
+                self.save()
+            return
+
+        saved = saved_metadata
+        if not isinstance(saved, dict) or not saved:
+            saved = dict(LEGACY_EMBEDDING_METADATA)
+
+        matches = all(
+            saved.get(key) == current.get(key) for key in ("backend", "model", "dim")
+        )
+        count_ok = int(self.index.ntotal) == len(self.chunk_map)
+
+        if matches and count_ok:
+            self.index_embedding_metadata = saved
+            return
+
+        if current.get("backend") == "sentence_transformers":
+            reason = (
+                f"embedding model changed from {saved.get('model')} "
+                f"(dim {saved.get('dim')}) to {current.get('model')} "
+                f"(dim {current.get('dim')})"
+                if not matches
+                else f"index has {int(self.index.ntotal)} vectors "
+                f"but library has {len(self.chunk_map)} chunks"
+            )
+            print(f"Index is stale ({reason}); rebuilding from persisted chunks.")
+            self._rebuild_index()
+            self.save()
+            return
+
+        if saved.get("backend") == "sentence_transformers":
+            # Degraded to hashing while a model-built index exists on disk:
+            # never mix embedding spaces, never clobber the good index.
+            print(
+                "Warning: embedding model unavailable; dense search is disabled. "
+                f"The saved index (built with {saved.get('model')}) is preserved."
+            )
+            self.index = None
+            self.index_embedding_metadata = saved
+            self._preserve_saved_index = True
+            return
+
+        # Both hashing (e.g. RAG_LOCAL_EMBED_DIM changed): rebuild cheaply.
+        print("Hash-embedding parameters changed; rebuilding index.")
+        self._rebuild_index()
+        self.save()
+
     def _load_split_layout(self, manifest_path):
         with open(manifest_path, "r", encoding="utf-8") as f:
             manifest = json.load(f)
 
         library_metadata = manifest.get("library_metadata")
         library_chunking = None
+        self._loaded_embedding_metadata = None
         if isinstance(library_metadata, dict):
             library_chunking = self._normalize_chunking_metadata(
                 library_metadata.get("chunking")
             )
             self.library_metadata = {"chunking": library_chunking}
+            embedding = library_metadata.get("embedding")
+            if isinstance(embedding, dict) and embedding:
+                self._loaded_embedding_metadata = embedding
         else:
             self.library_metadata = {"chunking": self.current_chunking_metadata()}
 
@@ -710,6 +797,7 @@ class VideoLibrary:
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
 
+        self._loaded_embedding_metadata = None
         library_metadata = meta.get("library_metadata")
         library_chunking = None
         if isinstance(library_metadata, dict):

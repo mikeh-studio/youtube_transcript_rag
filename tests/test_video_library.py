@@ -16,6 +16,13 @@ class FakeProcessor:
     def __init__(self):
         self.embed_dim = 768
 
+    def embedding_metadata(self):
+        return {
+            "backend": "hashing",
+            "model": "local_hash",
+            "dim": int(self.embed_dim),
+        }
+
     def extract_video_id(self, url):
         import re
 

@@ -398,3 +398,42 @@ def test_retrieve_adds_feedback_metadata():
     assert "base_score" in response["results"][0]
     assert "feedback_adjustment" in response["results"][0]
     assert "feedback_signal" in response["results"][0]
+
+
+def test_normalize_feedback_recomputes_tokens_on_stale_version():
+    service = _make_service(enabled=True)
+    row = service._normalize_feedback_record(
+        {
+            "video_id": "vid1",
+            "chunk_index": 0,
+            "start": 0.0,
+            "end": 10.0,
+            "label": "relevant",
+            "query": "機械学習の勉強",
+            "query_tokens": ["機械", "械学", "学習"],
+        }
+    )
+    # No token_version on the stored row -> tokens recomputed from query text.
+    assert row["token_version"] == local_api.lexical_token_version()
+    assert row["query_tokens"] == service._tokenize_for_lexical(
+        "機械学習の勉強", language="ja"
+    )
+
+
+def test_normalize_feedback_keeps_tokens_with_current_version():
+    service = _make_service(enabled=True)
+    stored_tokens = ["custom", "tokens"]
+    row = service._normalize_feedback_record(
+        {
+            "video_id": "vid1",
+            "chunk_index": 0,
+            "start": 0.0,
+            "end": 10.0,
+            "label": "relevant",
+            "query": "python list sort",
+            "query_tokens": stored_tokens,
+            "token_version": local_api.lexical_token_version(),
+        }
+    )
+    assert row["query_tokens"] == stored_tokens
+    assert row["token_version"] == local_api.lexical_token_version()

@@ -17,6 +17,13 @@ class FakeProcessor:
         self.embed_dim = 768
         self.tokenizers = {"ja": True, "en": True}
 
+    def embedding_metadata(self):
+        return {
+            "backend": "hashing",
+            "model": "local_hash",
+            "dim": int(self.embed_dim),
+        }
+
     def extract_video_id(self, url):
         import re
 
@@ -601,3 +608,143 @@ class TestSearchLanguageThreading:
     def test_search_empty_library_no_crash(self, library):
         results = library.search("test", k=3, language="en")
         assert results == []
+
+
+class TestEmbeddingMetadataReconciliation:
+    """Tests for embedding metadata persistence and index staleness handling."""
+
+    @staticmethod
+    def _build_library(tmp_data_dir, mock_api_cls, processor=None):
+        from multilingual.video_library import VideoLibrary
+
+        mock_api = MagicMock()
+        mock_api.fetch.return_value = _make_transcript(5)
+        mock_api_cls.return_value = mock_api
+        lib = VideoLibrary(data_dir=tmp_data_dir, processor=processor or FakeProcessor())
+        lib.add_video("https://www.youtube.com/watch?v=abc12345678")
+        lib.save()
+        return lib
+
+    @staticmethod
+    def _manifest_path(tmp_data_dir):
+        return os.path.join(tmp_data_dir, "library", "library.json")
+
+    @staticmethod
+    def _index_path(tmp_data_dir):
+        return os.path.join(tmp_data_dir, "index", "library.faiss")
+
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
+    def test_save_persists_embedding_metadata(self, mock_api_cls, tmp_data_dir):
+        self._build_library(tmp_data_dir, mock_api_cls)
+        with open(self._manifest_path(tmp_data_dir)) as f:
+            manifest = json.load(f)
+        assert manifest["library_metadata"]["embedding"] == {
+            "backend": "hashing",
+            "model": "local_hash",
+            "dim": 768,
+        }
+
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
+    def test_dim_mismatch_triggers_rebuild(self, mock_api_cls, tmp_data_dir):
+        from multilingual.video_library import VideoLibrary
+
+        self._build_library(tmp_data_dir, mock_api_cls)
+
+        small = FakeProcessor()
+        small.embed_dim = 128
+        lib2 = VideoLibrary(data_dir=tmp_data_dir, processor=small)
+        assert lib2.index is not None
+        assert lib2.index.d == 128
+        with open(self._manifest_path(tmp_data_dir)) as f:
+            manifest = json.load(f)
+        assert manifest["library_metadata"]["embedding"]["dim"] == 128
+
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
+    def test_vector_count_drift_triggers_rebuild(self, mock_api_cls, tmp_data_dir):
+        from multilingual.video_library import VideoLibrary
+
+        lib = self._build_library(tmp_data_dir, mock_api_cls)
+        expected_chunks = len(lib.chunk_map)
+
+        # Corrupt the on-disk index with a wrong vector count.
+        stale = faiss.IndexFlatIP(768)
+        stale.add(np.zeros((expected_chunks + 3, 768), dtype="float32"))
+        faiss.write_index(stale, self._index_path(tmp_data_dir))
+
+        lib2 = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        assert lib2.index.ntotal == expected_chunks
+
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
+    def test_hash_fallback_preserves_model_built_index(self, mock_api_cls, tmp_data_dir):
+        from multilingual.video_library import VideoLibrary
+
+        self._build_library(tmp_data_dir, mock_api_cls)
+
+        # Pretend the saved index was built by a real sentence-transformers model.
+        manifest_path = self._manifest_path(tmp_data_dir)
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        model_metadata = {
+            "backend": "sentence_transformers",
+            "model": "intfloat/multilingual-e5-base",
+            "dim": 768,
+        }
+        manifest["library_metadata"]["embedding"] = model_metadata
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f)
+
+        lib2 = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        assert lib2.index is None
+        assert lib2._preserve_saved_index is True
+        assert lib2.index_embedding_metadata == model_metadata
+        assert lib2.search("テスト", k=3) == []
+
+        # save() must neither delete the good index nor rewrite its metadata.
+        lib2.save()
+        assert os.path.exists(self._index_path(tmp_data_dir))
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        assert manifest["library_metadata"]["embedding"] == model_metadata
+
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
+    def test_legacy_manifest_assumes_e5_base_and_preserves(
+        self, mock_api_cls, tmp_data_dir
+    ):
+        from multilingual.video_library import VideoLibrary
+
+        self._build_library(tmp_data_dir, mock_api_cls)
+
+        # Strip embedding metadata to simulate a pre-upgrade manifest.
+        manifest_path = self._manifest_path(tmp_data_dir)
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        del manifest["library_metadata"]["embedding"]
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f)
+
+        # Hashing processor vs assumed legacy e5-base metadata -> preserve path.
+        lib2 = VideoLibrary(data_dir=tmp_data_dir, processor=FakeProcessor())
+        assert lib2.index is None
+        assert lib2._preserve_saved_index is True
+        assert os.path.exists(self._index_path(tmp_data_dir))
+
+    @patch("multilingual.video_library.YouTubeTranscriptApi")
+    def test_missing_index_with_chunks_rebuilds_when_model_available(
+        self, mock_api_cls, tmp_data_dir
+    ):
+        from multilingual.video_library import VideoLibrary
+
+        self._build_library(tmp_data_dir, mock_api_cls)
+        os.remove(self._index_path(tmp_data_dir))
+
+        # A processor claiming a real model backend heals the missing index.
+        model_processor = FakeProcessor()
+        model_processor.embedding_metadata = lambda: {
+            "backend": "sentence_transformers",
+            "model": "intfloat/multilingual-e5-large",
+            "dim": 768,
+        }
+        lib2 = VideoLibrary(data_dir=tmp_data_dir, processor=model_processor)
+        assert lib2.index is not None
+        assert lib2.index.ntotal == len(lib2.chunk_map)
+        assert os.path.exists(self._index_path(tmp_data_dir))

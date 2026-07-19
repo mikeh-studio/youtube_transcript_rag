@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -13,6 +14,7 @@ from pipelines.video_ocr_common import (
     DEFAULT_DATA_DIR,
     format_timestamp,
     ocr_index_dir,
+    ocr_index_embed_meta_path,
     ocr_index_metadata_path,
     ocr_index_path,
     read_jsonl,
@@ -47,6 +49,40 @@ class OCREvidenceRetriever:
 
         records = list(read_jsonl(metadata_path))
         index = faiss.read_index(str(index_path))
+
+        # Never search across mismatched embedding spaces: skip indexes built
+        # with a different model than the active processor.
+        current = self.processor.embedding_metadata()
+        embed_meta_path = ocr_index_embed_meta_path(index_path)
+        if embed_meta_path.exists():
+            try:
+                saved = json.loads(embed_meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                saved = {}
+            if any(
+                saved.get(key) != current.get(key)
+                for key in ("backend", "model", "dim")
+            ):
+                print(
+                    f"Warning: OCR index for {scoped_video_id} was built with "
+                    f"{saved.get('model')} (dim {saved.get('dim')}) but the active "
+                    f"model is {current.get('model')} (dim {current.get('dim')}). "
+                    f"Skipping; rebuild with: python pipelines/embed_ocr.py "
+                    f"--video-id {scoped_video_id}"
+                )
+                self._cache[scoped_video_id] = (None, [])
+                return self._cache[scoped_video_id]
+        elif int(index.d) != int(current.get("dim") or 0):
+            # Legacy index without a sidecar: dimension mismatch is the only
+            # detectable signal (an equal-dim model change cannot be detected).
+            print(
+                f"Warning: OCR index for {scoped_video_id} has dim {index.d} but "
+                f"the active model expects {current.get('dim')}. Skipping; rebuild "
+                f"with: python pipelines/embed_ocr.py --video-id {scoped_video_id}"
+            )
+            self._cache[scoped_video_id] = (None, [])
+            return self._cache[scoped_video_id]
+
         self._cache[scoped_video_id] = (index, records)
         return self._cache[scoped_video_id]
 

@@ -85,6 +85,22 @@ class EnglishTokenizer(Tokenizer):
         return " ".join(words)
 
 
+DEFAULT_EMBED_MODEL = "intfloat/multilingual-e5-large"
+EMBED_MODEL_ENV = "YT_RAG_EMBED_MODEL"
+
+
+def embedding_prefixes(model_name):
+    """Return (query_prefix, passage_prefix) for a given embedding model.
+
+    E5-family models require the "query: "/"passage: " convention; most other
+    models (e.g. BAAI/bge-m3) expect raw text.
+    """
+    name = str(model_name or "").lower()
+    if "e5" in name:
+        return ("query: ", "passage: ")
+    return ("", "")
+
+
 # Registry: add a new language by adding one entry here + one Tokenizer subclass.
 LANGUAGE_CONFIG = {
     "ja": {
@@ -114,6 +130,12 @@ class TextProcessor:
         self.embed_dim = max(128, int(os.environ.get("RAG_LOCAL_EMBED_DIM", "768")))
         self.embed_model = None
         self.embedding_backend = "hashing"
+        self.embed_model_name = (
+            str(os.environ.get(EMBED_MODEL_ENV) or "").strip() or DEFAULT_EMBED_MODEL
+        )
+        self.query_prefix, self.passage_prefix = embedding_prefixes(
+            self.embed_model_name
+        )
 
         print("Initializing tokenizers...")
         self.tokenizers = {}
@@ -132,14 +154,27 @@ class TextProcessor:
             print("Using local hashing embeddings; embedding model startup skipped.")
             return
 
-        print("Loading embedding model (this may take a moment)...")
+        print(f"Loading embedding model {self.embed_model_name} (this may take a moment)...")
         try:
-            self.embed_model = SentenceTransformer("intfloat/multilingual-e5-base")
+            self.embed_model = SentenceTransformer(self.embed_model_name)
             self.embedding_backend = "sentence_transformers"
+            self.embed_dim = int(
+                self.embed_model.get_sentence_embedding_dimension()
+            )
         except Exception as e:
             print(f"  Warning: embedding model unavailable ({e}). Falling back to local hashing embeddings.")
             self.embed_model = None
             self.embedding_backend = "hashing"
+
+    def embedding_metadata(self):
+        """Describe the active embedding space (used for index compatibility checks)."""
+        if self.embedding_backend == "sentence_transformers":
+            return {
+                "backend": "sentence_transformers",
+                "model": self.embed_model_name,
+                "dim": int(self.embed_dim),
+            }
+        return {"backend": "hashing", "model": "local_hash", "dim": int(self.embed_dim)}
 
     def _hash_embedding(self, text: str) -> np.ndarray:
         """Deterministic local embedding fallback used when remote model is unavailable."""
@@ -491,7 +526,7 @@ class TextProcessor:
         Returns:
             numpy array of shape (n_chunks, embedding_dim), dtype float32.
         """
-        texts = ["passage: " + c["embed_text"] for c in chunks]
+        texts = [self.passage_prefix + c["embed_text"] for c in chunks]
         if self.embed_model is not None:
             emb = self.embed_model.encode(
                 texts,
@@ -503,7 +538,7 @@ class TextProcessor:
         return np.asarray([self._hash_embedding(text) for text in texts], dtype="float32")
 
     def encode_query(self, query, language=None):
-        """Encode a search query using E5 query prefix convention.
+        """Encode a search query using the model's query prefix convention.
 
         Args:
             query: Raw query string.
@@ -515,10 +550,10 @@ class TextProcessor:
         clean = self.clean_text(query)
         if language and language in self.tokenizers:
             query_tok = self.tokenize(clean, language)
-            query_text = f"query: {clean}\n{query_tok}"
+            query_text = f"{self.query_prefix}{clean}\n{query_tok}"
         else:
             # No language specified: use raw query (works well with multilingual-e5)
-            query_text = f"query: {clean}"
+            query_text = f"{self.query_prefix}{clean}"
         if self.embed_model is not None:
             emb = self.embed_model.encode([query_text], normalize_embeddings=True)
             return np.asarray(emb, dtype="float32")

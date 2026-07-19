@@ -23,6 +23,7 @@ from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
+from functools import lru_cache
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html import unescape
@@ -104,6 +105,8 @@ VIDEO_ID_RE = re.compile(r"[a-zA-Z0-9_-]{11}")
 PLAYLIST_VIDEO_RE = re.compile(r'"videoId":"([a-zA-Z0-9_-]{11})"')
 TOKEN_RE = re.compile(r"[a-zA-Z0-9_]+")
 JP_CHAR_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
+LEXICAL_TOKENIZER_MORPH_VERSION = "ja_morph_v1"
+LEXICAL_TOKENIZER_BIGRAM_VERSION = "ja_bigram_v0"
 RETRIEVAL_MODES = {"hybrid", "dense", "lexical"}
 HYBRID_BASELINE_PROFILE = "baseline_rrf"
 HYBRID_OPTIMIZED_PROFILE = "optimized_v1"
@@ -418,6 +421,67 @@ def _coerce_request_flag(value: Any, default: bool = False) -> bool:
 def normalize_language(value: Optional[str], fallback: str = "ja") -> str:
     language = (value or fallback).strip().lower()
     return language if language in LANGUAGE_CONFIG else fallback
+
+
+@lru_cache(maxsize=1)
+def _ja_lexical_tokenizer():
+    """Lazy fugashi-backed tokenizer shared by all lexical tokenization calls.
+
+    Returns None when fugashi (or its dictionary) is unavailable, which
+    switches lexical tokenization back to the character-bigram fallback.
+    """
+    try:
+        from multilingual.text_processing import JapaneseTokenizer
+
+        return JapaneseTokenizer()
+    except Exception:
+        return None
+
+
+def lexical_token_version() -> str:
+    if _ja_lexical_tokenizer() is not None:
+        return LEXICAL_TOKENIZER_MORPH_VERSION
+    return LEXICAL_TOKENIZER_BIGRAM_VERSION
+
+
+def tokenize_for_lexical(text: str, language: Optional[str] = None) -> List[str]:
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    if not cleaned:
+        return []
+
+    inferred = language or ("ja" if JP_CHAR_RE.search(cleaned) else "en")
+    lang = normalize_language(inferred, fallback="ja" if inferred == "ja" else "en")
+
+    tokens: List[str] = []
+    if lang == "ja" or JP_CHAR_RE.search(cleaned):
+        tokenizer = _ja_lexical_tokenizer()
+        if tokenizer is not None:
+            # Drop punctuation-only morphemes; they carry no lexical signal.
+            tokens.extend(
+                tok
+                for tok in tokenizer.tokenize(cleaned).lower().split(" ")
+                if tok.strip()
+                and (TOKEN_RE.search(tok) or JP_CHAR_RE.search(tok))
+            )
+            # Keep latin/numeric tokens so mixed ja/en text (loanwords,
+            # model names, numbers) still matches English-tokenized queries.
+            # Skip ones the morphological pass already emitted so BM25 term
+            # frequencies are not double-counted.
+            morph_tokens = set(tokens)
+            tokens.extend(
+                tok for tok in TOKEN_RE.findall(cleaned) if tok not in morph_tokens
+            )
+        else:
+            compact = cleaned.replace(" ", "")
+            if len(compact) == 1:
+                tokens.append(compact)
+            else:
+                tokens.extend(compact[i : i + 2] for i in range(len(compact) - 1))
+            tokens.extend([part for part in cleaned.split(" ") if part])
+    else:
+        tokens.extend(TOKEN_RE.findall(cleaned))
+
+    return [tok for tok in tokens if tok]
 
 
 def extract_video_id(value: str) -> Optional[str]:
@@ -1382,7 +1446,11 @@ class LocalRAGService:
             fallback=self._infer_query_language(query),
         )
         query_tokens = row.get("query_tokens")
-        if isinstance(query_tokens, list):
+        token_version = str(row.get("token_version") or "").strip()
+        # Stored tokens are only comparable to freshly tokenized queries when
+        # they were produced by the active tokenizer; otherwise recompute from
+        # the persisted query text.
+        if isinstance(query_tokens, list) and token_version == lexical_token_version():
             normalized_tokens = [
                 str(tok).strip().lower() for tok in query_tokens if str(tok).strip()
             ]
@@ -1399,6 +1467,7 @@ class LocalRAGService:
             "query": query,
             "query_language": query_language,
             "query_tokens": normalized_tokens,
+            "token_version": lexical_token_version(),
             "retrieval_mode": retrieval_mode,
             "model": str(row.get("model") or row.get("retrieval_mode") or "hybrid"),
             "label": label,
@@ -2192,25 +2261,7 @@ class LocalRAGService:
 
     @staticmethod
     def _tokenize_for_lexical(text: str, language: Optional[str] = None) -> List[str]:
-        cleaned = re.sub(r"\s+", " ", str(text or "")).strip().lower()
-        if not cleaned:
-            return []
-
-        inferred = language or ("ja" if JP_CHAR_RE.search(cleaned) else "en")
-        lang = normalize_language(inferred, fallback="ja" if inferred == "ja" else "en")
-
-        tokens: List[str] = []
-        if lang == "ja" or JP_CHAR_RE.search(cleaned):
-            compact = cleaned.replace(" ", "")
-            if len(compact) == 1:
-                tokens.append(compact)
-            else:
-                tokens.extend(compact[i : i + 2] for i in range(len(compact) - 1))
-            tokens.extend([part for part in cleaned.split(" ") if part])
-        else:
-            tokens.extend(TOKEN_RE.findall(cleaned))
-
-        return [tok for tok in tokens if tok]
+        return tokenize_for_lexical(text, language=language)
 
     def _all_chunks(self, video_id: Optional[str] = None) -> List[dict]:
         rows: List[dict] = []
