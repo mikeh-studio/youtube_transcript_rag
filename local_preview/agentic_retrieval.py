@@ -79,7 +79,7 @@ def normalize_query_for_compare(value: str) -> str:
 
 
 def heuristic_query_rewrite(question: str, language: Optional[str] = None) -> Optional[str]:
-    """Deterministic keyword-style rewrite used when no LLM is available.
+    """Return a deterministic keyword-style retrieval rewrite.
 
     Strips question phrasing and filler words so retrieval focuses on
     distinctive content terms. Returns None when the rewrite would be

@@ -116,9 +116,6 @@ RERANKER_MODES = {"none", "cross_encoder"}
 RERANKER_ENV = "YT_RAG_RERANKER"
 _RERANKER_INIT_LOCK = threading.Lock()
 AGENTIC_RETRIEVAL_ENV = "YT_RAG_AGENTIC_RETRIEVAL"
-AGENTIC_REWRITE_MAX_TOKENS = 300
-AGENTIC_REWRITE_TEMPERATURE = 0.2
-AGENTIC_REWRITE_MAX_QUERY_CHARS = 512
 HYBRID_OPTIMIZED_WEIGHTS = {
     "dense": 0.475,
     "lexical": 0.475,
@@ -2838,56 +2835,17 @@ class LocalRAGService:
     def _rewrite_query_for_retrieval(
         self,
         *,
-        question: str,
         previous_query: str,
         attempted_queries: set,
         language: str,
-        provider: str,
-        model: Optional[str] = None,
     ) -> Optional[str]:
-        """Produce a retrieval-focused rewrite of a weak query.
-
-        Tries an LLM rewrite first and falls back to the deterministic
-        heuristic when no provider key is configured or the call fails.
-        """
-        system_prompt = (
-            "You rewrite search queries for transcript retrieval.\n"
-            "Keep the rewritten query in the same language as the question.\n"
-            "Prefer distinctive content keywords over question phrasing.\n"
-            "Do not invent terms unrelated to the question.\n"
-            'Return strict JSON only: {"query": "rewritten query"}'
-        )
-        attempted_lines = "\n".join(f"- {item}" for item in sorted(attempted_queries))
-        user_message = (
-            f"Question:\n{question.strip()}\n\n"
-            f"Previous query that returned weak evidence:\n{previous_query.strip()}\n\n"
-            f"Already tried queries:\n{attempted_lines}\n\n"
-            "Return strict JSON only."
-        )
-        try:
-            llm = self._llm_text_response(
-                provider=provider,
-                system_prompt=system_prompt,
-                user_message=user_message,
-                max_tokens=AGENTIC_REWRITE_MAX_TOKENS,
-                temperature=AGENTIC_REWRITE_TEMPERATURE,
-                model=model,
-            )
-            parsed = _extract_json_payload(llm["text"])
-            if isinstance(parsed, dict):
-                # Cap length so a pathological model output cannot flow
-                # unbounded into embedding calls, BM25, and ask history.
-                candidate = str(parsed.get("query") or "").strip()[
-                    :AGENTIC_REWRITE_MAX_QUERY_CHARS
-                ].strip()
-                if (
-                    candidate
-                    and normalize_query_for_compare(candidate) not in attempted_queries
-                ):
-                    return candidate
-        except Exception:
-            pass
-        return heuristic_query_rewrite(previous_query, language=language)
+        """Produce a deterministic retrieval-focused rewrite of a weak query."""
+        candidate = heuristic_query_rewrite(previous_query, language=language)
+        if not candidate:
+            return None
+        if normalize_query_for_compare(candidate) in attempted_queries:
+            return None
+        return candidate
 
     def retrieve_agentic(
         self,
@@ -2898,8 +2856,6 @@ class LocalRAGService:
         video_id: Optional[str] = None,
         retrieval_profile: Optional[str] = None,
         reranker: Optional[str] = None,
-        provider: str = DEFAULT_ASK_PROVIDER,
-        model: Optional[str] = None,
     ) -> dict:
         """Retrieve with evidence-driven retries for grounded answering.
 
@@ -2933,12 +2889,9 @@ class LocalRAGService:
 
         def rewrite_fn(*, query: str, attempted_queries: set) -> Optional[str]:
             return self._rewrite_query_for_retrieval(
-                question=question,
                 previous_query=query,
                 attempted_queries=attempted_queries,
                 language=answer_language,
-                provider=provider,
-                model=model,
             )
 
         outcome = run_agentic_retrieval(
@@ -2958,6 +2911,7 @@ class LocalRAGService:
             "final_query": outcome["final_query"],
             "final_retrieval_mode": outcome["final_mode"],
             "final_k": outcome["final_k"],
+            "rewrite_method": "deterministic_heuristic",
             "attempts": outcome["attempts"],
         }
         return outcome
@@ -7494,8 +7448,6 @@ class Handler(BaseHTTPRequestHandler):
                         retrieval_profile=retrieval_profile,
                         video_id=video_id,
                         reranker=body.get("reranker"),
-                        provider=provider,
-                        model=model_override,
                     )
                     retrieval = agentic_outcome["retrieval"]
                 else:
