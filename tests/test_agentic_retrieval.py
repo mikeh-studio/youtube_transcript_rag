@@ -230,7 +230,7 @@ def _make_service():
     return service
 
 
-def test_retrieve_agentic_uses_heuristic_rewrite_without_provider():
+def test_retrieve_agentic_uses_deterministic_rewrite_without_llm_call():
     service = _make_service()
     strong_rows = [
         {
@@ -264,7 +264,7 @@ def test_retrieve_agentic_uses_heuristic_rewrite_without_provider():
         return {"retrieval_mode": kwargs.get("retrieval_mode", "hybrid"), "details": {}, "results": rows}
 
     def fail_llm(**kwargs):
-        raise ValueError("no provider key configured")
+        raise AssertionError("deterministic retrieval rewriting must not call an LLM")
 
     service.retrieve = fake_retrieve
     service._llm_text_response = fail_llm
@@ -279,30 +279,29 @@ def test_retrieve_agentic_uses_heuristic_rewrite_without_provider():
     assert trace["enabled"] is True
     assert trace["applied"] is True
     assert trace["stopped_reason"] == STOPPED_SUFFICIENT
+    assert trace["rewrite_method"] == "deterministic_heuristic"
     assert [attempt["strategy"] for attempt in trace["attempts"]] == [
         STRATEGY_INITIAL,
         STRATEGY_REWRITE_QUERY,
     ]
 
 
-def test_retrieve_agentic_prefers_llm_rewrite_when_available():
+def test_retrieve_agentic_does_not_use_available_llm_for_rewrite():
     service = _make_service()
     retrieve_calls = []
+    llm_calls = []
 
     def fake_retrieve(query, **kwargs):
         retrieve_calls.append(query)
         return {"retrieval_mode": "hybrid", "details": {}, "results": []}
 
     service.retrieve = fake_retrieve
-    service._llm_text_response = lambda **kwargs: {
-        "provider": "chatgpt",
-        "model": "test-model",
-        "text": '{"query": "llm rewritten query"}',
-    }
+    service._llm_text_response = lambda **kwargs: llm_calls.append(kwargs)
 
     outcome = service.retrieve_agentic("What is Jetson Orin used for?", k=5)
 
-    assert retrieve_calls[1] == "llm rewritten query"
+    assert retrieve_calls[1] == "jetson orin used"
+    assert llm_calls == []
     assert outcome["sufficient"] is False
 
 
@@ -346,7 +345,8 @@ def test_ask_route_uses_agentic_retrieval_when_flag_set(monkeypatch):
     class StubService:
         def retrieve_agentic(self, question, **kwargs):
             calls["agentic"] += 1
-            assert kwargs.get("provider") == "chatgpt"
+            assert "provider" not in kwargs
+            assert "model" not in kwargs
             return {
                 "retrieval": {
                     "retrieval_mode": "hybrid",

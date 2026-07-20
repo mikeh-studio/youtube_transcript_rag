@@ -190,10 +190,11 @@ model cannot be downloaded, reranking is skipped and the load error is
 reported in `retrieval_details.reranker`.
 
 The agentic retrieval loop retries `/v1/ask` retrieval when the grounded
-evidence check finds the results too weak: it rewrites the query (with the
-selected LLM provider, falling back to a deterministic heuristic), switches
-retrieval mode, or broadens top-k, for up to three attempts. Enable it per
-request with `"agentic": true` or globally with `YT_RAG_AGENTIC_RETRIEVAL=1`.
+evidence check finds the results too weak: it rewrites the query with a
+deterministic English/Japanese heuristic, switches retrieval mode, or broadens
+top-k, for up to three attempts. Query rewriting does not call an LLM. Enable
+it per request with `"agentic": true` or globally with
+`YT_RAG_AGENTIC_RETRIEVAL=1`.
 The attempt trace is returned in `retrieval_details.agentic_retrieval`. If no
 attempt reaches sufficient evidence, the attempt with the most retrieved
 evidence (the original query on ties) is returned and the normal
