@@ -1,13 +1,30 @@
 import { expect, test } from "@playwright/test";
 
 async function prepareQAStudio(page, options = {}) {
-  const { locale } = options;
-  await page.addInitScript((initLocale) => {
+  const {
+    locale,
+    lastVideoId = "vid1",
+    videos = [
+      { video_id: "vid1", title: "Demo Video" },
+      { video_id: "vid2", title: "Demo Video 2" },
+    ],
+  } = options;
+  await page.addInitScript(({ initLocale, initLastVideoId }) => {
     localStorage.setItem("yt_rag_ingest_unlocked", "1");
+    if (initLastVideoId) {
+      localStorage.setItem("yt_rag_last_video_id", initLastVideoId);
+    }
     if (initLocale) {
       localStorage.setItem("youtube-rag-ui-locale", initLocale);
     }
-  }, locale ?? null);
+  }, { initLocale: locale ?? null, initLastVideoId: lastVideoId });
+  await page.route("**/v1/videos", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, videos }),
+    });
+  });
   await page.goto("/index.html#/qa");
 }
 
@@ -298,12 +315,14 @@ test("visualizes agentic attempts and reranked results", async ({ page }) => {
 
   await prepareQAStudio(page);
   await page.getByLabel("Question").fill("How is the retrieval update different?");
-  await page.getByLabel("Agentic retry").check();
+  await expect(page.getByLabel("Video scope")).toHaveValue("vid1");
+  await expect(page.getByLabel("Agentic retry")).toBeChecked();
   await page.getByLabel("Reranker").selectOption("cross_encoder");
   await page.getByRole("button", { name: "Generate Answer" }).click();
 
   expect(requestBody).toMatchObject({
     agentic: true,
+    video_id: "vid1",
     reranker: "cross_encoder",
     retrieval_mode: "hybrid",
   });

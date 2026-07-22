@@ -1148,6 +1148,9 @@ function RetrievalVisuals({ response, rows }) {
 }
 
 function QAStudioPage({ locale }) {
+  const [askVideos, setAskVideos] = useState([]);
+  const [askVideoId, setAskVideoId] = useState("");
+  const [isLoadingAskVideos, setIsLoadingAskVideos] = useState(true);
   const [query, setQuery] = useState("");
   const [kSearch, setKSearch] = useState(5);
   const [searchMode, setSearchMode] = useState("hybrid");
@@ -1161,7 +1164,7 @@ function QAStudioPage({ locale }) {
   const [kAsk, setKAsk] = useState(5);
   const [askMode, setAskMode] = useState("hybrid");
   const [askSourceMode, setAskSourceMode] = useState("transcript");
-  const [askAgentic, setAskAgentic] = useState(false);
+  const [askAgentic, setAskAgentic] = useState(true);
   const [askReranker, setAskReranker] = useState("none");
   const [provider, setProvider] = useState("chatgpt");
   const [model, setModel] = useState("");
@@ -1179,6 +1182,53 @@ function QAStudioPage({ locale }) {
     title: "",
   });
   const [activeQaTool, setActiveQaTool] = useState("ask");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAskVideos() {
+      setIsLoadingAskVideos(true);
+      try {
+        const payload = await apiRequest("/v1/videos");
+        if (cancelled) {
+          return;
+        }
+        const rows = Array.isArray(payload?.videos) ? payload.videos : [];
+        setAskVideos(rows);
+        if (!rows.length) {
+          setAskVideoId("");
+          return;
+        }
+
+        const saved = String(readLocalStorage(LAST_VIDEO_KEY) || "").trim();
+        const matched = rows.find((row) => String(row.video_id) === saved);
+        const fallback = rows[rows.length - 1];
+        setAskVideoId(String(matched?.video_id || fallback?.video_id || ""));
+      } catch {
+        if (!cancelled) {
+          setAskVideos([]);
+          setAskVideoId("");
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoadingAskVideos(false);
+        }
+      }
+    }
+
+    loadAskVideos();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function selectAskVideo(videoId) {
+    const scopedVideoId = String(videoId || "").trim();
+    setAskVideoId(scopedVideoId);
+    if (scopedVideoId) {
+      writeLocalStorage(LAST_VIDEO_KEY, scopedVideoId);
+    }
+  }
 
   function resultIdentity(row) {
     const videoId = String(row?.video_id || "").trim() || extractVideoId(row?.url) || extractVideoId(row?.video_url);
@@ -1332,6 +1382,7 @@ function QAStudioPage({ locale }) {
           k: Number(kAsk || 5),
           retrieval_mode: askMode,
           source_mode: askSourceMode,
+          video_id: askVideoId || undefined,
           provider,
           model: model || undefined,
           agentic: askSourceMode === "transcript" ? askAgentic : false,
@@ -1419,6 +1470,21 @@ function QAStudioPage({ locale }) {
                 />
               </label>
               <div className="qa-controls-row ask-controls-row">
+                <label>
+                  <span>Video scope</span>
+                  <select
+                    value={askVideoId}
+                    onChange={(event) => selectAskVideo(event.target.value)}
+                    disabled={isLoadingAskVideos || !askVideos.length}
+                  >
+                    <option value="">All videos</option>
+                    {askVideos.map((video) => (
+                      <option key={video.video_id} value={video.video_id}>
+                        {video.title || video.video_id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <label>
                   <span>Top K</span>
                   <input
