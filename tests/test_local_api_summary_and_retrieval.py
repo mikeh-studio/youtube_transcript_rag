@@ -528,6 +528,77 @@ def test_study_episode_context_extracts_people_but_not_show_brand():
         "Steve Nash",
     ]
 
+
+def test_study_episode_context_excludes_title_case_show_brand():
+    service = _make_study_service()
+    context = {
+        "video": {
+            "title": "The Kevin Durant Interview | LeBron James | Mind The Game",
+            "url": "https://www.youtube.com/watch?v=durant-demo",
+        },
+        "segments": [],
+    }
+
+    episode_context = service._study_episode_context_pack(context=context)
+
+    assert episode_context["participants_from_title"] == [
+        "Kevin Durant",
+        "LeBron James",
+    ]
+
+
+def test_study_speaker_attribution_ignores_substring_name_collisions():
+    service = _make_study_service()
+
+    attribution = service._study_speaker_attribution(
+        value=(
+            "Steve Nash explains the pick and roll while breaking down "
+            "Jamestown history."
+        ),
+        episode_context={
+            "primary_subject": "Steve Nash",
+            "participants_from_title": ["Steve Nash", "LeBron James"],
+            "role_claims_from_intro": [],
+        },
+    )
+
+    # "James" is only a substring of "Jamestown"; without word-boundary
+    # matching it would falsely count as a second participant and blank out
+    # the real speaker.
+    assert attribution["speaker"] == "Steve Nash"
+    assert attribution["speaker_confidence"] == "named_in_section"
+
+
+def test_study_summary_sections_reject_transcriptless_video():
+    service = _make_study_service()
+    context = {
+        "video_id": "empty-demo",
+        "video": {"title": "Empty Demo", "chunks": []},
+        "segments": [],
+    }
+    summary_bundle = {
+        "summary": [
+            {
+                "rank": 1,
+                "title": "A descriptive theme",
+                "tldr": "Some summary text.",
+                "start": 0.0,
+                "end": 10.0,
+            },
+        ],
+    }
+
+    # No transcript rows survive text cleaning. The summary path must fail the
+    # same explicit way as the deterministic path (via _study_evidence_rows)
+    # rather than crashing on min() over an empty sequence.
+    with pytest.raises(ValueError):
+        service._study_summary_sections(
+            context=context,
+            language="en",
+            summary_bundle=summary_bundle,
+        )
+
+
 def test_generate_study_flashcards_uses_chatgpt_when_key_is_configured(monkeypatch):
     monkeypatch.setattr(local_api, "OpenAI", object())
     monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")

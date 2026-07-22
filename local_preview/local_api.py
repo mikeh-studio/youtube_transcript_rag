@@ -206,6 +206,10 @@ STUDY_CARD_COUNT_MAX = 20
 STUDY_DEFAULT_CARD_COUNT = 8
 STUDY_CARD_TYPES = ("recall", "concept", "detail", "application")
 STUDY_SECTION_CACHE_VERSION = 4
+# Show/segment brands that appear in episode titles but are never speakers.
+# Compared case-insensitively so Title-Case variants are excluded too (the
+# all-caps form is already dropped by the isupper() heuristic).
+STUDY_SHOW_BRAND_STOPWORDS = frozenset({"mind the game"})
 STUDY_EXPLAIN_TOPIC_MIN_MAX_TOKENS = 2400
 SAKANA_STUDY_MIN_MAX_TOKENS = 4000
 STUDY_DEFAULT_FOCUS_PRESET = "main_ideas"
@@ -4522,7 +4526,10 @@ class LocalRAGService:
             aliases = [clean_name]
             if len(name_tokens) >= 2 and len(name_tokens[-1]) >= 4:
                 aliases.append(name_tokens[-1])
-            if any(alias.casefold() in normalized for alias in aliases):
+            if any(
+                re.search(rf"\b{re.escape(alias.casefold())}\b", normalized)
+                for alias in aliases
+            ):
                 matches.append(clean_name)
         return list(dict.fromkeys(matches))
 
@@ -4534,6 +4541,13 @@ class LocalRAGService:
     ) -> dict:
         participants = episode_context.get("participants_from_title") or []
         matched_names = self._study_names_in_text(value, participants)
+        # Deliberately conservative: we only attempt named attribution when a
+        # single participant appears in the section. When two or more named
+        # people are present the actual speaker is ambiguous (e.g. "Curry
+        # explains how LeBron changed the game" names both but only Curry is
+        # speaking), so we decline rather than guess. The "Multiple speakers"
+        # episode-context label below is reached only for the single-name case
+        # that lacks an explicit speech cue.
         if len(matched_names) != 1:
             return {
                 "speaker": "Unknown speaker",
@@ -4614,6 +4628,8 @@ class LocalRAGService:
                 continue
             start = float(item.get("start", 0.0) or 0.0)
             end = float(item.get("end", start) or start)
+            # evidence_rows is guaranteed non-empty here: _study_evidence_rows
+            # raises ValueError for a transcript with no readable rows.
             evidence = min(
                 evidence_rows,
                 key=lambda row: abs(float(row.get("start", 0.0) or 0.0) - start),
@@ -4761,6 +4777,9 @@ class LocalRAGService:
         return sections
 
     def _get_study_sections(self, *, context: dict, language: str) -> dict:
+        # Normalize once here so the summary-bundle lookup and the section-cache
+        # comparison below both key off the same canonical language string.
+        language = str(language or "").strip().lower()
         cache_path = self._study_section_cache_path(context["video_id"])
         cached = self._read_json_file(cache_path)
         summary_bundle = self._study_cached_summary_bundle(
@@ -5811,6 +5830,8 @@ class LocalRAGService:
             ):
                 candidate = self._study_clean_text(candidate)
                 if candidate.isupper():
+                    continue
+                if candidate.casefold() in STUDY_SHOW_BRAND_STOPWORDS:
                     continue
                 if not re.fullmatch(
                     r"[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){1,3}",
