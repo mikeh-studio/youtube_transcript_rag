@@ -87,3 +87,74 @@ test("switches Ask, Study, and Summarize inside Studio", async ({ page }) => {
   await page.getByRole("tab", { name: "Summarize" }).click();
   await expect(page).toHaveURL(/#\/tldr$/);
 });
+
+test("shows supported speaker context on generated study flashcards", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("yt_rag_ingest_unlocked", "1");
+    sessionStorage.setItem("yt_rag_intro_seen", "1");
+  });
+  await page.route("**/v1/videos", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        videos: [
+          {
+            video_id: "curry-demo",
+            title: "The Stephen Curry Interview",
+            language: "en",
+            num_chunks: 12,
+          },
+        ],
+      }),
+    });
+  });
+  await page.route("**/v1/llm-options", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ providers: [] }) });
+  });
+  await page.route("**/v1/study/generate", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        mode: "flashcards",
+        video_id: "curry-demo",
+        video_title: "The Stephen Curry Interview",
+        provider: "local",
+        model: "deterministic-learning-cards",
+        source: { segment_count: 12, chunk_count: 12 },
+        focus: { preset_label: "Main ideas", model_profile_label: "Balanced" },
+        evidence_pack: { section_count: 5, selected_section_count: 5, selected_sections: [] },
+        deck: {
+          cards: [
+            {
+              card_type: "recall",
+              question: "How did Stephen Curry describe rebuilding confidence?",
+              answer: "He treated preparation as a way to regain trust in his game.",
+              explanation: "The section connects preparation with confidence.",
+              learning_objective: "Recall Curry's preparation mindset.",
+              why_it_matters: "It connects a setback to a repeatable response.",
+              source_cue: "Stephen Curry explains how preparation restored confidence.",
+              speaker: "Stephen Curry",
+              speaker_role: "interview subject",
+              speaker_confidence: "named_in_section",
+              tags: ["leadership"],
+              evidence: {
+                video_id: "curry-demo",
+                video_title: "The Stephen Curry Interview",
+                start: 60,
+                timestamp: "1:00",
+                url: "https://www.youtube.com/watch?v=curry-demo&t=60s",
+              },
+            },
+          ],
+        },
+      }),
+    });
+  });
+
+  await page.goto("/index.html#/study");
+  await page.getByRole("button", { name: "Generate Flashcards" }).click();
+
+  const speaker = page.locator(".study-speaker");
+  await expect(speaker).toContainText("Speaker: Stephen Curry · interview subject");
+  await expect(speaker).toContainText("Supported by section context");
+});

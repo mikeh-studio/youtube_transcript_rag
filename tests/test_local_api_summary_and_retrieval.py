@@ -337,6 +337,268 @@ def test_generate_study_flashcards_use_requested_focus_without_timestamps(
         for check in quality["quality"]["checks"]
     )
 
+
+def test_study_flashcards_reuse_summary_sections_and_show_supported_speaker(
+    monkeypatch,
+):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    service = _make_study_service()
+    video = service.engine.library.videos["vidStudy001"]
+    video["title"] = (
+        "The Stephen Curry Interview (Part 1) | LeBron James and Steve Nash"
+    )
+
+    before = service.generate_study_artifact(
+        mode="flashcards",
+        video_id="vidStudy001",
+        language="en",
+        provider="chatgpt",
+        model=None,
+        card_count=5,
+        difficulty="balanced",
+    )
+    assert before["evidence_pack"]["basis"] == "deterministic"
+
+    context = service._resolve_study_context("vidStudy001")
+    summary_items = [
+        {
+            "rank": rank,
+            "title": title,
+            "tldr": tldr,
+            "anchor_text": anchor,
+            "start": float((rank - 1) * 60),
+            "end": float((rank - 1) * 60 + 24),
+            "url": (
+                "https://www.youtube.com/watch?v=vidStudy001"
+                f"&t={(rank - 1) * 60}s"
+            ),
+        }
+        for rank, title, tldr, anchor in [
+            (
+                1,
+                "Stephen Curry explains how early setbacks shaped his confidence",
+                "Stephen Curry describes how setbacks became part of his preparation.",
+                "The host opens the episode",
+            ),
+            (
+                2,
+                "Stephen Curry breaks down the discipline behind his shooting",
+                "Stephen Curry connects repetition with trust in his mechanics.",
+                "The first section frames the main idea",
+            ),
+            (
+                3,
+                "Stephen Curry reflects on leadership and team standards",
+                "Stephen Curry explains how leaders reinforce habits for teammates.",
+                "Serie is introduced as a character",
+            ),
+            (
+                4,
+                "Stephen Curry discusses adapting when defenses change",
+                "Stephen Curry describes reading pressure and changing decisions.",
+                "The acting section explains performance direction",
+            ),
+            (
+                5,
+                "Stephen Curry defines what keeps improvement sustainable",
+                "Stephen Curry ties long-term growth to curiosity and consistent work.",
+                "The closing section returns to favorite magic",
+            ),
+        ]
+    ]
+    service._put_summary_cache(
+        video_id="vidStudy001",
+        video=video,
+        cache_key=service._summary_cache_key(
+            language="en",
+            provider="chatgpt",
+            max_points=5,
+            model="gpt-5.4-mini",
+        ),
+        source_fingerprint=context["source_fingerprint"],
+        language="en",
+        provider="chatgpt",
+        max_points=5,
+        model="gpt-5.4-mini",
+        response_payload={"summary": summary_items},
+    )
+
+    after = service.generate_study_artifact(
+        mode="flashcards",
+        video_id="vidStudy001",
+        language="en",
+        provider="chatgpt",
+        model=None,
+        card_count=5,
+        difficulty="balanced",
+    )
+
+    assert after["evidence_pack"]["basis"] == "summary_cache"
+    assert after["evidence_pack"]["cache_status"] == "miss"
+    assert all(
+        not section["title"].startswith("Section ")
+        for section in after["evidence_pack"]["selected_sections"]
+    )
+    assert all(
+        card["speaker"] == "Stephen Curry"
+        for card in after["deck"]["cards"]
+    )
+    assert all(
+        card["speaker_role"] == "interview subject"
+        for card in after["deck"]["cards"]
+    )
+    assert all(
+        card["speaker_confidence"] == "named_in_section"
+        for card in after["deck"]["cards"]
+    )
+
+
+def test_study_flashcards_keep_unknown_speaker_when_section_is_unattributed(
+    monkeypatch,
+):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    service = _make_study_service()
+
+    flashcards = service.generate_study_artifact(
+        mode="flashcards",
+        video_id="vidStudy001",
+        language="en",
+        provider="chatgpt",
+        model=None,
+        card_count=4,
+        difficulty="balanced",
+    )
+
+    assert all(
+        card["speaker"] == "Unknown speaker"
+        for card in flashcards["deck"]["cards"]
+    )
+    assert all(
+        card["speaker_confidence"] == "unattributed"
+        for card in flashcards["deck"]["cards"]
+    )
+
+
+def test_study_speaker_attribution_preserves_multi_person_interview_context():
+    service = _make_study_service()
+
+    attribution = service._study_speaker_attribution(
+        value=(
+            "Curry's gravity changed defenses and boosted teammates. "
+            "The speakers explain how his movement creates open shots."
+        ),
+        episode_context={
+            "primary_subject": "Stephen Curry",
+            "participants_from_title": [
+                "Stephen Curry",
+                "LeBron James",
+                "Steve Nash",
+            ],
+            "role_claims_from_intro": [],
+        },
+    )
+
+    assert attribution == {
+        "speaker": "Multiple speakers",
+        "speaker_role": "Stephen Curry, LeBron James, Steve Nash",
+        "speaker_confidence": "episode_context",
+    }
+
+
+def test_study_episode_context_extracts_people_but_not_show_brand():
+    service = _make_study_service()
+    context = {
+        "video": {
+            "title": (
+                "The Kevin Durant Interview | LeBron James & Steve Nash | "
+                "MIND THE GAME"
+            ),
+            "url": "https://www.youtube.com/watch?v=durant-demo",
+        },
+        "segments": [],
+    }
+
+    episode_context = service._study_episode_context_pack(context=context)
+
+    assert episode_context["primary_subject"] == "Kevin Durant"
+    assert episode_context["participants_from_title"] == [
+        "Kevin Durant",
+        "LeBron James",
+        "Steve Nash",
+    ]
+
+
+def test_study_episode_context_excludes_title_case_show_brand():
+    service = _make_study_service()
+    context = {
+        "video": {
+            "title": "The Kevin Durant Interview | LeBron James | Mind The Game",
+            "url": "https://www.youtube.com/watch?v=durant-demo",
+        },
+        "segments": [],
+    }
+
+    episode_context = service._study_episode_context_pack(context=context)
+
+    assert episode_context["participants_from_title"] == [
+        "Kevin Durant",
+        "LeBron James",
+    ]
+
+
+def test_study_speaker_attribution_ignores_substring_name_collisions():
+    service = _make_study_service()
+
+    attribution = service._study_speaker_attribution(
+        value=(
+            "Steve Nash explains the pick and roll while breaking down "
+            "Jamestown history."
+        ),
+        episode_context={
+            "primary_subject": "Steve Nash",
+            "participants_from_title": ["Steve Nash", "LeBron James"],
+            "role_claims_from_intro": [],
+        },
+    )
+
+    # "James" is only a substring of "Jamestown"; without word-boundary
+    # matching it would falsely count as a second participant and blank out
+    # the real speaker.
+    assert attribution["speaker"] == "Steve Nash"
+    assert attribution["speaker_confidence"] == "named_in_section"
+
+
+def test_study_summary_sections_reject_transcriptless_video():
+    service = _make_study_service()
+    context = {
+        "video_id": "empty-demo",
+        "video": {"title": "Empty Demo", "chunks": []},
+        "segments": [],
+    }
+    summary_bundle = {
+        "summary": [
+            {
+                "rank": 1,
+                "title": "A descriptive theme",
+                "tldr": "Some summary text.",
+                "start": 0.0,
+                "end": 10.0,
+            },
+        ],
+    }
+
+    # No transcript rows survive text cleaning. The summary path must fail the
+    # same explicit way as the deterministic path (via _study_evidence_rows)
+    # rather than crashing on min() over an empty sequence.
+    with pytest.raises(ValueError):
+        service._study_summary_sections(
+            context=context,
+            language="en",
+            summary_bundle=summary_bundle,
+        )
+
+
 def test_generate_study_flashcards_uses_chatgpt_when_key_is_configured(monkeypatch):
     monkeypatch.setattr(local_api, "OpenAI", object())
     monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
