@@ -5,7 +5,7 @@ const LAST_VIDEO_KEY = "yt_rag_last_video_id";
 const FEEDBACK_REVISION_STORAGE_KEY = "youtube-rag-feedback-revision";
 const LOCALE_STORAGE_KEY = "youtube-rag-ui-locale";
 const INTRO_SEEN_SESSION_KEY = "yt_rag_intro_seen";
-const STUDY_HISTORY_SESSION_KEY = "yt_rag_study_history_v1";
+const STUDY_HISTORY_SESSION_KEY = "yt_rag_study_history_v2";
 const STUDY_HISTORY_LIMIT = 12;
 const ROUTES = {
   INGEST: "/ingest",
@@ -2632,6 +2632,19 @@ function StudyStudioPage() {
                 <div className="study-card-meta">
                   {card.learning_objective ? <span>{card.learning_objective}</span> : null}
                 </div>
+                <p className="study-speaker">
+                  <strong>
+                    {card.speaker_confidence === "named_in_section" ? "Speaker:" : "Speaker context:"}
+                  </strong> {card.speaker || "Unknown speaker"}
+                  {card.speaker_role ? ` · ${card.speaker_role}` : ""}
+                  {card.speaker_confidence === "named_in_section" ? (
+                    <span>Supported by section context</span>
+                  ) : card.speaker_confidence === "episode_context" ? (
+                    <span>Participants named by the video; the exact turn is not labeled</span>
+                  ) : (
+                    <span>No reliable attribution in this section</span>
+                  )}
+                </p>
                 <p className="study-answer">{card.answer}</p>
                 <p className="search-snippet">{card.explanation}</p>
                 {card.why_it_matters ? (

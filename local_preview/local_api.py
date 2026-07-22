@@ -205,7 +205,7 @@ STUDY_CARD_COUNT_MIN = 4
 STUDY_CARD_COUNT_MAX = 20
 STUDY_DEFAULT_CARD_COUNT = 8
 STUDY_CARD_TYPES = ("recall", "concept", "detail", "application")
-STUDY_SECTION_CACHE_VERSION = 1
+STUDY_SECTION_CACHE_VERSION = 4
 STUDY_EXPLAIN_TOPIC_MIN_MAX_TOKENS = 2400
 SAKANA_STUDY_MIN_MAX_TOKENS = 4000
 STUDY_DEFAULT_FOCUS_PRESET = "main_ideas"
@@ -4454,6 +4454,208 @@ class LocalRAGService:
             )
         )
 
+    def _study_cached_summary_bundle(
+        self,
+        *,
+        context: dict,
+        language: str,
+    ) -> Optional[dict]:
+        """Return the newest compatible full-transcript summary for Study."""
+        cache_rows = self._load_summary_cache_rows(
+            video_id=context["video_id"],
+            video=context["video"],
+        )
+        candidates = []
+        for cache_key, entry in cache_rows.items():
+            if not isinstance(entry, dict):
+                continue
+            if int(entry.get("version") or 0) != SUMMARY_CACHE_VERSION:
+                continue
+            if str(entry.get("language") or "").strip().lower() != language:
+                continue
+            if entry.get("source_fingerprint") != context["source_fingerprint"]:
+                continue
+            result = entry.get("result")
+            summary = result.get("summary") if isinstance(result, dict) else None
+            if not isinstance(summary, list) or not summary:
+                continue
+            candidates.append(
+                (
+                    str(entry.get("generated_at") or ""),
+                    str(cache_key),
+                    deepcopy(summary),
+                )
+            )
+        if not candidates:
+            return None
+
+        generated_at, cache_key, summary = max(
+            candidates,
+            key=lambda candidate: (candidate[0], candidate[1]),
+        )
+        serialized = json.dumps(
+            {
+                "cache_key": cache_key,
+                "generated_at": generated_at,
+                "summary": summary,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return {
+            "cache_key": cache_key,
+            "generated_at": generated_at,
+            "fingerprint": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+            "summary": summary,
+        }
+
+    @staticmethod
+    def _study_names_in_text(value: str, names: List[str]) -> List[str]:
+        normalized = str(value or "").casefold()
+        matches = []
+        for name in names:
+            clean_name = re.sub(r"\s+", " ", str(name or "")).strip()
+            if not clean_name:
+                continue
+            name_tokens = re.findall(r"[A-Za-z][A-Za-z'’-]+", clean_name)
+            aliases = [clean_name]
+            if len(name_tokens) >= 2 and len(name_tokens[-1]) >= 4:
+                aliases.append(name_tokens[-1])
+            if any(alias.casefold() in normalized for alias in aliases):
+                matches.append(clean_name)
+        return list(dict.fromkeys(matches))
+
+    def _study_speaker_attribution(
+        self,
+        *,
+        value: str,
+        episode_context: dict,
+    ) -> dict:
+        participants = episode_context.get("participants_from_title") or []
+        matched_names = self._study_names_in_text(value, participants)
+        if len(matched_names) != 1:
+            return {
+                "speaker": "Unknown speaker",
+                "speaker_role": "",
+                "speaker_confidence": "unattributed",
+            }
+
+        speaker = matched_names[0]
+        speaker_aliases = [re.escape(speaker)]
+        speaker_tokens = re.findall(r"[A-Za-z][A-Za-z'’-]+", speaker)
+        if len(speaker_tokens) >= 2:
+            speaker_aliases.append(re.escape(speaker_tokens[-1]))
+        english_speech_verbs = (
+            r"explains?|describes?|says?|shares?|recalls?|reflects?|discusses?|"
+            r"argues?|notes?|breaks?\s+down|defines?|remembers?|tells?"
+        )
+        explicit_speech_pattern = re.compile(
+            rf"(?:{'|'.join(speaker_aliases)})\b[^.!?]{{0,48}}\b"
+            rf"(?:{english_speech_verbs})\b",
+            flags=re.IGNORECASE,
+        )
+        explicit_ja_pattern = re.compile(
+            rf"(?:{'|'.join(speaker_aliases)}).{{0,24}}"
+            r"(?:話す|語る|説明|述べる|振り返る|明かす|答える)"
+        )
+        if not explicit_speech_pattern.search(value) and not explicit_ja_pattern.search(
+            value
+        ):
+            if len(participants) > 1 and re.search(
+                r"\b(?:conversation|discussion|speakers?|they|interview)\b|"
+                r"(?:会話|対談|出演者|一同|二人|三人)",
+                value,
+                flags=re.IGNORECASE,
+            ):
+                return {
+                    "speaker": "Multiple speakers",
+                    "speaker_role": ", ".join(participants),
+                    "speaker_confidence": "episode_context",
+                }
+            return {
+                "speaker": "Unknown speaker",
+                "speaker_role": "",
+                "speaker_confidence": "unattributed",
+            }
+
+        primary_subject = str(episode_context.get("primary_subject") or "")
+        role_claims = episode_context.get("role_claims_from_intro") or []
+        role = "interview subject" if speaker == primary_subject else "participant"
+        for claim in role_claims:
+            if str(claim.get("name") or "") == speaker and claim.get("role"):
+                role = str(claim["role"])
+                break
+        return {
+            "speaker": speaker,
+            "speaker_role": role,
+            "speaker_confidence": "named_in_section",
+        }
+
+    def _study_summary_sections(
+        self,
+        *,
+        context: dict,
+        language: str,
+        summary_bundle: dict,
+    ) -> List[dict]:
+        video = context["video"]
+        source_rows = video.get("chunks") or context["segments"]
+        evidence_rows = self._study_evidence_rows(
+            video_id=context["video_id"],
+            video=video,
+            segments=context["segments"],
+            limit=max(1, len(source_rows)),
+        )
+        episode_context = self._study_episode_context_pack(context=context)
+        sections = []
+        for idx, item in enumerate(summary_bundle["summary"], start=1):
+            if not isinstance(item, dict):
+                continue
+            start = float(item.get("start", 0.0) or 0.0)
+            end = float(item.get("end", start) or start)
+            evidence = min(
+                evidence_rows,
+                key=lambda row: abs(float(row.get("start", 0.0) or 0.0) - start),
+            )
+            title = self._study_clip_text(item.get("title") or f"Theme {idx}", 140)
+            tldr = self._study_clip_text(item.get("tldr") or "", 600)
+            anchor_text = self._study_clip_text(
+                item.get("anchor_text") or evidence.get("text") or "",
+                220,
+            )
+            key_points = [
+                self._study_clip_text(point, 180)
+                for point in self._study_sentence_candidates(tldr)[:4]
+            ]
+            section_text = self._study_clean_text(
+                " ".join([title, tldr, anchor_text])
+            )
+            speaker = self._study_speaker_attribution(
+                value=section_text,
+                episode_context=episode_context,
+            )
+            sections.append(
+                {
+                    "section_id": f"section_{idx}",
+                    "rank": int(item.get("rank") or idx),
+                    "title": title,
+                    "tldr": tldr,
+                    "key_points": key_points,
+                    "anchor_text": anchor_text,
+                    "keywords": self._study_keywords(section_text, limit=8),
+                    "section_type": "summary_theme",
+                    "confidence": "full_transcript_summary",
+                    "start": start,
+                    "end": end,
+                    "timestamp": self._study_timestamp_label(start),
+                    "url": item.get("url") or evidence.get("url") or "",
+                    **speaker,
+                    "evidence": deepcopy(evidence),
+                }
+            )
+        return sections
+
     def _study_build_sections(self, *, context: dict, language: str) -> List[dict]:
         video = context["video"]
         source_rows = video.get("chunks") or context["segments"]
@@ -4467,6 +4669,7 @@ class LocalRAGService:
             evidence_rows=evidence_rows,
             language=language,
         )
+        episode_context = self._study_episode_context_pack(context=context)
         sections: List[dict] = []
         for idx, topic in enumerate(topics, start=1):
             evidence = deepcopy(topic.get("evidence") or {})
@@ -4480,6 +4683,59 @@ class LocalRAGService:
             anchor_text = self._study_clip_text(topic.get("anchor_text") or "", 220)
             section_text = self._study_clean_text(
                 " ".join([title, tldr, " ".join(key_points), anchor_text])
+            )
+            speaker_source_text = section_text
+            if str(topic.get("confidence") or "").startswith("estimated"):
+                video_title = self._study_clip_text(video.get("title") or "Video", 60)
+                primary_subject = self._study_clean_text(
+                    episode_context.get("primary_subject") or ""
+                )
+                ignored_names = {
+                    "The",
+                    "This",
+                    "That",
+                    "These",
+                    "Those",
+                    *re.findall(r"\b[A-Z][A-Za-z'’-]+\b", video_title),
+                }
+                named_subjects = [
+                    name
+                    for name in re.findall(
+                        r"\b[A-Z][A-Za-z'’-]{2,}\b",
+                        " ".join([anchor_text, " ".join(key_points)]),
+                    )
+                    if name not in ignored_names
+                ]
+                title_subject = (
+                    f"{primary_subject} interview"
+                    if primary_subject
+                    else (named_subjects[0] if named_subjects else video_title)
+                )
+                takeaway_source = anchor_text or section_text
+                if named_subjects:
+                    matching_sentences = [
+                        sentence
+                        for sentence in self._study_sentence_candidates(
+                            " ".join([anchor_text, " ".join(key_points)])
+                        )
+                        if named_subjects[0] in sentence
+                    ]
+                    if matching_sentences:
+                        takeaway_source = matching_sentences[0]
+                takeaway = self._study_clip_text(
+                    self._study_takeaway_text(takeaway_source, 82),
+                    82,
+                )
+                title = self._study_clip_text(
+                    f"{title_subject}: {takeaway}" if takeaway else title_subject,
+                    140,
+                )
+                section_text = self._study_clean_text(
+                    " ".join([title, tldr, " ".join(key_points), anchor_text])
+                )
+            speaker = self._study_speaker_attribution(
+                value=speaker_source_text,
+                episode_context=episode_context,
             )
             start = float(topic.get("start", evidence.get("start", 0.0)) or 0.0)
             end = float(topic.get("end", evidence.get("end", start)) or start)
@@ -4498,6 +4754,7 @@ class LocalRAGService:
                     "end": end,
                     "timestamp": self._study_timestamp_label(start),
                     "url": topic.get("url") or evidence.get("url") or "",
+                    **speaker,
                     "evidence": evidence,
                 }
             )
@@ -4506,26 +4763,45 @@ class LocalRAGService:
     def _get_study_sections(self, *, context: dict, language: str) -> dict:
         cache_path = self._study_section_cache_path(context["video_id"])
         cached = self._read_json_file(cache_path)
+        summary_bundle = self._study_cached_summary_bundle(
+            context=context,
+            language=language,
+        )
+        basis = "summary_cache" if summary_bundle else "deterministic"
+        basis_fingerprint = summary_bundle["fingerprint"] if summary_bundle else ""
         if (
             cached
             and cached.get("version") == STUDY_SECTION_CACHE_VERSION
             and cached.get("source_fingerprint") == context["source_fingerprint"]
             and cached.get("language") == language
+            and cached.get("basis") == basis
+            and cached.get("basis_fingerprint", "") == basis_fingerprint
             and isinstance(cached.get("sections"), list)
         ):
             return {
                 "sections": deepcopy(cached["sections"]),
                 "cache_status": "hit",
                 "cache_version": STUDY_SECTION_CACHE_VERSION,
+                "basis": basis,
             }
 
-        sections = self._study_build_sections(context=context, language=language)
+        sections = (
+            self._study_summary_sections(
+                context=context,
+                language=language,
+                summary_bundle=summary_bundle,
+            )
+            if summary_bundle
+            else self._study_build_sections(context=context, language=language)
+        )
         payload = {
             "version": STUDY_SECTION_CACHE_VERSION,
             "created_at": now_iso(),
             "video_id": context["video_id"],
             "language": language,
             "source_fingerprint": context["source_fingerprint"],
+            "basis": basis,
+            "basis_fingerprint": basis_fingerprint,
             "sections": sections,
         }
         try:
@@ -4544,6 +4820,7 @@ class LocalRAGService:
             "sections": deepcopy(sections),
             "cache_status": "miss",
             "cache_version": STUDY_SECTION_CACHE_VERSION,
+            "basis": basis,
         }
 
     def _study_section_score(self, *, section: dict, focus_meta: dict) -> float:
@@ -4682,6 +4959,10 @@ class LocalRAGService:
                         "section_id": section.get("section_id"),
                         "section_rank": section.get("rank"),
                         "section_title": section.get("title"),
+                        "speaker": section.get("speaker") or "Unknown speaker",
+                        "speaker_role": section.get("speaker_role") or "",
+                        "speaker_confidence": section.get("speaker_confidence")
+                        or "unattributed",
                         "start": start,
                         "end": end,
                         "timestamp": self._study_timestamp_label(start),
@@ -4724,6 +5005,10 @@ class LocalRAGService:
             "url": section.get("url"),
             "section_type": section.get("section_type"),
             "confidence": section.get("confidence"),
+            "speaker": section.get("speaker") or "Unknown speaker",
+            "speaker_role": section.get("speaker_role") or "",
+            "speaker_confidence": section.get("speaker_confidence")
+            or "unattributed",
             "focus_score": section.get("focus_score"),
         }
 
@@ -4735,7 +5020,7 @@ class LocalRAGService:
         evidence_rows: List[dict],
     ) -> dict:
         return {
-            "basis": "cached_transcript_sections",
+            "basis": section_bundle.get("basis", "deterministic"),
             "cache_status": section_bundle.get("cache_status", "miss"),
             "cache_version": section_bundle.get("cache_version", STUDY_SECTION_CACHE_VERSION),
             "section_count": len(section_bundle.get("sections") or []),
@@ -5036,6 +5321,10 @@ class LocalRAGService:
                     "why_it_matters": why_it_matters,
                     "language_note": language_note,
                     "source_cue": cue,
+                    "speaker": row.get("speaker") or "Unknown speaker",
+                    "speaker_role": row.get("speaker_role") or "",
+                    "speaker_confidence": row.get("speaker_confidence")
+                    or "unattributed",
                     "tags": [tag for tag in tags if tag],
                     "evidence": deepcopy(row),
                     "retrieved_chunk_ids": [row["evidence_id"]],
@@ -5102,6 +5391,19 @@ class LocalRAGService:
             language_note = self._study_clip_text(
                 raw.get("language_note") or fallback.get("language_note", ""), 180
             )
+            speaker = self._study_clip_text(
+                evidence.get("speaker") or fallback.get("speaker") or "Unknown speaker",
+                100,
+            )
+            speaker_role = self._study_clip_text(
+                evidence.get("speaker_role") or fallback.get("speaker_role") or "",
+                100,
+            )
+            speaker_confidence = self._study_clean_text(
+                evidence.get("speaker_confidence")
+                or fallback.get("speaker_confidence")
+                or "unattributed"
+            )
             normalized.append(
                 {
                     "card_type": raw_card_type,
@@ -5112,6 +5414,9 @@ class LocalRAGService:
                     "why_it_matters": why_it_matters,
                     "language_note": language_note,
                     "source_cue": source_cue,
+                    "speaker": speaker,
+                    "speaker_role": speaker_role,
+                    "speaker_confidence": speaker_confidence,
                     "tags": [
                         self._study_clean_text(tag)
                         for tag in tags
@@ -5145,12 +5450,18 @@ class LocalRAGService:
         model: Optional[str],
         focus_meta: dict,
         model_profile: str,
+        episode_context: dict,
     ) -> dict:
         evidence_payload = [
             {
                 "evidence_id": row["evidence_id"],
+                "video_title": row.get("video_title"),
                 "timestamp": row["timestamp"],
                 "section_title": row.get("section_title"),
+                "speaker": row.get("speaker") or "Unknown speaker",
+                "speaker_role": row.get("speaker_role") or "",
+                "speaker_confidence": row.get("speaker_confidence")
+                or "unattributed",
                 "text": self._study_clip_text(row["text"], 900),
             }
             for row in evidence_rows
@@ -5191,12 +5502,17 @@ class LocalRAGService:
             "Keep answers to 1-2 short sentences. Paraphrase the evidence instead of pasting it.\n"
             "If the transcript is in a different language from the requested output language, translate "
             "the answer while preserving names and important source terms.\n"
+            "Use the supplied speaker fields as attribution evidence. Never infer a speaker from "
+            "first-person wording, turn order, or general knowledge. Keep 'Unknown speaker' when "
+            "the evidence is unattributed.\n"
             "Each card must include card_type, question, answer, explanation, learning_objective, "
-            "why_it_matters, source_cue, tags, and evidence_id.\n"
+            "why_it_matters, source_cue, speaker, speaker_role, speaker_confidence, tags, and evidence_id.\n"
             "Use this JSON shape: {\"cards\":[{\"question\":\"...\",\"answer\":\"...\","
             "\"card_type\":\"recall\",\"explanation\":\"...\",\"learning_objective\":\"...\","
-            "\"why_it_matters\":\"...\",\"source_cue\":\"...\",\"tags\":[\"...\"],"
+            "\"why_it_matters\":\"...\",\"source_cue\":\"...\",\"speaker\":\"Unknown speaker\","
+            "\"speaker_role\":\"\",\"speaker_confidence\":\"unattributed\",\"tags\":[\"...\"],"
             "\"evidence_id\":\"chunk_1\"}]}.\n\n"
+            f"Episode context:\n{json.dumps(episode_context, ensure_ascii=False, indent=2)}\n\n"
             f"Evidence:\n{json.dumps(evidence_payload, ensure_ascii=False, indent=2)}"
         )
         profile = STUDY_MODEL_PROFILES.get(
@@ -5261,6 +5577,7 @@ class LocalRAGService:
             context=context,
             language=scoped_language,
         )
+        episode_context = self._study_episode_context_pack(context=context)
         section_limit = 3 if focus_meta["scope"] == "focused_sections" else 5
         selected_sections = self._study_select_focus_sections(
             sections=section_bundle.get("sections") or [],
@@ -5298,6 +5615,7 @@ class LocalRAGService:
                     model=resolved_request_model,
                     focus_meta=focus_meta,
                     model_profile=focus_meta["model_profile"],
+                    episode_context=episode_context,
                 )
                 cards = generated["cards"]
                 resolved_provider = generated["provider"]
@@ -5467,6 +5785,41 @@ class LocalRAGService:
                 if self._study_clean_text(name)
             ][:8]
 
+        primary_subject = ""
+        interview_match = re.search(
+            r"\b(?:The\s+)?(.+?)\s+Interview\b",
+            title,
+            flags=re.IGNORECASE,
+        )
+        if interview_match:
+            primary_subject = self._study_clean_text(interview_match.group(1))
+            primary_subject = re.sub(
+                r"^(?:an?|the)\s+",
+                "",
+                primary_subject,
+                flags=re.IGNORECASE,
+            )
+            primary_subject = self._study_clip_text(primary_subject, 80)
+
+        participants = list(cast_names)
+        if primary_subject:
+            participants.insert(0, primary_subject)
+        for title_part in re.split(r"[|｜]", title)[1:]:
+            for candidate in re.split(
+                r"\s+(?:and|with|&)\s+|[,、／/]",
+                title_part,
+            ):
+                candidate = self._study_clean_text(candidate)
+                if candidate.isupper():
+                    continue
+                if not re.fullmatch(
+                    r"[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){1,3}",
+                    candidate,
+                ):
+                    continue
+                participants.append(candidate)
+        participants = list(dict.fromkeys(participants))[:12]
+
         intro_text = self._study_clean_text(
             " ".join(
                 str(row.get("text") or row.get("raw_text") or "")
@@ -5490,6 +5843,8 @@ class LocalRAGService:
             "video_title": title,
             "video_url": video.get("url") or "",
             "cast_names_from_title": cast_names,
+            "primary_subject": primary_subject,
+            "participants_from_title": participants,
             "role_claims_from_intro": role_claims[:8],
             "intro_excerpt": self._study_clip_text(intro_text, 700),
         }
