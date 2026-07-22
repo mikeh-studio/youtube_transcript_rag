@@ -207,8 +207,7 @@ body {
 }
 
 .nav-tools-menu summary::-webkit-details-marker,
-.bottom-tools-menu summary::-webkit-details-marker,
-.advanced-ocr-summary::-webkit-details-marker {
+.bottom-tools-menu summary::-webkit-details-marker {
   display: none;
 }
 
@@ -492,51 +491,17 @@ body {
   gap: 1rem;
 }
 
-.local-video-ask-panel {
+.local-video-tool-panel {
   width: min(980px, 100%);
   margin: 0 auto;
 }
 
+.local-video-search-form .ask-question-field input {
+  min-height: 44px;
+}
+
 .ocr-job-card .btn {
   margin-top: 0.65rem;
-}
-
-.advanced-ocr-panel {
-  padding: 0.88rem 1.02rem;
-}
-
-.advanced-ocr-summary {
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  list-style: none;
-}
-
-.advanced-ocr-summary::after {
-  content: "▾";
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  transition: transform var(--dur-fast) var(--ease-out);
-}
-
-.advanced-ocr-panel[open] .advanced-ocr-summary::after {
-  transform: rotate(180deg);
-}
-
-.advanced-ocr-title {
-  margin: 0;
-}
-
-.advanced-ocr-copy {
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  line-height: 1.35;
-}
-
-.advanced-ocr-body {
-  margin-top: 0.92rem;
 }
 
 .local-ocr-grid {
@@ -2773,8 +2738,7 @@ th {
     grid-template-columns: 1fr;
   }
 
-  .qa-workbench-head,
-  .advanced-ocr-summary {
+  .qa-workbench-head {
     align-items: flex-start;
     flex-direction: column;
   }

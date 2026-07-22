@@ -1,13 +1,30 @@
 import { expect, test } from "@playwright/test";
 
 async function prepareQAStudio(page, options = {}) {
-  const { locale } = options;
-  await page.addInitScript((initLocale) => {
+  const {
+    locale,
+    lastVideoId = "vid1",
+    videos = [
+      { video_id: "vid1", title: "Demo Video" },
+      { video_id: "vid2", title: "Demo Video 2" },
+    ],
+  } = options;
+  await page.addInitScript(({ initLocale, initLastVideoId }) => {
     localStorage.setItem("yt_rag_ingest_unlocked", "1");
+    if (initLastVideoId) {
+      localStorage.setItem("yt_rag_last_video_id", initLastVideoId);
+    }
     if (initLocale) {
       localStorage.setItem("youtube-rag-ui-locale", initLocale);
     }
-  }, locale ?? null);
+  }, { initLocale: locale ?? null, initLastVideoId: lastVideoId });
+  await page.route("**/v1/videos", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, videos }),
+    });
+  });
   await page.goto("/index.html#/qa");
 }
 
@@ -298,12 +315,14 @@ test("visualizes agentic attempts and reranked results", async ({ page }) => {
 
   await prepareQAStudio(page);
   await page.getByLabel("Question").fill("How is the retrieval update different?");
-  await page.getByLabel("Agentic retry").check();
+  await expect(page.getByLabel("Video scope")).toHaveValue("vid1");
+  await expect(page.getByLabel("Agentic retry")).toBeChecked();
   await page.getByLabel("Reranker").selectOption("cross_encoder");
   await page.getByRole("button", { name: "Generate Answer" }).click();
 
   expect(requestBody).toMatchObject({
     agentic: true,
+    video_id: "vid1",
     reranker: "cross_encoder",
     retrieval_mode: "hybrid",
   });
@@ -321,7 +340,10 @@ test("visualizes agentic attempts and reranked results", async ({ page }) => {
 
 test("keeps OCR ingestion and multimodal Ask in the Local Video tool", async ({ page }) => {
   let requestBody = null;
+  let searchRequestBody = null;
+  let ocrJobRequests = 0;
   await page.route("**/v1/local-video-ocr/jobs", async (route) => {
+    ocrJobRequests += 1;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -338,6 +360,32 @@ test("keeps OCR ingestion and multimodal Ask in the Local Video tool", async ({ 
             ocr_count: 10,
             vector_count: 10,
             interval_sec: 10,
+          },
+        ],
+      }),
+    });
+  });
+  await page.route("**/v1/search-multimodal", async (route) => {
+    searchRequestBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        query: "scoreboard",
+        video_id_filter: "demo_001",
+        source_mode: "ocr",
+        retrieval_mode: "hybrid",
+        result_count: 1,
+        results: [
+          {
+            source_type: "ocr",
+            video_id: "demo_001",
+            video_title: "demo_001",
+            frame_id: "frame_000120",
+            frame_path: "data/frames/demo_001/frame_000120.jpg",
+            timestamp_label: "2:00",
+            snippet: "Q4 98 96",
           },
         ],
       }),
@@ -380,6 +428,21 @@ test("keeps OCR ingestion and multimodal Ask in the Local Video tool", async ({ 
   await page.goto("/index.html#/local-video");
   await expect(page.getByRole("heading", { name: "Local Video Analysis" })).toBeVisible();
 
+  const searchPanel = page.locator(".local-video-tool-panel").filter({
+    has: page.getByRole("heading", { name: "Search Local Video Evidence" }),
+  });
+  await expect(searchPanel.getByLabel("Video ID")).toHaveValue("demo_001");
+  await searchPanel.getByLabel("Search query").fill("scoreboard");
+  await searchPanel.getByRole("button", { name: "Search Local Video" }).click();
+
+  expect(searchRequestBody).toMatchObject({
+    query: "scoreboard",
+    video_id: "demo_001",
+    source_mode: "ocr",
+    retrieval_mode: "hybrid",
+  });
+  await expect(page.getByTestId("local-video-search-result")).toContainText("Q4 98 96");
+
   const askPanel = page.locator(".local-video-ask-panel");
   await expect(askPanel.getByLabel("Video ID")).toHaveValue("demo_001");
   await askPanel.getByLabel("Question").fill("What score is visible?");
@@ -394,4 +457,28 @@ test("keeps OCR ingestion and multimodal Ask in the Local Video tool", async ({ 
   await expect(page.getByTestId("local-video-answer-panel")).toContainText("98-96");
   await expect(page.getByTestId("local-video-evidence-card")).toHaveCount(1);
   await expect(page.getByTestId("local-video-evidence-card")).toContainText("Q4 98 96");
+
+  const requestCountAfterLoad = ocrJobRequests;
+  await page.waitForTimeout(3200);
+  expect(ocrJobRequests).toBe(requestCountAfterLoad);
+});
+
+test("localizes the Local Video tool in Japanese", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("youtube-rag-ui-locale", "ja-JP");
+  });
+  await page.route("**/v1/local-video-ocr/jobs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, jobs: [] }),
+    });
+  });
+
+  await page.goto("/index.html#/local-video");
+
+  await expect(page.getByRole("heading", { name: "ローカル動画分析" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "ローカル動画の根拠を検索" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "OCR を実行" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "ローカル動画に質問" })).toBeVisible();
 });

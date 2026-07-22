@@ -111,7 +111,7 @@ function useLlmProviderOptions() {
   return options;
 }
 
-function ModelSelectLabel({ providerOptions, provider, model, onChange, disabled = false }) {
+function ModelSelectLabel({ providerOptions, provider, model, onChange, disabled = false, label = "Model" }) {
   const providerEntry = providerOptions?.[provider] || {};
   const models = Array.isArray(providerEntry.models) ? providerEntry.models : [];
   const defaultLabel = providerEntry.default
@@ -119,7 +119,7 @@ function ModelSelectLabel({ providerOptions, provider, model, onChange, disabled
     : "Default";
   return (
     <label>
-      <span>Model</span>
+      <span>{label}</span>
       <select
         value={model}
         onChange={(event) => onChange(event.target.value)}
@@ -162,6 +162,55 @@ const QA_ANSWER_I18N = {
     reviewSaved: "Saved",
     reviewSaveFailed: "Save failed: {message}",
     askFailed: "Ask failed: {message}",
+    localVideoTitle: "Local Video Analysis",
+    localVideoSubtitle: "Extract visual evidence from a local video, monitor OCR indexing, and ask grounded questions.",
+    localVideoProcessTitle: "Process Local Video",
+    localVideoProcessDescription: "Use only local video files you own or have permission to process. Public YouTube downloading is not supported.",
+    localVideoVideoId: "Video ID",
+    localVideoPath: "Local video path",
+    localVideoFrameInterval: "Frame interval",
+    localVideoQueueing: "Queueing...",
+    localVideoRunOcr: "Run OCR",
+    localVideoInitialStatus: "Process a local .mp4 you own or have permission to analyze.",
+    localVideoStartingStatus: "Starting local video OCR job...",
+    localVideoQueuedStatus: "OCR job {jobId} queued. Status updates below.",
+    localVideoFailedStatus: "OCR job failed to start. {message}",
+    localVideoFrames: "frames {count}",
+    localVideoOcrCount: "ocr {count}",
+    localVideoVectors: "vectors {count}",
+    localVideoInterval: "interval {count}s",
+    localVideoUseForAnalysis: "Use for analysis",
+    localVideoNoJobs: "No local OCR jobs yet.",
+    localVideoJobsError: "Could not load local OCR jobs.",
+    localVideoOcrRawJson: "OCR Raw JSON",
+    localVideoSearchTitle: "Search Local Video Evidence",
+    localVideoSearchDescription: "Inspect matching OCR frames or combine them with transcript chunks for this video ID.",
+    localVideoSearchQuery: "Search query",
+    localVideoSearchPlaceholder: "scoreboard, slide title, jersey number...",
+    localVideoEvidence: "Evidence",
+    localVideoOcrOnly: "OCR only",
+    localVideoTranscriptAndOcr: "Transcript + OCR",
+    localVideoTopK: "Top K",
+    localVideoSearching: "Searching...",
+    localVideoSearchAction: "Search Local Video",
+    localVideoSearchFailed: "Search failed: {message}",
+    localVideoSearchResultCount: "{count} evidence item(s)",
+    localVideoNoSearchResults: "No matching local video evidence was found.",
+    localVideoSearchRawJson: "Search Raw JSON",
+    localVideoAskTitle: "Ask About Local Video",
+    localVideoAskDescription: "OCR only uses indexed frames. Transcript + OCR also uses transcript chunks when the same video ID exists in the transcript library.",
+    localVideoQuestion: "Question",
+    localVideoQuestionPlaceholder: "What text or visual information appears in this video?",
+    localVideoProvider: "Provider",
+    localVideoModel: "Model",
+    localVideoGenerating: "Generating...",
+    localVideoAskAction: "Ask Local Video",
+    localVideoAskFailed: "Ask failed: {message}",
+    localVideoEvidenceCount: "{count} evidence item(s)",
+    localVideoConfidence: "confidence: {value}",
+    localVideoSource: "source: {value}",
+    localVideoNoEvidence: "No local video evidence was retrieved.",
+    localVideoAskRawJson: "Ask Raw JSON",
   },
   "ja-JP": {
     answerStatusAnswered: "根拠付きで回答",
@@ -188,6 +237,55 @@ const QA_ANSWER_I18N = {
     reviewSaved: "保存しました",
     reviewSaveFailed: "保存に失敗しました: {message}",
     askFailed: "回答生成に失敗しました: {message}",
+    localVideoTitle: "ローカル動画分析",
+    localVideoSubtitle: "ローカル動画から視覚的な根拠を抽出し、OCR インデックスを確認して、根拠に基づく質問ができます。",
+    localVideoProcessTitle: "ローカル動画を処理",
+    localVideoProcessDescription: "所有している、または処理する許可を得たローカル動画のみ使用してください。公開 YouTube 動画のダウンロードには対応していません。",
+    localVideoVideoId: "動画 ID",
+    localVideoPath: "ローカル動画のパス",
+    localVideoFrameInterval: "フレーム間隔",
+    localVideoQueueing: "登録中...",
+    localVideoRunOcr: "OCR を実行",
+    localVideoInitialStatus: "所有または処理許可のあるローカル .mp4 を処理します。",
+    localVideoStartingStatus: "ローカル動画の OCR ジョブを開始しています...",
+    localVideoQueuedStatus: "OCR ジョブ {jobId} を登録しました。進行状況は下に表示されます。",
+    localVideoFailedStatus: "OCR ジョブを開始できませんでした。{message}",
+    localVideoFrames: "フレーム {count}",
+    localVideoOcrCount: "OCR {count}",
+    localVideoVectors: "ベクトル {count}",
+    localVideoInterval: "間隔 {count}秒",
+    localVideoUseForAnalysis: "分析に使用",
+    localVideoNoJobs: "ローカル OCR ジョブはまだありません。",
+    localVideoJobsError: "ローカル OCR ジョブを読み込めませんでした。",
+    localVideoOcrRawJson: "OCR の生 JSON",
+    localVideoSearchTitle: "ローカル動画の根拠を検索",
+    localVideoSearchDescription: "この動画 ID の OCR フレームを検索し、必要に応じて文字起こしチャンクと組み合わせます。",
+    localVideoSearchQuery: "検索クエリ",
+    localVideoSearchPlaceholder: "スコアボード、スライドのタイトル、背番号...",
+    localVideoEvidence: "根拠",
+    localVideoOcrOnly: "OCR のみ",
+    localVideoTranscriptAndOcr: "文字起こし + OCR",
+    localVideoTopK: "上位 K 件",
+    localVideoSearching: "検索中...",
+    localVideoSearchAction: "ローカル動画を検索",
+    localVideoSearchFailed: "検索に失敗しました: {message}",
+    localVideoSearchResultCount: "根拠 {count} 件",
+    localVideoNoSearchResults: "一致するローカル動画の根拠が見つかりませんでした。",
+    localVideoSearchRawJson: "検索の生 JSON",
+    localVideoAskTitle: "ローカル動画について質問",
+    localVideoAskDescription: "「OCR のみ」はインデックス済みフレームを使用します。「文字起こし + OCR」は、同じ動画 ID が文字起こしライブラリにある場合、そのチャンクも使用します。",
+    localVideoQuestion: "質問",
+    localVideoQuestionPlaceholder: "この動画にはどのような文字や視覚情報がありますか？",
+    localVideoProvider: "プロバイダー",
+    localVideoModel: "モデル",
+    localVideoGenerating: "生成中...",
+    localVideoAskAction: "ローカル動画に質問",
+    localVideoAskFailed: "質問に失敗しました: {message}",
+    localVideoEvidenceCount: "根拠 {count} 件",
+    localVideoConfidence: "信頼度: {value}",
+    localVideoSource: "ソース: {value}",
+    localVideoNoEvidence: "ローカル動画の根拠を取得できませんでした。",
+    localVideoAskRawJson: "質問の生 JSON",
   },
 };
 
@@ -817,14 +915,18 @@ function LocalVideoAnalysisPage({ locale }) {
   const [ocrVideoPath, setOcrVideoPath] = useState("");
   const [ocrIntervalSec, setOcrIntervalSec] = useState(10);
   const [ocrSubmitting, setOcrSubmitting] = useState(false);
-  const [ocrStatus, setOcrStatus] = useState(
-    "Process a local .mp4 you own or have permission to analyze.",
-  );
+  const [ocrStatus, setOcrStatus] = useState({ key: "localVideoInitialStatus", vars: {} });
   const [ocrRawResponse, setOcrRawResponse] = useState("");
   const [ocrJobs, setOcrJobs] = useState([]);
   const [ocrJobsError, setOcrJobsError] = useState("");
 
   const [analysisVideoId, setAnalysisVideoId] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchSourceMode, setSearchSourceMode] = useState("ocr");
+  const [searchTopK, setSearchTopK] = useState(5);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const [searchResponse, setSearchResponse] = useState(null);
   const [question, setQuestion] = useState("");
   const [sourceMode, setSourceMode] = useState("ocr");
   const [topK, setTopK] = useState(5);
@@ -854,15 +956,23 @@ function LocalVideoAnalysisPage({ locale }) {
     }
   }
 
+  const hasActiveOcrJobs = ocrJobs.some((job) => ["queued", "running"].includes(String(job.status || "")));
+
   useEffect(() => {
     loadOcrJobs({ silent: true }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!hasActiveOcrJobs) {
+      return undefined;
+    }
     const intervalId = window.setInterval(() => {
       loadOcrJobs({ silent: true }).catch(() => {});
     }, 3000);
     return () => {
       window.clearInterval(intervalId);
     };
-  }, []);
+  }, [hasActiveOcrJobs]);
 
   async function handleOcrSubmit(event) {
     event.preventDefault();
@@ -872,7 +982,7 @@ function LocalVideoAnalysisPage({ locale }) {
       return;
     }
     setOcrSubmitting(true);
-    setOcrStatus("Starting local video OCR job...");
+    setOcrStatus({ key: "localVideoStartingStatus", vars: {} });
     setOcrRawResponse("");
     try {
       const payload = await apiRequest("/v1/local-video-ocr/jobs", {
@@ -884,15 +994,49 @@ function LocalVideoAnalysisPage({ locale }) {
         },
       });
       setOcrRawResponse(JSON.stringify(payload, null, 2));
-      setOcrStatus(`OCR job ${payload?.job?.job_id || ""} queued. Status updates below.`);
+      setOcrStatus({
+        key: "localVideoQueuedStatus",
+        vars: { jobId: payload?.job?.job_id || "" },
+      });
       setAnalysisVideoId(scopedVideoId);
       await loadOcrJobs();
     } catch (error) {
       const info = errorInfo(error, "OCR job failed to start.");
-      setOcrStatus(`OCR job failed to start. ${info.userMessage}`);
+      setOcrStatus({
+        key: "localVideoFailedStatus",
+        vars: { message: info.userMessage },
+      });
       setOcrRawResponse(info.debugMessage);
     } finally {
       setOcrSubmitting(false);
+    }
+  }
+
+  async function runLocalSearch(event) {
+    event.preventDefault();
+    const scopedVideoId = analysisVideoId.trim();
+    if (!scopedVideoId || !searchQuery.trim()) {
+      return;
+    }
+    setSearchLoading(true);
+    setSearchError("");
+    setSearchResponse(null);
+    try {
+      const payload = await apiRequest("/v1/search-multimodal", {
+        method: "POST",
+        body: {
+          query: searchQuery.trim(),
+          video_id: scopedVideoId,
+          source_mode: searchSourceMode,
+          retrieval_mode: "hybrid",
+          k: Number(searchTopK || 5),
+        },
+      });
+      setSearchResponse(payload);
+    } catch (error) {
+      setSearchError(String(error?.message || error));
+    } finally {
+      setSearchLoading(false);
     }
   }
 
@@ -927,32 +1071,41 @@ function LocalVideoAnalysisPage({ locale }) {
   }
 
   const answerStatus = String(askResponse?.status || "").trim();
+  const searchEvidence = Array.isArray(searchResponse?.results)
+    ? searchResponse.results
+    : Array.isArray(searchResponse?.evidence)
+      ? searchResponse.evidence
+      : [];
   const answerEvidence = Array.isArray(askResponse?.citations) && askResponse.citations.length
     ? askResponse.citations
     : Array.isArray(askResponse?.retrieved_chunks)
       ? askResponse.retrieved_chunks
       : [];
 
+  function localEvidenceKey(row, index) {
+    const evidenceId = row.frame_id
+      || row.chunk_id
+      || (row.chunk_index !== undefined && row.chunk_index !== null ? `chunk-${row.chunk_index}` : "")
+      || `${row.start_seconds ?? row.start ?? index}`;
+    return `${row.video_id || analysisVideoId}-${evidenceId}`;
+  }
+
   return (
     <section className="ingest-stage local-video-stage">
       <header className="hero">
-        <h1>Local Video Analysis</h1>
-        <p className="subtitle">
-          Extract visual evidence from a local video, monitor OCR indexing, and ask grounded questions.
-        </p>
+        <h1>{qaAnswerText(locale, "localVideoTitle")}</h1>
+        <p className="subtitle">{qaAnswerText(locale, "localVideoSubtitle")}</p>
       </header>
 
       <section className="panel local-ocr-panel">
         <h2 className="section-title">
           <img src="/icons/icon-upload.svg" alt="" aria-hidden="true" />
-          <span>Process Local Video</span>
+          <span>{qaAnswerText(locale, "localVideoProcessTitle")}</span>
         </h2>
-        <p className="section-desc">
-          Use only local video files you own or have permission to process. Public YouTube downloading is not supported.
-        </p>
+        <p className="section-desc">{qaAnswerText(locale, "localVideoProcessDescription")}</p>
         <form className="grid local-ocr-grid" onSubmit={handleOcrSubmit}>
           <label>
-            <span>Video ID</span>
+            <span>{qaAnswerText(locale, "localVideoVideoId")}</span>
             <input
               required
               value={ocrVideoId}
@@ -961,7 +1114,7 @@ function LocalVideoAnalysisPage({ locale }) {
             />
           </label>
           <label>
-            <span>Local video path</span>
+            <span>{qaAnswerText(locale, "localVideoPath")}</span>
             <input
               required
               value={ocrVideoPath}
@@ -970,7 +1123,7 @@ function LocalVideoAnalysisPage({ locale }) {
             />
           </label>
           <label>
-            <span>Frame interval</span>
+            <span>{qaAnswerText(locale, "localVideoFrameInterval")}</span>
             <input
               type="number"
               min="1"
@@ -980,10 +1133,12 @@ function LocalVideoAnalysisPage({ locale }) {
             />
           </label>
           <button className="btn" type="submit" disabled={ocrSubmitting}>
-            {ocrSubmitting ? "Queueing..." : "Run OCR"}
+            {ocrSubmitting
+              ? qaAnswerText(locale, "localVideoQueueing")
+              : qaAnswerText(locale, "localVideoRunOcr")}
           </button>
         </form>
-        <div className="search-summary">{ocrStatus}</div>
+        <div className="search-summary">{qaAnswerText(locale, ocrStatus.key, ocrStatus.vars)}</div>
         <div className="ocr-job-grid">
           {ocrJobs.map((job) => (
             <article className="ocr-job-card" key={job.job_id}>
@@ -993,10 +1148,10 @@ function LocalVideoAnalysisPage({ locale }) {
                 <div className="search-lang">{job.step}</div>
               </div>
               <div className="search-meta">
-                <span>frames {Number(job.frame_count || 0)}</span>
-                <span>ocr {Number(job.ocr_count || 0)}</span>
-                <span>vectors {Number(job.vector_count || 0)}</span>
-                <span>interval {Number(job.interval_sec || 0)}s</span>
+                <span>{qaAnswerText(locale, "localVideoFrames", { count: Number(job.frame_count || 0) })}</span>
+                <span>{qaAnswerText(locale, "localVideoOcrCount", { count: Number(job.ocr_count || 0) })}</span>
+                <span>{qaAnswerText(locale, "localVideoVectors", { count: Number(job.vector_count || 0) })}</span>
+                <span>{qaAnswerText(locale, "localVideoInterval", { count: Number(job.interval_sec || 0) })}</span>
               </div>
               {job.error_message ? <p className="search-snippet error-text">{job.error_message}</p> : null}
               <p className="frame-path">{job.video_path}</p>
@@ -1006,47 +1161,146 @@ function LocalVideoAnalysisPage({ locale }) {
                 onClick={() => setAnalysisVideoId(String(job.video_id || ""))}
                 disabled={!job.video_id || Number(job.vector_count || 0) <= 0}
               >
-                Use for Ask
+                {qaAnswerText(locale, "localVideoUseForAnalysis")}
               </button>
             </article>
           ))}
-          {!ocrJobs.length ? <div className="search-empty">No local OCR jobs yet.</div> : null}
+          {!ocrJobs.length ? (
+            <div className="search-empty">{qaAnswerText(locale, "localVideoNoJobs")}</div>
+          ) : null}
         </div>
         {ocrJobsError ? (
           <FriendlyError
             error={ocrJobsError}
-            title="Could not load local OCR jobs."
+            title={qaAnswerText(locale, "localVideoJobsError")}
             onRetry={() => loadOcrJobs().catch(() => {})}
           />
         ) : null}
         <details className="raw-json">
-          <summary>OCR Raw JSON</summary>
+          <summary>{qaAnswerText(locale, "localVideoOcrRawJson")}</summary>
           <pre className="output">{ocrRawResponse}</pre>
         </details>
       </section>
 
-      <section className="panel local-video-ask-panel">
+      <section className="panel local-video-tool-panel">
+        <h2 className="section-title">
+          <img src="/icons/icon-search.svg" alt="" aria-hidden="true" />
+          <span>{qaAnswerText(locale, "localVideoSearchTitle")}</span>
+        </h2>
+        <p className="section-desc">{qaAnswerText(locale, "localVideoSearchDescription")}</p>
+        <form className="qa-ask-form local-video-search-form" onSubmit={runLocalSearch}>
+          <label className="ask-question-field">
+            <span>{qaAnswerText(locale, "localVideoSearchQuery")}</span>
+            <input
+              required
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder={qaAnswerText(locale, "localVideoSearchPlaceholder")}
+            />
+          </label>
+          <div className="qa-controls-row ask-controls-row">
+            <label>
+              <span>{qaAnswerText(locale, "localVideoVideoId")}</span>
+              <input
+                required
+                list="local-video-job-ids"
+                value={analysisVideoId}
+                onChange={(event) => setAnalysisVideoId(event.target.value)}
+                placeholder="demo_001"
+              />
+            </label>
+            <label>
+              <span>{qaAnswerText(locale, "localVideoEvidence")}</span>
+              <select
+                value={searchSourceMode}
+                onChange={(event) => setSearchSourceMode(event.target.value)}
+              >
+                <option value="ocr">{qaAnswerText(locale, "localVideoOcrOnly")}</option>
+                <option value="both">{qaAnswerText(locale, "localVideoTranscriptAndOcr")}</option>
+              </select>
+            </label>
+            <label>
+              <span>{qaAnswerText(locale, "localVideoTopK")}</span>
+              <input
+                type="number"
+                min="1"
+                max="12"
+                value={searchTopK}
+                onChange={(event) => setSearchTopK(event.target.value)}
+              />
+            </label>
+            <button className="btn qa-primary-action" type="submit" disabled={searchLoading}>
+              {searchLoading
+                ? qaAnswerText(locale, "localVideoSearching")
+                : qaAnswerText(locale, "localVideoSearchAction")}
+            </button>
+          </div>
+        </form>
+
+        {searchError ? (
+          <div className="search-summary">
+            {qaAnswerText(locale, "localVideoSearchFailed", { message: searchError })}
+          </div>
+        ) : null}
+        {searchResponse ? (
+          <>
+            <div className="search-summary">
+              {qaAnswerText(locale, "localVideoSearchResultCount", { count: searchEvidence.length })}
+            </div>
+            <div className="search-cards">
+              {searchEvidence.map((row, index) => (
+                <article
+                  className="search-card"
+                  data-testid="local-video-search-result"
+                  key={localEvidenceKey(row, index)}
+                >
+                  <div className="search-card-head">
+                    <div className="search-rank">#{index + 1}</div>
+                    <div className="search-title">{row.video_title || row.video_id || analysisVideoId}</div>
+                    <div className={`search-lang source-badge ${row.source_type === "ocr" ? "ocr" : "transcript"}`}>
+                      {row.source_type || "evidence"}
+                    </div>
+                  </div>
+                  <div className="search-meta">
+                    <span>{row.timestamp_range_label || row.timestamp_label || formatSeconds(row.start_seconds)}</span>
+                    {row.frame_id ? <span>{row.frame_id}</span> : null}
+                  </div>
+                  <p className="search-snippet">{row.snippet || row.text || row.reason}</p>
+                  {evidenceFramePath(row) ? <p className="frame-path">{evidenceFramePath(row)}</p> : null}
+                </article>
+              ))}
+              {!searchEvidence.length ? (
+                <div className="search-empty">{qaAnswerText(locale, "localVideoNoSearchResults")}</div>
+              ) : null}
+            </div>
+            <details className="raw-json">
+              <summary>{qaAnswerText(locale, "localVideoSearchRawJson")}</summary>
+              <pre className="output">{JSON.stringify(searchResponse, null, 2)}</pre>
+            </details>
+          </>
+        ) : null}
+      </section>
+
+      <section className="panel local-video-tool-panel local-video-ask-panel">
         <h2 className="section-title">
           <img src="/icons/icon-chat.svg" alt="" aria-hidden="true" />
-          <span>Ask About Local Video</span>
+          <span>{qaAnswerText(locale, "localVideoAskTitle")}</span>
         </h2>
-        <p className="section-desc">
-          OCR only uses indexed frames. Transcript + OCR also uses transcript chunks when the same video ID exists in the transcript library.
-        </p>
+        <p className="section-desc">{qaAnswerText(locale, "localVideoAskDescription")}</p>
         <form className="qa-ask-form" onSubmit={runLocalAsk}>
           <label className="ask-question-field">
-            <span>Question</span>
+            <span>{qaAnswerText(locale, "localVideoQuestion")}</span>
             <textarea
               required
               rows="3"
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
-              placeholder="What text or visual information appears in this video?"
+              placeholder={qaAnswerText(locale, "localVideoQuestionPlaceholder")}
             />
           </label>
           <div className="qa-controls-row ask-controls-row">
             <label>
-              <span>Video ID</span>
+              <span>{qaAnswerText(locale, "localVideoVideoId")}</span>
               <input
                 required
                 list="local-video-job-ids"
@@ -1061,14 +1315,14 @@ function LocalVideoAnalysisPage({ locale }) {
               </datalist>
             </label>
             <label>
-              <span>Evidence</span>
+              <span>{qaAnswerText(locale, "localVideoEvidence")}</span>
               <select value={sourceMode} onChange={(event) => setSourceMode(event.target.value)}>
-                <option value="ocr">OCR only</option>
-                <option value="both">Transcript + OCR</option>
+                <option value="ocr">{qaAnswerText(locale, "localVideoOcrOnly")}</option>
+                <option value="both">{qaAnswerText(locale, "localVideoTranscriptAndOcr")}</option>
               </select>
             </label>
             <label>
-              <span>Top K</span>
+              <span>{qaAnswerText(locale, "localVideoTopK")}</span>
               <input
                 type="number"
                 min="1"
@@ -1078,7 +1332,7 @@ function LocalVideoAnalysisPage({ locale }) {
               />
             </label>
             <label>
-              <span>Provider</span>
+              <span>{qaAnswerText(locale, "localVideoProvider")}</span>
               <select
                 value={provider}
                 onChange={(event) => {
@@ -1096,23 +1350,36 @@ function LocalVideoAnalysisPage({ locale }) {
               provider={provider}
               model={model}
               onChange={setModel}
+              label={qaAnswerText(locale, "localVideoModel")}
             />
             <button className="btn qa-primary-action" type="submit" disabled={askLoading}>
-              {askLoading ? "Generating..." : "Ask Local Video"}
+              {askLoading
+                ? qaAnswerText(locale, "localVideoGenerating")
+                : qaAnswerText(locale, "localVideoAskAction")}
             </button>
           </div>
         </form>
 
-        {askError ? <div className="search-summary">Ask failed: {askError}</div> : null}
+        {askError ? (
+          <div className="search-summary">
+            {qaAnswerText(locale, "localVideoAskFailed", { message: askError })}
+          </div>
+        ) : null}
         {askResponse ? (
           <>
             <div className="search-summary ask-summary-row">
               <span className={`ask-status-pill ${answerStatusTone(answerStatus)}`}>
                 {answerStatusLabel(answerStatus, locale)}
               </span>
-              <span>{answerEvidence.length} evidence item(s)</span>
-              <span>confidence: {answerConfidenceLabel(askResponse.confidence, locale)}</span>
-              <span>source: {askResponse.source_mode || sourceMode}</span>
+              <span>{qaAnswerText(locale, "localVideoEvidenceCount", { count: answerEvidence.length })}</span>
+              <span>
+                {qaAnswerText(locale, "localVideoConfidence", {
+                  value: answerConfidenceLabel(askResponse.confidence, locale),
+                })}
+              </span>
+              <span>
+                {qaAnswerText(locale, "localVideoSource", { value: askResponse.source_mode || sourceMode })}
+              </span>
             </div>
             <article
               className={`ask-answer ask-answer-${answerStatus || "default"}`}
@@ -1128,7 +1395,7 @@ function LocalVideoAnalysisPage({ locale }) {
                 <article
                   className="search-card"
                   data-testid="local-video-evidence-card"
-                  key={`${row.video_id || analysisVideoId}-${row.frame_id || row.chunk_id || index}`}
+                  key={localEvidenceKey(row, index)}
                 >
                   <div className="search-card-head">
                     <div className="search-rank">#{index + 1}</div>
@@ -1146,11 +1413,11 @@ function LocalVideoAnalysisPage({ locale }) {
                 </article>
               ))}
               {!answerEvidence.length ? (
-                <div className="search-empty">No local video evidence was retrieved.</div>
+                <div className="search-empty">{qaAnswerText(locale, "localVideoNoEvidence")}</div>
               ) : null}
             </div>
             <details className="raw-json">
-              <summary>Ask Raw JSON</summary>
+              <summary>{qaAnswerText(locale, "localVideoAskRawJson")}</summary>
               <pre className="output">{JSON.stringify(askResponse, null, 2)}</pre>
             </details>
           </>
@@ -1354,6 +1621,9 @@ function RetrievalVisuals({ response, rows }) {
 }
 
 function QAStudioPage({ locale }) {
+  const [askVideos, setAskVideos] = useState([]);
+  const [askVideoId, setAskVideoId] = useState("");
+  const [isLoadingAskVideos, setIsLoadingAskVideos] = useState(true);
   const [query, setQuery] = useState("");
   const [kSearch, setKSearch] = useState(5);
   const [searchMode, setSearchMode] = useState("hybrid");
@@ -1365,7 +1635,7 @@ function QAStudioPage({ locale }) {
   const [question, setQuestion] = useState("");
   const [kAsk, setKAsk] = useState(5);
   const [askMode, setAskMode] = useState("hybrid");
-  const [askAgentic, setAskAgentic] = useState(false);
+  const [askAgentic, setAskAgentic] = useState(true);
   const [askReranker, setAskReranker] = useState("none");
   const [provider, setProvider] = useState("chatgpt");
   const [model, setModel] = useState("");
@@ -1383,6 +1653,53 @@ function QAStudioPage({ locale }) {
     title: "",
   });
   const [activeQaTool, setActiveQaTool] = useState("ask");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAskVideos() {
+      setIsLoadingAskVideos(true);
+      try {
+        const payload = await apiRequest("/v1/videos");
+        if (cancelled) {
+          return;
+        }
+        const rows = Array.isArray(payload?.videos) ? payload.videos : [];
+        setAskVideos(rows);
+        if (!rows.length) {
+          setAskVideoId("");
+          return;
+        }
+
+        const saved = String(readLocalStorage(LAST_VIDEO_KEY) || "").trim();
+        const matched = rows.find((row) => String(row.video_id) === saved);
+        const fallback = rows[rows.length - 1];
+        setAskVideoId(String(matched?.video_id || fallback?.video_id || ""));
+      } catch {
+        if (!cancelled) {
+          setAskVideos([]);
+          setAskVideoId("");
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoadingAskVideos(false);
+        }
+      }
+    }
+
+    loadAskVideos();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function selectAskVideo(videoId) {
+    const scopedVideoId = String(videoId || "").trim();
+    setAskVideoId(scopedVideoId);
+    if (scopedVideoId) {
+      writeLocalStorage(LAST_VIDEO_KEY, scopedVideoId);
+    }
+  }
 
   function resultIdentity(row) {
     const videoId = String(row?.video_id || "").trim() || extractVideoId(row?.url) || extractVideoId(row?.video_url);
@@ -1532,6 +1849,7 @@ function QAStudioPage({ locale }) {
           question: question.trim(),
           k: Number(kAsk || 5),
           retrieval_mode: askMode,
+          video_id: askVideoId || undefined,
           provider,
           model: model || undefined,
           agentic: askAgentic,
@@ -1619,6 +1937,21 @@ function QAStudioPage({ locale }) {
                 />
               </label>
               <div className="qa-controls-row ask-controls-row">
+                <label>
+                  <span>Video scope</span>
+                  <select
+                    value={askVideoId}
+                    onChange={(event) => selectAskVideo(event.target.value)}
+                    disabled={isLoadingAskVideos || !askVideos.length}
+                  >
+                    <option value="">All videos</option>
+                    {askVideos.map((video) => (
+                      <option key={video.video_id} value={video.video_id}>
+                        {video.title || video.video_id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <label>
                   <span>Top K</span>
                   <input
