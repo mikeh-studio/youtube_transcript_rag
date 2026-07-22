@@ -488,6 +488,19 @@ body {
   margin: 0 auto;
 }
 
+.local-video-stage {
+  gap: 1rem;
+}
+
+.local-video-ask-panel {
+  width: min(980px, 100%);
+  margin: 0 auto;
+}
+
+.ocr-job-card .btn {
+  margin-top: 0.65rem;
+}
+
 .advanced-ocr-panel {
   padding: 0.88rem 1.02rem;
 }

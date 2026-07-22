@@ -9,6 +9,7 @@ const STUDY_HISTORY_SESSION_KEY = "yt_rag_study_history_v1";
 const STUDY_HISTORY_LIMIT = 12;
 const ROUTES = {
   INGEST: "/ingest",
+  LOCAL_VIDEO: "/local-video",
   TLDR: "/tldr",
   STUDY: "/study",
   QA: "/qa",
@@ -29,6 +30,7 @@ const LIBRARY_NAV_ITEMS = [
   { key: "evidence", label: "Evidence", icon: "/icons/icon-library.svg", href: "/evidence.html", requiresUnlock: true },
 ];
 const MORE_NAV_ITEMS = [
+  { key: "local-video", label: "Local Video", icon: "/icons/icon-search.svg", href: "/index.html#/local-video" },
   { key: "evaluation", label: "Evaluation", icon: "/icons/icon-jobs.svg", href: "/evaluation.html", requiresUnlock: true },
   { key: "chunking", label: "Chunking", icon: "/icons/icon-jobs.svg", href: "/chunking.html", requiresUnlock: true },
 ];
@@ -194,7 +196,13 @@ function readHashRoute() {
   if (!raw) {
     return ROUTES.INGEST;
   }
-  if (raw === ROUTES.INGEST || raw === ROUTES.TLDR || raw === ROUTES.STUDY || raw === ROUTES.QA) {
+  if (
+    raw === ROUTES.INGEST
+    || raw === ROUTES.LOCAL_VIDEO
+    || raw === ROUTES.TLDR
+    || raw === ROUTES.STUDY
+    || raw === ROUTES.QA
+  ) {
     return raw;
   }
   return ROUTES.INGEST;
@@ -479,14 +487,6 @@ function IngestPage({ onSuccess }) {
   const [isLoadingVideos, setIsLoadingVideos] = useState(true);
   const [videosError, setVideosError] = useState("");
   const [deletingVideoId, setDeletingVideoId] = useState("");
-  const [ocrVideoId, setOcrVideoId] = useState("");
-  const [ocrVideoPath, setOcrVideoPath] = useState("");
-  const [ocrIntervalSec, setOcrIntervalSec] = useState(10);
-  const [ocrSubmitting, setOcrSubmitting] = useState(false);
-  const [ocrStatus, setOcrStatus] = useState("Process a local .mp4 you own or have permission to analyze.");
-  const [ocrRawResponse, setOcrRawResponse] = useState("");
-  const [ocrJobs, setOcrJobs] = useState([]);
-  const [ocrJobsError, setOcrJobsError] = useState("");
   const carouselRef = useRef(null);
 
   async function loadIngestedVideos({ silent = false } = {}) {
@@ -537,37 +537,6 @@ function IngestPage({ onSuccess }) {
 
   useEffect(() => {
     loadIngestedVideos().catch(() => {});
-  }, []);
-
-  async function loadOcrJobs({ silent = false } = {}) {
-    if (!silent) {
-      setOcrJobsError(null);
-    }
-    try {
-      const payload = await apiRequest("/v1/local-video-ocr/jobs");
-      setOcrJobs(Array.isArray(payload?.jobs) ? payload.jobs : []);
-    } catch (error) {
-      if (!silent) {
-        setOcrJobsError(error);
-      }
-    }
-  }
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadInitial() {
-      if (!cancelled) {
-        await loadOcrJobs({ silent: true });
-      }
-    }
-    loadInitial().catch(() => {});
-    const intervalId = window.setInterval(() => {
-      loadOcrJobs({ silent: true }).catch(() => {});
-    }, 3000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
   }, []);
 
   async function handleSubmit(event) {
@@ -672,38 +641,6 @@ function IngestPage({ onSuccess }) {
     }
   }
 
-  async function handleOcrSubmit(event) {
-    event.preventDefault();
-    const scopedVideoId = ocrVideoId.trim();
-    const scopedPath = ocrVideoPath.trim();
-    if (!scopedVideoId || !scopedPath) {
-      return;
-    }
-    setOcrSubmitting(true);
-    setOcrStatus("Starting local video OCR job...");
-    setOcrRawResponse("");
-    try {
-      const payload = await apiRequest("/v1/local-video-ocr/jobs", {
-        method: "POST",
-        body: {
-          video_id: scopedVideoId,
-          video_path: scopedPath,
-          interval_sec: Number(ocrIntervalSec || 10),
-        },
-      });
-      setOcrRawResponse(JSON.stringify(payload, null, 2));
-      setOcrStatus(`OCR job ${payload?.job?.job_id || ""} queued. Status updates below.`);
-      onSuccess(scopedVideoId);
-      await loadOcrJobs();
-    } catch (error) {
-      const info = errorInfo(error, "OCR job failed to start.");
-      setOcrStatus(`OCR job failed to start. ${info.userMessage}`);
-      setOcrRawResponse(info.debugMessage);
-    } finally {
-      setOcrSubmitting(false);
-    }
-  }
-
   function scrollCarousel(direction) {
     if (!carouselRef.current) {
       return;
@@ -773,85 +710,6 @@ function IngestPage({ onSuccess }) {
           <pre className="output">{rawResponse}</pre>
         </details>
       </section>
-
-      <details className="panel local-ocr-panel advanced-ocr-panel">
-        <summary className="advanced-ocr-summary">
-          <span className="section-title advanced-ocr-title">
-            <img src="/icons/icon-search.svg" alt="" aria-hidden="true" />
-            <span>Local Video (Advanced)</span>
-          </span>
-          <span className="advanced-ocr-copy">
-            OCR a local video file you own or have permission to analyze.
-          </span>
-        </summary>
-        <div className="advanced-ocr-body">
-        <form className="grid local-ocr-grid" onSubmit={handleOcrSubmit}>
-          <label>
-            <span>Video ID</span>
-            <input
-              required
-              value={ocrVideoId}
-              onChange={(event) => setOcrVideoId(event.target.value)}
-              placeholder="demo_001"
-            />
-          </label>
-          <label>
-            <span>Local video path</span>
-            <input
-              required
-              value={ocrVideoPath}
-              onChange={(event) => setOcrVideoPath(event.target.value)}
-              placeholder="data/raw/demo_001.mp4"
-            />
-          </label>
-          <label>
-            <span>Frame interval</span>
-            <input
-              type="number"
-              min="1"
-              max="120"
-              value={ocrIntervalSec}
-              onChange={(event) => setOcrIntervalSec(event.target.value)}
-            />
-          </label>
-          <button className="btn" type="submit" disabled={ocrSubmitting}>
-            {ocrSubmitting ? "Queueing..." : "Run OCR"}
-          </button>
-        </form>
-        <div className="search-summary">{ocrStatus}</div>
-        <div className="ocr-job-grid">
-          {ocrJobs.map((job) => (
-            <article className="ocr-job-card" key={job.job_id}>
-              <div className="search-card-head">
-                <div className="search-rank">{job.status}</div>
-                <div className="search-title">{job.video_id}</div>
-                <div className="search-lang">{job.step}</div>
-              </div>
-              <div className="search-meta">
-                <span>frames {Number(job.frame_count || 0)}</span>
-                <span>ocr {Number(job.ocr_count || 0)}</span>
-                <span>vectors {Number(job.vector_count || 0)}</span>
-                <span>interval {Number(job.interval_sec || 0)}s</span>
-              </div>
-              {job.error_message ? <p className="search-snippet error-text">{job.error_message}</p> : null}
-              <p className="frame-path">{job.video_path}</p>
-            </article>
-          ))}
-          {!ocrJobs.length ? <div className="search-empty">No local OCR jobs yet.</div> : null}
-        </div>
-        {ocrJobsError ? (
-          <FriendlyError
-            error={ocrJobsError}
-            title="Could not load local OCR jobs."
-            onRetry={() => loadOcrJobs().catch(() => {})}
-          />
-        ) : null}
-        <details className="raw-json">
-          <summary>OCR Raw JSON</summary>
-          <pre className="output">{ocrRawResponse}</pre>
-        </details>
-        </div>
-      </details>
 
       <section className="panel ingest-library-panel">
         <div className="section-head">
@@ -948,6 +806,354 @@ function IngestPage({ onSuccess }) {
               );
             })}
           </div>
+        ) : null}
+      </section>
+    </section>
+  );
+}
+
+function LocalVideoAnalysisPage({ locale }) {
+  const [ocrVideoId, setOcrVideoId] = useState("");
+  const [ocrVideoPath, setOcrVideoPath] = useState("");
+  const [ocrIntervalSec, setOcrIntervalSec] = useState(10);
+  const [ocrSubmitting, setOcrSubmitting] = useState(false);
+  const [ocrStatus, setOcrStatus] = useState(
+    "Process a local .mp4 you own or have permission to analyze.",
+  );
+  const [ocrRawResponse, setOcrRawResponse] = useState("");
+  const [ocrJobs, setOcrJobs] = useState([]);
+  const [ocrJobsError, setOcrJobsError] = useState("");
+
+  const [analysisVideoId, setAnalysisVideoId] = useState("");
+  const [question, setQuestion] = useState("");
+  const [sourceMode, setSourceMode] = useState("ocr");
+  const [topK, setTopK] = useState(5);
+  const [provider, setProvider] = useState("chatgpt");
+  const [model, setModel] = useState("");
+  const [askLoading, setAskLoading] = useState(false);
+  const [askError, setAskError] = useState("");
+  const [askResponse, setAskResponse] = useState(null);
+  const llmProviderOptions = useLlmProviderOptions();
+
+  async function loadOcrJobs({ silent = false } = {}) {
+    if (!silent) {
+      setOcrJobsError("");
+    }
+    try {
+      const payload = await apiRequest("/v1/local-video-ocr/jobs");
+      const rows = Array.isArray(payload?.jobs) ? payload.jobs : [];
+      setOcrJobs(rows);
+      const readyJob = rows.find((job) => Number(job.vector_count || 0) > 0) || rows[0];
+      if (readyJob?.video_id) {
+        setAnalysisVideoId((current) => current || String(readyJob.video_id));
+      }
+    } catch (error) {
+      if (!silent) {
+        setOcrJobsError(error);
+      }
+    }
+  }
+
+  useEffect(() => {
+    loadOcrJobs({ silent: true }).catch(() => {});
+    const intervalId = window.setInterval(() => {
+      loadOcrJobs({ silent: true }).catch(() => {});
+    }, 3000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  async function handleOcrSubmit(event) {
+    event.preventDefault();
+    const scopedVideoId = ocrVideoId.trim();
+    const scopedPath = ocrVideoPath.trim();
+    if (!scopedVideoId || !scopedPath) {
+      return;
+    }
+    setOcrSubmitting(true);
+    setOcrStatus("Starting local video OCR job...");
+    setOcrRawResponse("");
+    try {
+      const payload = await apiRequest("/v1/local-video-ocr/jobs", {
+        method: "POST",
+        body: {
+          video_id: scopedVideoId,
+          video_path: scopedPath,
+          interval_sec: Number(ocrIntervalSec || 10),
+        },
+      });
+      setOcrRawResponse(JSON.stringify(payload, null, 2));
+      setOcrStatus(`OCR job ${payload?.job?.job_id || ""} queued. Status updates below.`);
+      setAnalysisVideoId(scopedVideoId);
+      await loadOcrJobs();
+    } catch (error) {
+      const info = errorInfo(error, "OCR job failed to start.");
+      setOcrStatus(`OCR job failed to start. ${info.userMessage}`);
+      setOcrRawResponse(info.debugMessage);
+    } finally {
+      setOcrSubmitting(false);
+    }
+  }
+
+  async function runLocalAsk(event) {
+    event.preventDefault();
+    const scopedVideoId = analysisVideoId.trim();
+    if (!scopedVideoId || !question.trim()) {
+      return;
+    }
+    setAskLoading(true);
+    setAskError("");
+    setAskResponse(null);
+    try {
+      const payload = await apiRequest("/v1/ask-multimodal", {
+        method: "POST",
+        body: {
+          question: question.trim(),
+          video_id: scopedVideoId,
+          source_mode: sourceMode,
+          retrieval_mode: "hybrid",
+          k: Number(topK || 5),
+          provider,
+          model: model || undefined,
+        },
+      });
+      setAskResponse(payload);
+    } catch (error) {
+      setAskError(String(error?.message || error));
+    } finally {
+      setAskLoading(false);
+    }
+  }
+
+  const answerStatus = String(askResponse?.status || "").trim();
+  const answerEvidence = Array.isArray(askResponse?.citations) && askResponse.citations.length
+    ? askResponse.citations
+    : Array.isArray(askResponse?.retrieved_chunks)
+      ? askResponse.retrieved_chunks
+      : [];
+
+  return (
+    <section className="ingest-stage local-video-stage">
+      <header className="hero">
+        <h1>Local Video Analysis</h1>
+        <p className="subtitle">
+          Extract visual evidence from a local video, monitor OCR indexing, and ask grounded questions.
+        </p>
+      </header>
+
+      <section className="panel local-ocr-panel">
+        <h2 className="section-title">
+          <img src="/icons/icon-upload.svg" alt="" aria-hidden="true" />
+          <span>Process Local Video</span>
+        </h2>
+        <p className="section-desc">
+          Use only local video files you own or have permission to process. Public YouTube downloading is not supported.
+        </p>
+        <form className="grid local-ocr-grid" onSubmit={handleOcrSubmit}>
+          <label>
+            <span>Video ID</span>
+            <input
+              required
+              value={ocrVideoId}
+              onChange={(event) => setOcrVideoId(event.target.value)}
+              placeholder="demo_001"
+            />
+          </label>
+          <label>
+            <span>Local video path</span>
+            <input
+              required
+              value={ocrVideoPath}
+              onChange={(event) => setOcrVideoPath(event.target.value)}
+              placeholder="data/raw/demo_001.mp4"
+            />
+          </label>
+          <label>
+            <span>Frame interval</span>
+            <input
+              type="number"
+              min="1"
+              max="120"
+              value={ocrIntervalSec}
+              onChange={(event) => setOcrIntervalSec(event.target.value)}
+            />
+          </label>
+          <button className="btn" type="submit" disabled={ocrSubmitting}>
+            {ocrSubmitting ? "Queueing..." : "Run OCR"}
+          </button>
+        </form>
+        <div className="search-summary">{ocrStatus}</div>
+        <div className="ocr-job-grid">
+          {ocrJobs.map((job) => (
+            <article className="ocr-job-card" key={job.job_id}>
+              <div className="search-card-head">
+                <div className="search-rank">{job.status}</div>
+                <div className="search-title">{job.video_id}</div>
+                <div className="search-lang">{job.step}</div>
+              </div>
+              <div className="search-meta">
+                <span>frames {Number(job.frame_count || 0)}</span>
+                <span>ocr {Number(job.ocr_count || 0)}</span>
+                <span>vectors {Number(job.vector_count || 0)}</span>
+                <span>interval {Number(job.interval_sec || 0)}s</span>
+              </div>
+              {job.error_message ? <p className="search-snippet error-text">{job.error_message}</p> : null}
+              <p className="frame-path">{job.video_path}</p>
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={() => setAnalysisVideoId(String(job.video_id || ""))}
+                disabled={!job.video_id || Number(job.vector_count || 0) <= 0}
+              >
+                Use for Ask
+              </button>
+            </article>
+          ))}
+          {!ocrJobs.length ? <div className="search-empty">No local OCR jobs yet.</div> : null}
+        </div>
+        {ocrJobsError ? (
+          <FriendlyError
+            error={ocrJobsError}
+            title="Could not load local OCR jobs."
+            onRetry={() => loadOcrJobs().catch(() => {})}
+          />
+        ) : null}
+        <details className="raw-json">
+          <summary>OCR Raw JSON</summary>
+          <pre className="output">{ocrRawResponse}</pre>
+        </details>
+      </section>
+
+      <section className="panel local-video-ask-panel">
+        <h2 className="section-title">
+          <img src="/icons/icon-chat.svg" alt="" aria-hidden="true" />
+          <span>Ask About Local Video</span>
+        </h2>
+        <p className="section-desc">
+          OCR only uses indexed frames. Transcript + OCR also uses transcript chunks when the same video ID exists in the transcript library.
+        </p>
+        <form className="qa-ask-form" onSubmit={runLocalAsk}>
+          <label className="ask-question-field">
+            <span>Question</span>
+            <textarea
+              required
+              rows="3"
+              value={question}
+              onChange={(event) => setQuestion(event.target.value)}
+              placeholder="What text or visual information appears in this video?"
+            />
+          </label>
+          <div className="qa-controls-row ask-controls-row">
+            <label>
+              <span>Video ID</span>
+              <input
+                required
+                list="local-video-job-ids"
+                value={analysisVideoId}
+                onChange={(event) => setAnalysisVideoId(event.target.value)}
+                placeholder="demo_001"
+              />
+              <datalist id="local-video-job-ids">
+                {ocrJobs.map((job) => (
+                  <option key={job.job_id} value={job.video_id} />
+                ))}
+              </datalist>
+            </label>
+            <label>
+              <span>Evidence</span>
+              <select value={sourceMode} onChange={(event) => setSourceMode(event.target.value)}>
+                <option value="ocr">OCR only</option>
+                <option value="both">Transcript + OCR</option>
+              </select>
+            </label>
+            <label>
+              <span>Top K</span>
+              <input
+                type="number"
+                min="1"
+                max="12"
+                value={topK}
+                onChange={(event) => setTopK(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Provider</span>
+              <select
+                value={provider}
+                onChange={(event) => {
+                  setProvider(event.target.value);
+                  setModel("");
+                }}
+              >
+                <option value="chatgpt">ChatGPT</option>
+                <option value="claude">Claude</option>
+                <option value="sakana">Sakana AI</option>
+              </select>
+            </label>
+            <ModelSelectLabel
+              providerOptions={llmProviderOptions}
+              provider={provider}
+              model={model}
+              onChange={setModel}
+            />
+            <button className="btn qa-primary-action" type="submit" disabled={askLoading}>
+              {askLoading ? "Generating..." : "Ask Local Video"}
+            </button>
+          </div>
+        </form>
+
+        {askError ? <div className="search-summary">Ask failed: {askError}</div> : null}
+        {askResponse ? (
+          <>
+            <div className="search-summary ask-summary-row">
+              <span className={`ask-status-pill ${answerStatusTone(answerStatus)}`}>
+                {answerStatusLabel(answerStatus, locale)}
+              </span>
+              <span>{answerEvidence.length} evidence item(s)</span>
+              <span>confidence: {answerConfidenceLabel(askResponse.confidence, locale)}</span>
+              <span>source: {askResponse.source_mode || sourceMode}</span>
+            </div>
+            <article
+              className={`ask-answer ask-answer-${answerStatus || "default"}`}
+              data-testid="local-video-answer-panel"
+            >
+              <p>{askResponse.answer}</p>
+              {(askResponse.warnings || []).map((warning) => (
+                <p className="error-text" key={warning}>{warning}</p>
+              ))}
+            </article>
+            <div className="search-cards">
+              {answerEvidence.map((row, index) => (
+                <article
+                  className="search-card"
+                  data-testid="local-video-evidence-card"
+                  key={`${row.video_id || analysisVideoId}-${row.frame_id || row.chunk_id || index}`}
+                >
+                  <div className="search-card-head">
+                    <div className="search-rank">#{index + 1}</div>
+                    <div className="search-title">{row.video_title || row.video_id || analysisVideoId}</div>
+                    <div className={`search-lang source-badge ${row.source_type === "ocr" ? "ocr" : "transcript"}`}>
+                      {row.source_type || "evidence"}
+                    </div>
+                  </div>
+                  <div className="search-meta">
+                    <span>{row.timestamp_range_label || row.timestamp_label || formatSeconds(row.start_seconds)}</span>
+                    {row.frame_id ? <span>{row.frame_id}</span> : null}
+                  </div>
+                  <p className="search-snippet">{row.snippet || row.text || row.reason}</p>
+                  {evidenceFramePath(row) ? <p className="frame-path">{evidenceFramePath(row)}</p> : null}
+                </article>
+              ))}
+              {!answerEvidence.length ? (
+                <div className="search-empty">No local video evidence was retrieved.</div>
+              ) : null}
+            </div>
+            <details className="raw-json">
+              <summary>Ask Raw JSON</summary>
+              <pre className="output">{JSON.stringify(askResponse, null, 2)}</pre>
+            </details>
+          </>
         ) : null}
       </section>
     </section>
@@ -1151,7 +1357,6 @@ function QAStudioPage({ locale }) {
   const [query, setQuery] = useState("");
   const [kSearch, setKSearch] = useState(5);
   const [searchMode, setSearchMode] = useState("hybrid");
-  const [searchSourceMode, setSearchSourceMode] = useState("transcript");
   const [searchReranker, setSearchReranker] = useState("none");
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchResponse, setSearchResponse] = useState(null);
@@ -1160,7 +1365,6 @@ function QAStudioPage({ locale }) {
   const [question, setQuestion] = useState("");
   const [kAsk, setKAsk] = useState(5);
   const [askMode, setAskMode] = useState("hybrid");
-  const [askSourceMode, setAskSourceMode] = useState("transcript");
   const [askAgentic, setAskAgentic] = useState(false);
   const [askReranker, setAskReranker] = useState("none");
   const [provider, setProvider] = useState("chatgpt");
@@ -1296,15 +1500,13 @@ function QAStudioPage({ locale }) {
     setSearchError("");
     setSearchResponse(null);
     try {
-      const endpoint = searchSourceMode === "transcript" ? "/v1/search" : "/v1/search-multimodal";
-      const payload = await apiRequest(endpoint, {
+      const payload = await apiRequest("/v1/search", {
         method: "POST",
         body: {
           query: query.trim(),
           k: Number(kSearch || 5),
           retrieval_mode: searchMode,
-          source_mode: searchSourceMode,
-          reranker: searchSourceMode === "transcript" ? searchReranker : "none",
+          reranker: searchReranker,
         },
       });
       setSearchResponse(payload);
@@ -1324,18 +1526,16 @@ function QAStudioPage({ locale }) {
     setAskError("");
     setAskResponse(null);
     try {
-      const endpoint = askSourceMode === "transcript" ? "/v1/ask" : "/v1/ask-multimodal";
-      const payload = await apiRequest(endpoint, {
+      const payload = await apiRequest("/v1/ask", {
         method: "POST",
         body: {
           question: question.trim(),
           k: Number(kAsk || 5),
           retrieval_mode: askMode,
-          source_mode: askSourceMode,
           provider,
           model: model || undefined,
-          agentic: askSourceMode === "transcript" ? askAgentic : false,
-          reranker: askSourceMode === "transcript" ? askReranker : "none",
+          agentic: askAgentic,
+          reranker: askReranker,
         },
       });
       setAskResponse(payload);
@@ -1438,14 +1638,6 @@ function QAStudioPage({ locale }) {
                   </select>
                 </label>
                 <label>
-                  <span>Evidence</span>
-                  <select value={askSourceMode} onChange={(event) => setAskSourceMode(event.target.value)}>
-                    <option value="transcript">Transcript</option>
-                    <option value="both">Transcript + OCR</option>
-                    <option value="ocr">OCR only</option>
-                  </select>
-                </label>
-                <label>
                   <span>Provider</span>
                   <select
                     value={provider}
@@ -1476,7 +1668,6 @@ function QAStudioPage({ locale }) {
                     type="checkbox"
                     checked={askAgentic}
                     onChange={(event) => setAskAgentic(event.target.checked)}
-                    disabled={askSourceMode !== "transcript"}
                   />
                   <span>
                     <strong>Agentic retry</strong>
@@ -1491,15 +1682,11 @@ function QAStudioPage({ locale }) {
                   <select
                     value={askReranker}
                     onChange={(event) => setAskReranker(event.target.value)}
-                    disabled={askSourceMode !== "transcript"}
                   >
                     <option value="none">Off</option>
                     <option value="cross_encoder">Cross-encoder</option>
                   </select>
                 </label>
-                {askSourceMode !== "transcript" ? (
-                  <p>Retrieval add-ons currently apply to transcript evidence only.</p>
-                ) : null}
               </fieldset>
             </form>
 
@@ -1644,7 +1831,7 @@ function QAStudioPage({ locale }) {
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search transcript and OCR evidence"
+                  placeholder="Search transcript evidence"
                 />
               </label>
               <div className="qa-controls-row search-controls-row">
@@ -1666,14 +1853,6 @@ function QAStudioPage({ locale }) {
                     <option value="lexical">lexical</option>
                   </select>
                 </label>
-                <label>
-                  <span>Evidence</span>
-                  <select value={searchSourceMode} onChange={(event) => setSearchSourceMode(event.target.value)}>
-                    <option value="transcript">Transcript</option>
-                    <option value="both">Transcript + OCR</option>
-                    <option value="ocr">OCR only</option>
-                  </select>
-                </label>
                 <button className="btn" type="submit" disabled={searchLoading}>
                   {searchLoading ? "Searching..." : "Run Search"}
                 </button>
@@ -1688,15 +1867,11 @@ function QAStudioPage({ locale }) {
                   <select
                     value={searchReranker}
                     onChange={(event) => setSearchReranker(event.target.value)}
-                    disabled={searchSourceMode !== "transcript"}
                   >
                     <option value="none">Off</option>
                     <option value="cross_encoder">Cross-encoder</option>
                   </select>
                 </label>
-                {searchSourceMode !== "transcript" ? (
-                  <p>Reranking currently applies to transcript evidence only.</p>
-                ) : null}
               </fieldset>
             </form>
 
@@ -2826,7 +3001,12 @@ function App() {
   }, [unlocked]);
 
   useEffect(() => {
-    if (unlockChecked && !unlocked && route !== ROUTES.INGEST) {
+    if (
+      unlockChecked
+      && !unlocked
+      && route !== ROUTES.INGEST
+      && route !== ROUTES.LOCAL_VIDEO
+    ) {
       navigate(ROUTES.INGEST);
     }
   }, [route, unlocked, unlockChecked]);
@@ -2991,7 +3171,10 @@ function App() {
       <main className={`shell react-shell-main ${route === ROUTES.INGEST ? "ingest-route" : ""}`}>
         <div className="route-scene" key={`scene-${route}-${routeAnimationKey}`}>
           {route === ROUTES.INGEST ? <IngestPage onSuccess={handleIngestSuccess} /> : null}
-          {route !== ROUTES.INGEST && unlocked ? <StudioWorkspace route={route} locale={locale} /> : null}
+          {route === ROUTES.LOCAL_VIDEO ? <LocalVideoAnalysisPage locale={locale} /> : null}
+          {route !== ROUTES.INGEST && route !== ROUTES.LOCAL_VIDEO && unlocked ? (
+            <StudioWorkspace route={route} locale={locale} />
+          ) : null}
         </div>
       </main>
 
