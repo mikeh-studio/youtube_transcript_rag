@@ -326,6 +326,8 @@ test("visualizes agentic attempts and reranked results", async ({ page }) => {
     reranker: "cross_encoder",
     retrieval_mode: "hybrid",
   });
+  expect(requestBody).not.toHaveProperty("source_mode");
+  await expect(page.locator(".qa-ask-form").getByLabel("Evidence", { exact: true })).toHaveCount(0);
   await expect(page.getByTestId("agentic-attempt-timeline")).toBeVisible();
   await expect(page.locator(".agentic-attempt")).toHaveCount(2);
   await expect(page.getByTestId("agentic-attempt-timeline").getByText("Rewritten query")).toBeVisible();
@@ -334,4 +336,149 @@ test("visualizes agentic attempts and reranked results", async ({ page }) => {
   await expect(page.getByTestId("result-ranking-profile")).toContainText("↓1");
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("keeps OCR ingestion and multimodal Ask in the Local Video tool", async ({ page }) => {
+  let requestBody = null;
+  let searchRequestBody = null;
+  let ocrJobRequests = 0;
+  await page.route("**/v1/local-video-ocr/jobs", async (route) => {
+    ocrJobRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        jobs: [
+          {
+            job_id: "ocr-demo-1",
+            video_id: "demo_001",
+            video_path: "data/raw/demo_001.mp4",
+            status: "completed",
+            step: "indexed",
+            frame_count: 12,
+            ocr_count: 10,
+            vector_count: 10,
+            interval_sec: 10,
+          },
+        ],
+      }),
+    });
+  });
+  await page.route("**/v1/search-multimodal", async (route) => {
+    searchRequestBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        query: "scoreboard",
+        video_id_filter: "demo_001",
+        source_mode: "ocr",
+        retrieval_mode: "hybrid",
+        result_count: 1,
+        results: [
+          {
+            source_type: "ocr",
+            video_id: "demo_001",
+            video_title: "demo_001",
+            frame_id: "frame_000120",
+            frame_path: "data/frames/demo_001/frame_000120.jpg",
+            timestamp_label: "2:00",
+            snippet: "Q4 98 96",
+          },
+        ],
+      }),
+    });
+  });
+  await page.route("**/v1/ask-multimodal", async (route) => {
+    requestBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        question: "What score is visible?",
+        video_id: "demo_001",
+        source_mode: "ocr",
+        status: "answered",
+        confidence: "high",
+        answer: "The scoreboard shows 98-96 in the fourth quarter [1].",
+        citations: [
+          {
+            citation_id: 1,
+            source_type: "ocr",
+            video_id: "demo_001",
+            video_title: "demo_001",
+            frame_id: "frame_000120",
+            frame_path: "data/frames/demo_001/frame_000120.jpg",
+            timestamp_label: "2:00",
+            timestamp_range_label: "2:00",
+            snippet: "Q4 98 96",
+          },
+        ],
+        retrieved_chunks: [],
+        warnings: [],
+        provider: "chatgpt",
+        model: "gpt-5.4-mini",
+      }),
+    });
+  });
+
+  await page.goto("/index.html#/local-video");
+  await expect(page.getByRole("heading", { name: "Local Video Analysis" })).toBeVisible();
+
+  const searchPanel = page.locator(".local-video-tool-panel").filter({
+    has: page.getByRole("heading", { name: "Search Local Video Evidence" }),
+  });
+  await expect(searchPanel.getByLabel("Video ID")).toHaveValue("demo_001");
+  await searchPanel.getByLabel("Search query").fill("scoreboard");
+  await searchPanel.getByRole("button", { name: "Search Local Video" }).click();
+
+  expect(searchRequestBody).toMatchObject({
+    query: "scoreboard",
+    video_id: "demo_001",
+    source_mode: "ocr",
+    retrieval_mode: "hybrid",
+  });
+  await expect(page.getByTestId("local-video-search-result")).toContainText("Q4 98 96");
+
+  const askPanel = page.locator(".local-video-ask-panel");
+  await expect(askPanel.getByLabel("Video ID")).toHaveValue("demo_001");
+  await askPanel.getByLabel("Question").fill("What score is visible?");
+  await askPanel.getByRole("button", { name: "Ask Local Video" }).click();
+
+  expect(requestBody).toMatchObject({
+    question: "What score is visible?",
+    video_id: "demo_001",
+    source_mode: "ocr",
+    retrieval_mode: "hybrid",
+  });
+  await expect(page.getByTestId("local-video-answer-panel")).toContainText("98-96");
+  await expect(page.getByTestId("local-video-evidence-card")).toHaveCount(1);
+  await expect(page.getByTestId("local-video-evidence-card")).toContainText("Q4 98 96");
+
+  const requestCountAfterLoad = ocrJobRequests;
+  await page.waitForTimeout(3200);
+  expect(ocrJobRequests).toBe(requestCountAfterLoad);
+});
+
+test("localizes the Local Video tool in Japanese", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("youtube-rag-ui-locale", "ja-JP");
+  });
+  await page.route("**/v1/local-video-ocr/jobs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, jobs: [] }),
+    });
+  });
+
+  await page.goto("/index.html#/local-video");
+
+  await expect(page.getByRole("heading", { name: "ローカル動画分析" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "ローカル動画の根拠を検索" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "OCR を実行" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "ローカル動画に質問" })).toBeVisible();
 });
