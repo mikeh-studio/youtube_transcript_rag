@@ -32,6 +32,11 @@ from urllib.request import Request, urlopen
 from youtube_transcript_api import YouTubeTranscriptApi
 
 from multilingual.text_processing import TextProcessor, LANGUAGE_CONFIG
+from multilingual.youtube_metadata import (
+    YouTubeMetadataClient,
+    merge_youtube_sources,
+    normalize_youtube_source,
+)
 
 CHUNK_WINDOW_SECONDS = 60
 CHUNK_OVERLAP_SECONDS = 15
@@ -58,15 +63,17 @@ def _chmod_private(path: str) -> None:
 class VideoLibrary:
     """Manages multiple video transcripts with a unified search index."""
 
-    def __init__(self, data_dir="data", processor=None):
+    def __init__(self, data_dir="data", processor=None, metadata_client=None):
         """Initialize the video library.
 
         Args:
             data_dir: Directory for persistent storage.
             processor: TextProcessor instance (created if not provided).
+            metadata_client: Optional YouTubeMetadataClient-compatible instance.
         """
         self.data_dir = data_dir
         self.processor = processor or TextProcessor()
+        self.metadata_client = metadata_client or YouTubeMetadataClient()
 
         # Video storage: video_id -> video metadata and chunks
         self.videos = (
@@ -173,11 +180,23 @@ class VideoLibrary:
 
         # Fetch video title
         title = self._fetch_title(video_id)
+        source = normalize_youtube_source(video_id)
+        if isinstance(existing_video, dict):
+            source = normalize_youtube_source(
+                video_id,
+                existing_video.get("source"),
+            )
+            if (
+                title == f"Video {video_id}"
+                and str(existing_video.get("title") or "").strip()
+            ):
+                title = existing_video["title"]
 
         # Store video data with language
         self.videos[video_id] = {
             "url": f"https://www.youtube.com/watch?v={video_id}",
             "title": title,
+            "source": source,
             "language": language,
             "chunks": chunks,
             "full_transcript": full_transcript,
@@ -484,6 +503,10 @@ class VideoLibrary:
                     "video_id": vid,
                     "title": data["title"],
                     "url": data["url"],
+                    "source": normalize_youtube_source(
+                        vid,
+                        data.get("source"),
+                    ),
                     "language": data.get("language", "ja"),
                     "num_chunks": len(data["chunks"]),
                     "chunking_version": self.get_video_chunking_metadata(vid)[
@@ -528,7 +551,14 @@ class VideoLibrary:
         langs = [data.get("language", "ja") for data in self.videos.values()]
         return max(set(langs), key=langs.count)
 
-    def search(self, query, k=5, language=None, video_id=None):
+    def search(
+        self,
+        query,
+        k=5,
+        language=None,
+        video_id=None,
+        video_ids=None,
+    ):
         """Semantic search across all videos.
 
         Args:
@@ -537,6 +567,8 @@ class VideoLibrary:
             language: Language code for query tokenization. If None, uses
                 the dominant language of stored videos.
             video_id: Optional video ID to restrict retrieval to one video.
+            video_ids: Optional iterable of video IDs to restrict retrieval to
+                a routed subset. Cannot be combined with ``video_id``.
 
         Returns:
             List of result dicts with score, text, video info, timestamps, and language.
@@ -549,19 +581,40 @@ class VideoLibrary:
             return []
 
         scoped_video_id = str(video_id or "").strip()
-        if scoped_video_id:
-            if scoped_video_id not in self.videos:
-                raise KeyError(f"Video {scoped_video_id} not found in library.")
-            if not self.videos[scoped_video_id].get("chunks"):
+        if scoped_video_id and video_ids is not None:
+            raise ValueError("Use either video_id or video_ids, not both.")
+        scoped_video_ids = None
+        if video_ids is not None:
+            if isinstance(video_ids, (str, bytes)):
+                raise TypeError("video_ids must be an iterable of video IDs.")
+            scoped_video_ids = set()
+            for value in video_ids:
+                normalized_id = str(value or "").strip()
+                if normalized_id:
+                    scoped_video_ids.add(normalized_id)
+            if not scoped_video_ids:
+                return []
+        elif scoped_video_id:
+            scoped_video_ids = {scoped_video_id}
+
+        if scoped_video_ids:
+            missing = sorted(scoped_video_ids - set(self.videos))
+            if missing:
+                raise KeyError(f"Video(s) not found in library: {', '.join(missing)}")
+            if not any(self.videos[value].get("chunks") for value in scoped_video_ids):
                 return []
 
         if language is None:
-            if scoped_video_id:
-                language = self.videos[scoped_video_id].get("language", "ja")
+            if scoped_video_ids:
+                scoped_languages = [
+                    self.videos[value].get("language", "ja")
+                    for value in scoped_video_ids
+                ]
+                language = max(set(scoped_languages), key=scoped_languages.count)
             else:
                 language = self._dominant_language()
         query_emb = self.processor.encode_query(query, language=language)
-        search_k = int(self.index.ntotal) if scoped_video_id else k
+        search_k = int(self.index.ntotal) if scoped_video_ids else k
         scores, indices = self.index.search(query_emb, search_k)
 
         results = []
@@ -569,7 +622,7 @@ class VideoLibrary:
             if idx < 0:
                 continue
             video_id, chunk_idx = self.chunk_map[idx]
-            if scoped_video_id and video_id != scoped_video_id:
+            if scoped_video_ids and video_id not in scoped_video_ids:
                 continue
             video_data = self.videos[video_id]
             chunk = video_data["chunks"][chunk_idx]
@@ -581,6 +634,10 @@ class VideoLibrary:
                     "video_id": video_id,
                     "video_title": video_data["title"],
                     "video_url": video_data["url"],
+                    "source": normalize_youtube_source(
+                        video_id,
+                        video_data.get("source"),
+                    ),
                     "language": video_data.get("language", "ja"),
                     "chunk_index": chunk_idx,
                     "text": chunk["raw_text"],
@@ -638,6 +695,10 @@ class VideoLibrary:
             record = {
                 "url": data["url"],
                 "title": data["title"],
+                "source": normalize_youtube_source(
+                    vid,
+                    data.get("source"),
+                ),
                 "language": data.get("language", "ja"),
                 "chunks": data["chunks"],
                 "full_transcript": data.get("full_transcript"),
@@ -833,6 +894,11 @@ class VideoLibrary:
         normalized = {
             "url": data.get("url", f"https://www.youtube.com/watch?v={video_id}"),
             "title": data.get("title", f"Video {video_id}"),
+            "source": normalize_youtube_source(
+                video_id,
+                data.get("source"),
+                legacy=not isinstance(data.get("source"), dict),
+            ),
             "language": data.get("language", "ja"),
             "chunks": data.get("chunks", []),
             "summary_cache": {},
@@ -846,6 +912,75 @@ class VideoLibrary:
         if isinstance(data.get("full_transcript"), dict):
             normalized["full_transcript"] = data.get("full_transcript")
         return normalized
+
+    def backfill_source_metadata(self, video_ids=None, *, force=False, persist=True):
+        """Enrich stored video provenance without refetching transcripts.
+
+        Complete Data API or oEmbed records are skipped unless ``force`` is
+        true, making routine backfills idempotent. Failed lookups retain all
+        previously stored metadata.
+        """
+        if video_ids is None:
+            requested = list(self.videos)
+        else:
+            if isinstance(video_ids, (str, bytes)):
+                raise TypeError("video_ids must be an iterable of video IDs.")
+            requested = list(
+                dict.fromkeys(
+                    normalized
+                    for value in video_ids
+                    for normalized in [str(value or "").strip()]
+                    if normalized
+                )
+            )
+        missing = [video_id for video_id in requested if video_id not in self.videos]
+        if missing:
+            raise KeyError(f"Video(s) not found in library: {', '.join(missing)}")
+
+        candidates = []
+        for video_id in requested:
+            source = normalize_youtube_source(
+                video_id,
+                self.videos[video_id].get("source"),
+            )
+            provider = source.get("metadata_provider")
+            if force or provider in {"fallback", "legacy"}:
+                candidates.append(video_id)
+
+        if not candidates:
+            return {"requested": len(requested), "updated": [], "skipped": requested}
+
+        try:
+            fetched = self.metadata_client.fetch_many(candidates)
+        except Exception:
+            fetched = {}
+        updated = []
+        for video_id in candidates:
+            data = self.videos[video_id]
+            result = fetched.get(video_id)
+            if not isinstance(result, dict):
+                continue
+            incoming_source = result.get("source")
+            existing_source = normalize_youtube_source(
+                video_id,
+                data.get("source"),
+            )
+            merged_source = merge_youtube_sources(existing_source, incoming_source)
+            title = str(result.get("title") or "").strip()
+            changed = merged_source != existing_source
+            if title and title != data.get("title"):
+                data["title"] = title
+                changed = True
+            if changed:
+                data["source"] = merged_source
+                # Keep the compatibility URL aligned with canonical provenance.
+                data["url"] = merged_source["url"]
+                updated.append(video_id)
+
+        if updated and persist:
+            self.save()
+        skipped = [video_id for video_id in requested if video_id not in updated]
+        return {"requested": len(requested), "updated": updated, "skipped": skipped}
 
     @property
     def total_chunks(self):
