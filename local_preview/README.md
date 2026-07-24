@@ -70,6 +70,29 @@ For an end-to-end ingestion check, capture:
 
 Static hosting or mocked `/v1/*` responses are not valid ingestion verification.
 
+## Video-first Ask routing
+
+`POST /v1/ask` can shortlist relevant videos before searching transcript chunks:
+
+```json
+{
+  "question": "How does fermentation timing affect the starter?",
+  "video_routing": "multi_vector",
+  "video_top_k": 3,
+  "agentic": true
+}
+```
+
+The Q&A Studio sends these fields automatically when **Video scope** is
+**All videos**. Explicit single-video Ask and `/v1/search` keep their existing
+behavior. Routing details, selected video IDs, fallbacks, and latency are
+returned under `retrieval_details.video_routing`.
+
+Each YouTube record also exposes `source.platform`, canonical video URL, and
+channel ID/name/URL. Set optional `YOUTUBE_API_KEY` to use the YouTube Data API;
+without it, ingestion uses best-effort oEmbed metadata and keeps working when
+metadata is unavailable.
+
 ## Local Video OCR
 
 Local Video OCR is intentionally separate from the public YouTube transcript flow.

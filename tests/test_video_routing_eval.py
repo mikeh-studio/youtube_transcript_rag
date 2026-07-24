@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from pathlib import Path
 
+import numpy as np
 import pytest
 
+from evals.video_routing.adapters import MultiVectorRouterAdapter
 from evals.video_routing.dataset import (
     DatasetValidationError,
     build_adapter_request,
@@ -19,6 +22,30 @@ from evals.video_routing.scoring import evaluate_predictions
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 FIXTURE_PATH = ROOT_DIR / "evals" / "datasets" / "video_routing_v1.json"
+
+
+class _HashProcessor:
+    """Small deterministic embedding backend for production-adapter tests."""
+
+    dim = 64
+
+    def embedding_metadata(self):
+        return {"backend": "test_hash", "model": "test_hash_v1", "dim": self.dim}
+
+    def _embed(self, text):
+        values = np.zeros(self.dim, dtype="float32")
+        for token in str(text or "").lower().split():
+            digest = hashlib.sha256(token.encode("utf-8")).digest()
+            values[int.from_bytes(digest[:2], "big") % self.dim] += 1.0
+        norm = np.linalg.norm(values)
+        return values / norm if norm else values
+
+    def generate_embeddings(self, chunks):
+        return np.vstack([self._embed(chunk["embed_text"]) for chunk in chunks])
+
+    def encode_query(self, query, language=None):
+        del language
+        return self._embed(query).reshape(1, -1)
 
 
 def _video(video_id: str, channel_id: str | None = "channel-1") -> dict:
@@ -317,3 +344,23 @@ def test_fixture_mutation_does_not_hide_label_overlap():
 
     with pytest.raises(DatasetValidationError, match="relevant videos"):
         validate_dataset(mutated)
+
+
+def test_production_router_adapter_runs_label_blind_channel_ablation(tmp_path):
+    dataset = load_dataset(FIXTURE_PATH)
+    adapter = MultiVectorRouterAdapter(
+        dataset["videos"],
+        _HashProcessor(),
+        artifact_dir=tmp_path,
+    )
+
+    report = run_adapter(dataset, adapter)
+
+    assert report["status"] == "complete"
+    assert report["counts"]["adapter_error_count"] == 0
+    assert report["channel_ablation"]["status"] == "available"
+    assert report["channel_ablation"]["query_count"] == len(
+        dataset["queries"]
+    )
+    assert 0.0 <= report["metrics"]["video_recall@3"] <= 1.0
+    assert report["metrics"]["final_chunk_recall@5"] is not None

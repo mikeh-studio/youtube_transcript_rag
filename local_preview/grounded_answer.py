@@ -44,6 +44,34 @@ def _truncate_snippet(text: str, max_chars: int = SNIPPET_MAX_CHARS) -> str:
     return clean[: max_chars - 1].rstrip() + "…"
 
 
+def _source_payload(row: dict, video_id: str, video_url: str) -> dict | None:
+    """Return stable provenance without conflating it with evidence source_type."""
+    raw = row.get("source")
+    source_type = str(row.get("source_type") or "transcript").strip().lower()
+    if not isinstance(raw, dict) and source_type == "ocr":
+        return None
+    source = copy.deepcopy(raw) if isinstance(raw, dict) else {}
+    channel = source.get("channel")
+    if not isinstance(channel, dict):
+        channel = {}
+    return {
+        "platform": str(source.get("platform") or "youtube").strip().lower(),
+        "video_id": str(source.get("video_id") or video_id).strip(),
+        "url": str(
+            source.get("url") or video_url or _canonical_video_url(video_id)
+        ).strip(),
+        "channel": {
+            "id": str(channel.get("id") or "").strip() or None,
+            "name": str(channel.get("name") or "").strip() or None,
+            "url": str(channel.get("url") or "").strip() or None,
+        },
+        "metadata_provider": str(
+            source.get("metadata_provider") or "legacy"
+        ).strip(),
+        "fetched_at": str(source.get("fetched_at") or "").strip() or None,
+    }
+
+
 def default_insufficient_answer(language: str) -> str:
     if language == "ja":
         return "取得された書き起こし断片だけでは、確かな根拠を持って回答できません。"
@@ -120,6 +148,7 @@ def build_citation_catalog(rows: List[dict]) -> List[dict]:
                 "video_id": video_id,
                 "video_title": str(row.get("video_title") or video_id).strip(),
                 "video_url": video_url,
+                "source": _source_payload(row, video_id, video_url),
                 "chunk_id": (
                     f"{video_id}:{int(row['chunk_index'])}"
                     if row.get("chunk_index") is not None
@@ -161,6 +190,18 @@ def build_retrieved_chunks_payload(rows: List[dict]) -> List[dict]:
                 row.get("video_url")
                 or ("" if str(row.get("source_type") or "").lower() == "ocr" else _canonical_video_url(video_id))
             ).strip(),
+            "source": _source_payload(
+                row,
+                video_id,
+                str(
+                    row.get("video_url")
+                    or (
+                        ""
+                        if str(row.get("source_type") or "").lower() == "ocr"
+                        else _canonical_video_url(video_id)
+                    )
+                ).strip(),
+            ),
             "language": str(row.get("language") or "").strip(),
             "chunk_index": row.get("chunk_index"),
             "frame_id": row.get("frame_id"),
@@ -208,10 +249,25 @@ def build_grounded_answer_messages(
         source_label = "OCR" if citation.get("source_type") == "ocr" else "Transcript"
         locator_label = "Frame" if citation.get("source_type") == "ocr" else "URL"
         locator_value = citation.get("frame_path") or citation.get("url") or "-"
+        source = (
+            citation.get("source")
+            if isinstance(citation.get("source"), dict)
+            else {}
+        )
+        channel = (
+            source.get("channel")
+            if isinstance(source.get("channel"), dict)
+            else {}
+        )
+        platform = str(source.get("platform") or "").strip()
+        provenance = "YouTube" if platform.lower() == "youtube" else platform.title()
+        if channel.get("name"):
+            provenance = f"{provenance or 'YouTube'} channel: {channel['name']}"
         evidence_lines.append(
             "\n".join(
                 [
                     f"[{citation['citation_id']}] {citation['video_title']} | {citation['timestamp_range_label']}",
+                    f"Provenance: {provenance}" if provenance else "Provenance: unavailable",
                     f"{locator_label}: {locator_value}",
                     f"{source_label}: {citation['text']}",
                 ]

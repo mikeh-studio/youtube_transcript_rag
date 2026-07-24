@@ -1228,6 +1228,20 @@ th {
   font-size: 0.75rem;
 }
 
+.source-provenance {
+  align-items: center;
+}
+
+.source-provenance a {
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.source-provenance a:hover {
+  text-decoration: underline;
+}
+
 .search-snippet {
   margin: 0.52rem 0;
   font-size: 0.84rem;

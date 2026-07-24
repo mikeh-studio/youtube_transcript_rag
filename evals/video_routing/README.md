@@ -54,6 +54,22 @@ dataset = load_dataset("evals/datasets/video_routing_v1.json")
 report = run_adapter(dataset, my_router_adapter)
 ```
 
+To exercise the production router without exposing query labels:
+
+```python
+from evals.video_routing import MultiVectorRouterAdapter, load_dataset
+from evals.video_routing.runner import run_adapter
+from multilingual.text_processing import TextProcessor
+
+dataset = load_dataset("evals/datasets/video_routing_v1.json")
+adapter = MultiVectorRouterAdapter(dataset["videos"], TextProcessor())
+report = run_adapter(dataset, adapter)
+```
+
+Only the label-free `videos` collection is passed to the production adapter.
+The adapter also builds a channel-name-ablated router for the comparison
+metrics.
+
 For already captured results:
 
 ```bash
