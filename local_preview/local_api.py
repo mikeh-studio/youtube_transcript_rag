@@ -3429,6 +3429,7 @@ class LocalRAGService:
 
             retrievals = []
             agentic_outcomes = []
+            deterministic_assessments = []
             language_stages = []
             for query_language, scoped_query, grouped_ids in grouped_scopes:
                 if agentic:
@@ -3454,7 +3455,19 @@ class LocalRAGService:
                         video_ids=grouped_ids,
                         reranker=reranker,
                     )
-                    scoped_sufficient = None
+                    assessment = assess_grounded_answer_evidence(
+                        question=scoped_query,
+                        rows=scoped_retrieval.get("results") or [],
+                        retrieval_mode=scoped_retrieval.get(
+                            "retrieval_mode",
+                            retrieval_mode,
+                        ),
+                        tokenize_fn=self._tokenize_for_lexical,
+                        answer_language=expansion["query_language"],
+                        query_language=query_language,
+                    )
+                    deterministic_assessments.append(assessment)
+                    scoped_sufficient = bool(assessment.get("sufficient"))
                 scoped_retrieval["_query_language"] = query_language
                 retrievals.append(scoped_retrieval)
                 language_stages.append(
@@ -3463,6 +3476,11 @@ class LocalRAGService:
                         "video_ids": grouped_ids,
                         "result_count": len(scoped_retrieval.get("results") or []),
                         "sufficient": scoped_sufficient,
+                        "reason_code": (
+                            None
+                            if agentic
+                            else deterministic_assessments[-1].get("reason_code")
+                        ),
                     }
                 )
 
@@ -3482,7 +3500,10 @@ class LocalRAGService:
                         "language_outcomes": agentic_outcomes,
                     }
             else:
-                sufficient = None
+                sufficient = any(
+                    bool(assessment.get("sufficient"))
+                    for assessment in deterministic_assessments
+                )
             routing_stages.append(
                 {
                     "scope": scope_label,
@@ -3503,7 +3524,7 @@ class LocalRAGService:
             retrieval, sufficient = run_scope(None, "global_fallback")
 
         expanded_route = None
-        if agentic and route_is_usable and not sufficient:
+        if route_is_usable and not sufficient:
             expanded_top_k = min(
                 MAX_VIDEO_ROUTING_TOP_K,
                 max(video_top_k + 1, video_top_k * 2),
@@ -3527,8 +3548,7 @@ class LocalRAGService:
 
         final_scope = routing_stages[-1].get("video_ids")
         if (
-            agentic
-            and route_is_usable
+            route_is_usable
             and not sufficient
             and final_scope is not None
             and set(final_scope) != set(all_video_ids)

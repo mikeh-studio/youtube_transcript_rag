@@ -105,6 +105,149 @@ def test_video_first_agentic_expands_shortlist_before_global_fallback():
     assert details["used_fallback"] is False
 
 
+def test_video_first_non_agentic_expands_when_routed_evidence_is_weak(
+    monkeypatch,
+):
+    service = local_api.LocalRAGService.__new__(local_api.LocalRAGService)
+    all_video_ids = ("v1", "v2", "v3", "v4")
+    service.engine = type(
+        "Engine",
+        (),
+        {
+            "library": type(
+                "Library",
+                (),
+                {"videos": {video_id: {} for video_id in all_video_ids}},
+            )()
+        },
+    )()
+    route_calls = []
+    retrieval_scopes = []
+
+    def route_videos(query, *, top_k, language, video_ids=None):
+        del query, language, video_ids
+        route_calls.append(top_k)
+        selected = ["v1", "v2"] if top_k == 2 else list(all_video_ids)
+        return {
+            "video_ids": selected,
+            "results": [{"video_id": value} for value in selected],
+            "used_fallback": False,
+            "fallback_reason": None,
+            "dense_available": True,
+            "lexical_available": True,
+            "fusion": "rrf",
+            "latency_ms": 1.0,
+        }
+
+    def retrieve(question, **kwargs):
+        del question
+        scope = kwargs["video_ids"]
+        retrieval_scopes.append(scope)
+        return _retrieval(scope, sufficient=False)["retrieval"]
+
+    monkeypatch.setattr(
+        local_api,
+        "assess_grounded_answer_evidence",
+        lambda **kwargs: {
+            "sufficient": len(kwargs["rows"]) >= 4,
+            "reason_code": (
+                "multi_chunk_support" if len(kwargs["rows"]) >= 4 else "thin_support"
+            ),
+        },
+    )
+    service.route_videos = route_videos
+    service.retrieve = retrieve
+
+    outcome = service.retrieve_video_first(
+        "starter timing",
+        video_top_k=2,
+        agentic=False,
+    )
+    details = outcome["retrieval"]["details"]["video_routing"]
+
+    assert route_calls == [2, 4]
+    assert retrieval_scopes == [["v1", "v2"], ["v1", "v2", "v3", "v4"]]
+    assert [stage["scope"] for stage in details["stages"]] == [
+        "routed_top_k",
+        "routed_expanded",
+    ]
+    assert [stage["sufficient"] for stage in details["stages"]] == [False, True]
+    assert details["used_fallback"] is False
+
+
+def test_video_first_non_agentic_falls_back_globally_after_weak_expansion(
+    monkeypatch,
+):
+    service = local_api.LocalRAGService.__new__(local_api.LocalRAGService)
+    all_video_ids = ["v1", "v2", "v3", "v4", "v5"]
+    service.engine = type(
+        "Engine",
+        (),
+        {
+            "library": type(
+                "Library",
+                (),
+                {"videos": {video_id: {} for video_id in all_video_ids}},
+            )()
+        },
+    )()
+    retrieval_scopes = []
+
+    def route_videos(query, *, top_k, language, video_ids=None):
+        del query, language, video_ids
+        selected = all_video_ids[:top_k]
+        return {
+            "video_ids": selected,
+            "results": [{"video_id": value} for value in selected],
+            "used_fallback": False,
+            "fallback_reason": None,
+            "dense_available": True,
+            "lexical_available": True,
+            "fusion": "rrf",
+            "latency_ms": 1.0,
+        }
+
+    def retrieve(question, **kwargs):
+        del question
+        scope = kwargs["video_ids"]
+        retrieval_scopes.append(scope)
+        result_ids = all_video_ids if scope is None else scope
+        return _retrieval(result_ids, sufficient=False)["retrieval"]
+
+    monkeypatch.setattr(
+        local_api,
+        "assess_grounded_answer_evidence",
+        lambda **kwargs: {
+            "sufficient": len(kwargs["rows"]) >= 5,
+            "reason_code": (
+                "multi_chunk_support" if len(kwargs["rows"]) >= 5 else "thin_support"
+            ),
+        },
+    )
+    service.route_videos = route_videos
+    service.retrieve = retrieve
+
+    outcome = service.retrieve_video_first(
+        "starter timing",
+        video_top_k=2,
+        agentic=False,
+    )
+    details = outcome["retrieval"]["details"]["video_routing"]
+
+    assert retrieval_scopes == [
+        ["v1", "v2"],
+        ["v1", "v2", "v3", "v4"],
+        None,
+    ]
+    assert [stage["scope"] for stage in details["stages"]] == [
+        "routed_top_k",
+        "routed_expanded",
+        "global_fallback",
+    ]
+    assert details["used_fallback"] is True
+    assert details["fallback_reason"] == "insufficient_routed_evidence"
+
+
 def test_video_first_uses_global_retrieval_when_router_is_unavailable():
     service = local_api.LocalRAGService.__new__(local_api.LocalRAGService)
     service.engine = type(
@@ -206,7 +349,11 @@ def test_english_frieren_query_routes_to_japanese_video_after_translation():
                 {
                     "video_id": kwargs["video_ids"][0],
                     "chunk_index": 0,
-                    "text": "フリーレンの番組で出演者が作品について話しました",
+                    "language": kwargs["language"],
+                    "rank": 1,
+                    "dense_score": 0.9,
+                    "lexical_score": 8.0,
+                    "text": query,
                 }
             ],
         }
