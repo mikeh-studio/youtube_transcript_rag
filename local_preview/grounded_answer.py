@@ -323,6 +323,7 @@ def assess_grounded_answer_evidence(
     retrieval_mode: str,
     tokenize_fn: Callable[[str, str], List[str]],
     answer_language: str,
+    query_language: Optional[str] = None,
 ) -> dict:
     """Decide whether retrieval evidence is strong enough to justify generation."""
     if not rows:
@@ -339,7 +340,7 @@ def assess_grounded_answer_evidence(
             "reason_code": "no_results",
         }
 
-    query_tokens = tokenize_fn(question, answer_language)
+    query_tokens = tokenize_fn(question, query_language or answer_language)
     query_token_set = {token for token in query_tokens if token}
     top_lexical_score = max(
         float(row.get("lexical_score", 0.0) or 0.0) for row in rows or [{}]

@@ -857,12 +857,18 @@ class LocalRAGService:
         *,
         top_k: int = DEFAULT_VIDEO_ROUTING_TOP_K,
         language: Optional[str] = None,
+        video_ids: Optional[List[str]] = None,
     ) -> dict:
         """Return a best-effort video shortlist without blocking Ask fallback."""
         started_at = time.perf_counter()
         try:
             router = self._get_video_router()
-            routed = router.search(query, top_k=top_k, language=language)
+            routed = router.search(
+                query,
+                top_k=top_k,
+                language=language,
+                video_ids=video_ids,
+            )
         except Exception as exc:
             routed = {
                 "video_ids": [],
@@ -876,6 +882,220 @@ class LocalRAGService:
             }
         routed["latency_ms"] = round((time.perf_counter() - started_at) * 1000, 3)
         return routed
+
+    @staticmethod
+    def _canonical_video_language(value: Optional[str], fallback: str = "en") -> str:
+        scoped = str(value or "").strip().lower().replace("_", "-")
+        primary = scoped.split("-", 1)[0]
+        return primary if primary in LANGUAGE_CONFIG else fallback
+
+    def _video_ids_by_language(self, query_language: str) -> Dict[str, List[str]]:
+        grouped: Dict[str, List[str]] = {}
+        for video_id, video in self.engine.library.videos.items():
+            video_language = self._canonical_video_language(
+                video.get("language"),
+                fallback=query_language,
+            )
+            grouped.setdefault(video_language, []).append(video_id)
+        return grouped
+
+    def _expand_query_for_video_languages(
+        self,
+        question: str,
+        *,
+        provider: str,
+        model: Optional[str],
+        language: Optional[str] = None,
+    ) -> dict:
+        """Translate a query once per corpus language without duplicating transcripts."""
+        query_language = self._canonical_video_language(
+            language or self._infer_query_language(question),
+            fallback=self._infer_query_language(question),
+        )
+        video_ids_by_language = self._video_ids_by_language(query_language)
+        variants = [
+            {
+                "query": question,
+                "language": query_language,
+                "kind": "original",
+                "video_ids": list(video_ids_by_language.get(query_language) or []),
+            }
+        ]
+        target_languages = sorted(
+            current
+            for current in video_ids_by_language
+            if current != query_language and current in LANGUAGE_CONFIG
+        )
+        if not target_languages:
+            variants[0]["video_ids"] = list(self.engine.library.videos)
+            return {
+                "query_language": query_language,
+                "variants": variants,
+                "translation_applied": False,
+                "translation_error": None,
+            }
+
+        cache = getattr(self, "query_translation_cache", None)
+        if cache is None:
+            cache = {}
+            self.query_translation_cache = cache
+        cache_key = (
+            question,
+            query_language,
+            tuple(target_languages),
+            str(provider or DEFAULT_ASK_PROVIDER).strip().lower(),
+            str(model or ""),
+        )
+        translations = cache.get(cache_key)
+        translation_error = None
+        if translations is None:
+            try:
+                llm = self._llm_text_response(
+                    provider=provider,
+                    model=model,
+                    max_tokens=240,
+                    temperature=0.0,
+                    system_prompt=(
+                        "You translate search queries for multilingual transcript "
+                        "retrieval. Preserve names, titles, franchises, and other "
+                        "entities. Return JSON only with this schema: "
+                        '{"translations":{"<language code>":"<translated query>"}}.'
+                    ),
+                    user_message=json.dumps(
+                        {
+                            "query": question,
+                            "source_language": query_language,
+                            "target_languages": target_languages,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+                parsed = _extract_json_payload(llm["text"])
+                raw_translations = (
+                    parsed.get("translations") if isinstance(parsed, dict) else {}
+                )
+                translations = {
+                    target: str((raw_translations or {}).get(target) or "").strip()
+                    for target in target_languages
+                }
+                translations = {
+                    target: translated
+                    for target, translated in translations.items()
+                    if translated
+                }
+                if not translations:
+                    raise ValueError("query translation returned no usable variants")
+                cache[cache_key] = translations
+            except Exception as exc:
+                translations = {}
+                translation_error = str(exc)
+
+        for target_language in target_languages:
+            translated = translations.get(target_language)
+            variants.append(
+                {
+                    "query": translated or question,
+                    "language": target_language,
+                    "kind": "translated" if translated else "untranslated_fallback",
+                    "video_ids": list(video_ids_by_language[target_language]),
+                }
+            )
+        return {
+            "query_language": query_language,
+            "variants": variants,
+            "translation_applied": any(
+                variant["kind"] == "translated" for variant in variants
+            ),
+            "translation_error": translation_error,
+        }
+
+    def _route_query_variants(self, expansion: dict, *, top_k: int) -> dict:
+        """Fuse language-scoped video rankings for the expanded query."""
+        started_at = time.perf_counter()
+        fused: Dict[str, dict] = {}
+        route_attempts = []
+        for variant in expansion["variants"]:
+            routed = self.route_videos(
+                variant["query"],
+                top_k=top_k,
+                language=variant["language"],
+                video_ids=variant["video_ids"],
+            )
+            route_attempts.append(
+                {
+                    "language": variant["language"],
+                    "kind": variant["kind"],
+                    "video_ids": list(routed.get("video_ids") or []),
+                    "used_fallback": bool(routed.get("used_fallback")),
+                    "fallback_reason": routed.get("fallback_reason"),
+                    "latency_ms": routed.get("latency_ms"),
+                }
+            )
+            if routed.get("used_fallback"):
+                continue
+            variant_weight = 1.1 if variant["kind"] == "translated" else 1.0
+            for rank, candidate in enumerate(routed.get("results") or [], start=1):
+                video_id = candidate["video_id"]
+                entry = fused.setdefault(
+                    video_id,
+                    {
+                        "video_id": video_id,
+                        "title": candidate.get("title"),
+                        "language": candidate.get("language") or variant["language"],
+                        "source": candidate.get("source"),
+                        "score": 0.0,
+                        "variant_hits": [],
+                    },
+                )
+                lexical_score = float(candidate.get("lexical_score") or 0.0)
+                entry["score"] += variant_weight * (
+                    (1.0 / (60 + rank)) + (0.02 * lexical_score)
+                )
+                entry["variant_hits"].append(
+                    {
+                        "language": variant["language"],
+                        "kind": variant["kind"],
+                        "rank": rank,
+                        "dense_score": candidate.get("dense_score"),
+                        "lexical_score": candidate.get("lexical_score"),
+                    }
+                )
+
+        ordered = sorted(
+            fused.values(),
+            key=lambda row: (-float(row["score"]), row["video_id"]),
+        )[:top_k]
+        for rank, candidate in enumerate(ordered, start=1):
+            candidate["rank"] = rank
+        fallback_reason = None
+        if not ordered:
+            fallback_reason = next(
+                (
+                    attempt["fallback_reason"]
+                    for attempt in route_attempts
+                    if attempt.get("fallback_reason")
+                ),
+                "no_language_variant_signal",
+            )
+        return {
+            "video_ids": [candidate["video_id"] for candidate in ordered],
+            "results": ordered,
+            "used_fallback": not bool(ordered),
+            "fallback_reason": fallback_reason,
+            "dense_available": any(
+                hit.get("dense_score") is not None
+                for candidate in ordered
+                for hit in candidate["variant_hits"]
+            ),
+            "lexical_available": any(
+                hit.get("lexical_score") is not None
+                for candidate in ordered
+                for hit in candidate["variant_hits"]
+            ),
+            "fusion": "language_scoped_rrf",
+            "route_attempts": route_attempts,
+            "latency_ms": round((time.perf_counter() - started_at) * 1000, 3),
+        }
 
     @staticmethod
     def _normalize_local_video_path(video_path: str) -> Path:
@@ -3110,46 +3330,158 @@ class LocalRAGService:
         reranker: Optional[str] = None,
         video_top_k: int = DEFAULT_VIDEO_ROUTING_TOP_K,
         agentic: bool = False,
+        provider: str = DEFAULT_ASK_PROVIDER,
+        model: Optional[str] = None,
     ) -> dict:
         """Route across videos first, then retrieve chunks inside the shortlist."""
         video_top_k = max(
             1,
             min(int(video_top_k), MAX_VIDEO_ROUTING_TOP_K),
         )
-        initial_route = self.route_videos(
+        expansion = self._expand_query_for_video_languages(
             question,
-            top_k=video_top_k,
+            provider=provider,
+            model=model,
             language=language,
+        )
+        initial_route = self._route_query_variants(
+            expansion,
+            top_k=video_top_k,
         )
         selected_ids = list(initial_route.get("video_ids") or [])
         all_video_ids = list(self.engine.library.videos)
         routing_stages = []
         final_outcome = None
+        variants_by_language = {
+            variant["language"]: variant for variant in expansion["variants"]
+        }
+        original_variant = expansion["variants"][0]
+
+        def merge_retrievals(retrievals):
+            if len(retrievals) == 1:
+                return retrievals[0]
+            merged: Dict[str, dict] = {}
+            for scoped_retrieval in retrievals:
+                for rank, row in enumerate(
+                    scoped_retrieval.get("results") or [],
+                    start=1,
+                ):
+                    key = self._chunk_identity(row)
+                    entry = merged.setdefault(key, dict(row))
+                    entry["multilingual_score"] = float(
+                        entry.get("multilingual_score", 0.0)
+                    ) + (1.0 / (60 + rank))
+            rows = sorted(
+                merged.values(),
+                key=lambda row: (
+                    -float(row.get("multilingual_score", 0.0)),
+                    self._chunk_identity(row),
+                ),
+            )[:k]
+            for rank, row in enumerate(rows, start=1):
+                row["rank"] = rank
+                row["score"] = float(row.get("multilingual_score", 0.0))
+            return {
+                "retrieval_mode": retrieval_mode,
+                "details": {
+                    "multilingual_retrieval": {
+                        "enabled": True,
+                        "languages": [
+                            retrieval.get("_query_language")
+                            for retrieval in retrievals
+                        ],
+                        "result_sets": len(retrievals),
+                        "fusion": "rrf",
+                    }
+                },
+                "results": rows,
+            }
 
         def run_scope(scope_ids, scope_label):
             nonlocal final_outcome
-            if agentic:
-                final_outcome = self.retrieve_agentic(
-                    question,
-                    k=k,
-                    language=language,
-                    retrieval_mode=retrieval_mode,
-                    retrieval_profile=retrieval_profile,
-                    video_ids=scope_ids,
-                    reranker=reranker,
-                )
-                retrieval = final_outcome["retrieval"]
-                sufficient = bool(final_outcome.get("sufficient"))
+            if scope_ids is None and len(expansion["variants"]) == 1:
+                grouped_scopes = [
+                    (
+                        original_variant["language"],
+                        original_variant["query"],
+                        None,
+                    )
+                ]
             else:
-                retrieval = self.retrieve(
-                    question,
-                    k=k,
-                    language=language,
-                    retrieval_mode=retrieval_mode,
-                    retrieval_profile=retrieval_profile,
-                    video_ids=scope_ids,
-                    reranker=reranker,
+                scoped_ids = all_video_ids if scope_ids is None else list(scope_ids)
+                grouped: Dict[str, List[str]] = {}
+                for video_id in scoped_ids:
+                    video = self.engine.library.videos.get(video_id) or {}
+                    video_language = self._canonical_video_language(
+                        video.get("language"),
+                        fallback=original_variant["language"],
+                    )
+                    grouped.setdefault(video_language, []).append(video_id)
+                grouped_scopes = []
+                for video_language, grouped_ids in sorted(grouped.items()):
+                    variant = variants_by_language.get(
+                        video_language,
+                        original_variant,
+                    )
+                    grouped_scopes.append(
+                        (video_language, variant["query"], grouped_ids)
+                    )
+
+            retrievals = []
+            agentic_outcomes = []
+            language_stages = []
+            for query_language, scoped_query, grouped_ids in grouped_scopes:
+                if agentic:
+                    outcome = self.retrieve_agentic(
+                        scoped_query,
+                        k=k,
+                        language=query_language,
+                        retrieval_mode=retrieval_mode,
+                        retrieval_profile=retrieval_profile,
+                        video_ids=grouped_ids,
+                        reranker=reranker,
+                    )
+                    scoped_retrieval = outcome["retrieval"]
+                    agentic_outcomes.append(outcome)
+                    scoped_sufficient = bool(outcome.get("sufficient"))
+                else:
+                    scoped_retrieval = self.retrieve(
+                        scoped_query,
+                        k=k,
+                        language=query_language,
+                        retrieval_mode=retrieval_mode,
+                        retrieval_profile=retrieval_profile,
+                        video_ids=grouped_ids,
+                        reranker=reranker,
+                    )
+                    scoped_sufficient = None
+                scoped_retrieval["_query_language"] = query_language
+                retrievals.append(scoped_retrieval)
+                language_stages.append(
+                    {
+                        "language": query_language,
+                        "video_ids": grouped_ids,
+                        "result_count": len(scoped_retrieval.get("results") or []),
+                        "sufficient": scoped_sufficient,
+                    }
                 )
+
+            retrieval = merge_retrievals(retrievals)
+            retrieval.pop("_query_language", None)
+            if agentic:
+                sufficient = any(
+                    bool(outcome.get("sufficient"))
+                    for outcome in agentic_outcomes
+                )
+                if len(agentic_outcomes) == 1:
+                    final_outcome = agentic_outcomes[0]
+                else:
+                    final_outcome = {
+                        "retrieval": retrieval,
+                        "sufficient": sufficient,
+                        "language_outcomes": agentic_outcomes,
+                    }
+            else:
                 sufficient = None
             routing_stages.append(
                 {
@@ -3157,6 +3489,7 @@ class LocalRAGService:
                     "video_ids": list(scope_ids) if scope_ids is not None else None,
                     "result_count": len(retrieval.get("results") or []),
                     "sufficient": sufficient,
+                    "language_stages": language_stages,
                 }
             )
             return retrieval, sufficient
@@ -3177,10 +3510,9 @@ class LocalRAGService:
                 max(1, len(all_video_ids)),
             )
             if expanded_top_k > len(selected_ids):
-                expanded_route = self.route_videos(
-                    question,
+                expanded_route = self._route_query_variants(
+                    expansion,
                     top_k=expanded_top_k,
-                    language=language,
                 )
                 expanded_ids = list(expanded_route.get("video_ids") or [])
                 if (
@@ -3224,6 +3556,21 @@ class LocalRAGService:
             "lexical_available": bool(initial_route.get("lexical_available")),
             "fusion": initial_route.get("fusion"),
             "latency_ms": initial_route.get("latency_ms"),
+            "query_expansion": {
+                "query_language": expansion["query_language"],
+                "translation_applied": bool(expansion["translation_applied"]),
+                "variants": [
+                    {
+                        "language": variant["language"],
+                        "kind": variant["kind"],
+                        "query": variant["query"],
+                        "video_count": len(variant["video_ids"]),
+                    }
+                    for variant in expansion["variants"]
+                ],
+                "error": expansion.get("translation_error"),
+            },
+            "route_attempts": initial_route.get("route_attempts") or [],
             "stages": routing_stages,
         }
         if initial_route.get("error"):
@@ -3233,7 +3580,20 @@ class LocalRAGService:
                 expanded_route.get("video_ids") or []
             )
             routing_details["expanded_latency_ms"] = expanded_route.get("latency_ms")
-        retrieval.setdefault("details", {})["video_routing"] = routing_details
+        retrieval_details = retrieval.setdefault("details", {})
+        retrieval_details["video_routing"] = routing_details
+        final_language_stages = routing_stages[-1].get("language_stages") or []
+        if len(final_language_stages) == 1:
+            grounding_language = final_language_stages[0]["language"]
+            grounding_variant = variants_by_language.get(
+                grounding_language,
+                original_variant,
+            )
+            retrieval_details["answer_grounding"] = {
+                "question": grounding_variant["query"],
+                "query_language": grounding_language,
+                "answer_language": expansion["query_language"],
+            }
         return {
             "retrieval": retrieval,
             "agentic_outcome": final_outcome,
@@ -7036,6 +7396,8 @@ class LocalRAGService:
         provider: str = DEFAULT_ASK_PROVIDER,
         retrieval_mode: str = "hybrid",
         model: Optional[str] = None,
+        evidence_question: Optional[str] = None,
+        evidence_language: Optional[str] = None,
     ) -> dict:
         scoped_provider = str(provider or DEFAULT_ASK_PROVIDER).strip().lower()
         if scoped_provider not in ASK_PROVIDERS:
@@ -7064,11 +7426,12 @@ class LocalRAGService:
             }
 
         evidence = assess_grounded_answer_evidence(
-            question=question,
+            question=evidence_question or question,
             rows=sources,
             retrieval_mode=retrieval_mode,
             tokenize_fn=self._tokenize_for_lexical,
             answer_language=answer_language,
+            query_language=evidence_language,
         )
         if not evidence["sufficient"]:
             return {
@@ -8189,6 +8552,8 @@ class Handler(BaseHTTPRequestHandler):
                         reranker=body.get("reranker"),
                         video_top_k=video_top_k,
                         agentic=agentic,
+                        provider=provider,
+                        model=model_override,
                     )
                     retrieval = routed_outcome["retrieval"]
                 elif agentic:
@@ -8212,12 +8577,23 @@ class Handler(BaseHTTPRequestHandler):
                         video_id=video_id,
                         reranker=body.get("reranker"),
                     )
+                ask_kwargs = {
+                    "provider": provider,
+                    "retrieval_mode": retrieval["retrieval_mode"],
+                    "model": model_override,
+                }
+                answer_grounding = (
+                    (retrieval.get("details") or {}).get("answer_grounding") or {}
+                )
+                if answer_grounding.get("question"):
+                    ask_kwargs["evidence_question"] = answer_grounding["question"]
+                    ask_kwargs["evidence_language"] = answer_grounding.get(
+                        "query_language"
+                    )
                 result = SERVICE.ask_with_sources(
                     question,
                     retrieval["results"],
-                    provider=provider,
-                    retrieval_mode=retrieval["retrieval_mode"],
-                    model=model_override,
+                    **ask_kwargs,
                 )
                 if video_id:
                     SERVICE.save_ask_history(

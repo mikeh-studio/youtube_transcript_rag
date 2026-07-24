@@ -9,7 +9,7 @@ import os
 import re
 import sys
 from collections import defaultdict
-from typing import List, Set
+from typing import List, Optional, Set
 
 import numpy as np
 
@@ -28,7 +28,7 @@ import faiss
 from multilingual.youtube_metadata import normalize_youtube_source
 
 
-ROUTING_PROFILE_VERSION = 1
+ROUTING_PROFILE_VERSION = 2
 DEFAULT_MAX_SECTIONS = 5
 RRF_K = 60
 
@@ -65,7 +65,18 @@ def _timestamp(seconds) -> str:
 
 
 def _lexical_tokens(text: str) -> Set[str]:
-    return set(re.findall(r"[\w\u3040-\u30ff\u3400-\u9fff]+", text.lower()))
+    """Tokenize Latin text and unsegmented Japanese/CJK text for overlap."""
+    lowered = str(text or "").lower()
+    tokens = set(re.findall(r"[a-z0-9_]+", lowered))
+    cjk_text = re.sub(r"[^\u3040-\u30ff\u3400-\u9fff]+", "", lowered)
+    if len(cjk_text) == 1:
+        tokens.add(cjk_text)
+    else:
+        tokens.update(
+            cjk_text[index : index + 2]
+            for index in range(max(0, len(cjk_text) - 1))
+        )
+    return tokens
 
 
 def _chunk_text(chunk: dict) -> str:
@@ -211,6 +222,7 @@ def build_routing_profile(
         "profile_version": ROUTING_PROFILE_VERSION,
         "video_id": video_id,
         "title": title,
+        "language": str(video.get("language") or "").strip().lower(),
         "source": {
             "platform": source["platform"],
             "video_id": source["video_id"],
@@ -231,6 +243,7 @@ def build_routing_profile(
         "profile_version": ROUTING_PROFILE_VERSION,
         "video_id": video_id,
         "title": title,
+        "language": str(video.get("language") or "").strip().lower(),
         "source": source,
         "chunking_version": chunking_version,
         "source_fingerprint": _stable_hash(fingerprint_payload),
@@ -438,10 +451,31 @@ class MultiVectorVideoRouter:
             scores[video_id] = 0.85 * multi_vector_score + 0.15 * identity
         return scores
 
-    def search(self, query: str, *, top_k=3, language=None) -> dict:
+    def search(
+        self,
+        query: str,
+        *,
+        top_k=3,
+        language=None,
+        video_ids: Optional[List[str]] = None,
+    ) -> dict:
         """Rank videos with dense multi-vector aggregation plus lexical RRF."""
         query = _compact_text(query)
         top_k = max(0, int(top_k))
+        allowed_video_ids = (
+            {
+                str(video_id or "").strip()
+                for video_id in video_ids
+                if str(video_id or "").strip()
+            }
+            if video_ids is not None
+            else None
+        )
+        active_profiles = {
+            video_id: profile
+            for video_id, profile in self.profiles.items()
+            if allowed_video_ids is None or video_id in allowed_video_ids
+        }
         if not query:
             return {
                 "video_ids": [],
@@ -451,12 +485,16 @@ class MultiVectorVideoRouter:
                 "dense_available": False,
                 "lexical_available": False,
             }
-        if not self.profiles:
+        if not active_profiles:
             return {
                 "video_ids": [],
                 "results": [],
                 "used_fallback": True,
-                "fallback_reason": "no_video_profiles",
+                "fallback_reason": (
+                    "no_video_profiles_in_scope"
+                    if video_ids is not None
+                    else "no_video_profiles"
+                ),
                 "dense_available": False,
                 "lexical_available": False,
             }
@@ -474,6 +512,8 @@ class MultiVectorVideoRouter:
                 if vector_index < 0:
                     continue
                 record = self.vector_map[int(vector_index)]
+                if record["video_id"] not in active_profiles:
+                    continue
                 vector_hits[record["video_id"]].append(
                     {
                         "score": float(score),
@@ -486,7 +526,7 @@ class MultiVectorVideoRouter:
         query_tokens = _lexical_tokens(query)
         lexical_scores = {}
         if query_tokens:
-            for video_id, profile in self.profiles.items():
+            for video_id, profile in active_profiles.items():
                 profile_tokens = _lexical_tokens(profile["lexical_text"])
                 overlap = len(query_tokens & profile_tokens)
                 if overlap:
@@ -508,13 +548,16 @@ class MultiVectorVideoRouter:
             fused[video_id] += 1.0 / (RRF_K + rank)
         for rank, video_id in enumerate(lexical_order, start=1):
             fused[video_id] += 1.0 / (RRF_K + rank)
+            # Preserve lexical-strength differences that rank-only RRF loses,
+            # especially when a fallback dense backend produces noisy ties.
+            fused[video_id] += 0.02 * lexical_scores[video_id]
 
         used_fallback = False
         fallback_reason = None
         if not fused:
             used_fallback = True
             fallback_reason = "no_dense_or_lexical_signal"
-            ordered_ids = sorted(self.profiles)
+            ordered_ids = sorted(active_profiles)
         else:
             ordered_ids = sorted(
                 fused,
@@ -523,12 +566,13 @@ class MultiVectorVideoRouter:
 
         results = []
         for rank, video_id in enumerate(ordered_ids[:top_k], start=1):
-            profile = self.profiles[video_id]
+            profile = active_profiles[video_id]
             results.append(
                 {
                     "rank": rank,
                     "video_id": video_id,
                     "title": profile["title"],
+                    "language": profile.get("language"),
                     "source": profile["source"],
                     "score": float(fused.get(video_id, 0.0)),
                     "dense_score": (

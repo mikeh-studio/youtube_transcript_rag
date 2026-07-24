@@ -49,7 +49,15 @@ class KeywordProcessor:
         return self._embed(query).reshape(1, -1)
 
 
-def make_video(video_id, title, channel_name, channel_id, topic_words):
+def make_video(
+    video_id,
+    title,
+    channel_name,
+    channel_id,
+    topic_words,
+    *,
+    language="en",
+):
     chunks = []
     for index, words in enumerate(topic_words):
         chunks.append(
@@ -63,7 +71,7 @@ def make_video(video_id, title, channel_name, channel_id, topic_words):
     return {
         "url": f"https://www.youtube.com/watch?v={video_id}",
         "title": title,
-        "language": "en",
+        "language": language,
         "chunks": chunks,
         "chunking": {"version": "time_v2_60s_15s"},
         "source": {
@@ -251,3 +259,48 @@ def test_router_reports_graceful_fallback_without_profiles(tmp_path):
 
     assert result["used_fallback"] is True
     assert result["fallback_reason"] == "no_video_profiles"
+
+
+def test_japanese_bigrams_and_language_scope_route_to_frieren_video(tmp_path):
+    videos = {
+        "frieren1234": make_video(
+            "frieren1234",
+            "葬送のフリーレン トークの魔法",
+            "TOHO animation",
+            "UC-frieren",
+            ["フリーレンの収録とキャラクターについて話しました"],
+            language="ja",
+        ),
+        "baseball123": make_video(
+            "baseball123",
+            "プロ野球ニュース",
+            "Sports Japan",
+            "UC-sports",
+            ["投手と打者が今季の試合について話しました"],
+            language="ja",
+        ),
+    }
+    router = MultiVectorVideoRouter(
+        KeywordProcessor(),
+        artifact_dir=str(tmp_path),
+    )
+    router.build(videos, persist=False)
+
+    result = router.search(
+        "フリーレンのポッドキャストでは何が話されましたか",
+        top_k=2,
+        language="ja",
+        video_ids=["frieren1234", "baseball123"],
+    )
+
+    assert result["video_ids"][0] == "frieren1234"
+    assert result["results"][0]["language"] == "ja"
+    assert result["results"][0]["lexical_score"] is not None
+
+    scoped = router.search(
+        "フリーレン",
+        top_k=2,
+        language="ja",
+        video_ids=["baseball123"],
+    )
+    assert scoped["video_ids"] == ["baseball123"]

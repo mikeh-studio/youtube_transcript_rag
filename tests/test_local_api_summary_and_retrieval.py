@@ -1267,6 +1267,72 @@ def test_ask_with_sources_returns_stable_grounded_answer_payload():
     assert "locally" in result["answer"]
 
 
+def test_ask_with_sources_assesses_translated_query_but_answers_in_english():
+    service = _make_service(enabled=False)
+    service._llm_text_response = lambda **kwargs: {
+        "provider": "chatgpt",
+        "model": "gpt-4o-mini",
+        "text": json.dumps(
+            {
+                "status": "answered",
+                "confidence": "medium",
+                "answer": (
+                    "The guests discussed the Frieren recording sessions and "
+                    "character auditions [1] [2]."
+                ),
+                "citations": [
+                    {"citation_id": 1, "reason": "Discusses recording."},
+                    {"citation_id": 2, "reason": "Discusses auditions."},
+                ],
+                "warnings": [],
+                "has_conflict": False,
+            }
+        ),
+    }
+    sources = [
+        {
+            "video_id": "frieren1234",
+            "video_title": "フリーレン トークの魔法",
+            "language": "ja",
+            "chunk_index": 1,
+            "text": (
+                "フリーレンのアフレコとオーディションで何を話したか、"
+                "出演者が収録について説明しました"
+            ),
+            "start": 30.0,
+            "end": 60.0,
+            "rank": 1,
+            "lexical_score": 8.0,
+        },
+        {
+            "video_id": "frieren1234",
+            "video_title": "フリーレン トークの魔法",
+            "language": "ja",
+            "chunk_index": 2,
+            "text": (
+                "フリーレンのアフレコとオーディションで何を話したか、"
+                "キャラクターについて詳しく説明しました"
+            ),
+            "start": 60.0,
+            "end": 90.0,
+            "rank": 2,
+            "lexical_score": 7.5,
+        },
+    ]
+
+    result = service.ask_with_sources(
+        "What was discussed in the Frieren podcasts?",
+        sources,
+        provider="chatgpt",
+        evidence_question="フリーレンのアフレコとオーディションで何を話しましたか",
+        evidence_language="ja",
+    )
+
+    assert result["status"] == "answered"
+    assert result["answer"].startswith("The guests discussed")
+    assert len(result["citations"]) == 2
+
+
 def test_ask_with_sources_returns_insufficient_evidence_when_no_sources():
     service = _make_service(enabled=False)
 

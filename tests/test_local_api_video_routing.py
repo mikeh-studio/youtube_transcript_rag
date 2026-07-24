@@ -66,7 +66,8 @@ def test_video_first_agentic_expands_shortlist_before_global_fallback():
     route_calls = []
     retrieval_scopes = []
 
-    def route_videos(query, *, top_k, language):
+    def route_videos(query, *, top_k, language, video_ids=None):
+        del video_ids
         route_calls.append((query, top_k, language))
         video_ids = ["v1", "v2"] if top_k == 2 else ["v1", "v2", "v3", "v4"]
         return {
@@ -94,7 +95,6 @@ def test_video_first_agentic_expands_shortlist_before_global_fallback():
         agentic=True,
     )
     details = outcome["retrieval"]["details"]["video_routing"]
-
     assert [call[1] for call in route_calls] == [2, 4]
     assert retrieval_scopes == [["v1", "v2"], ["v1", "v2", "v3", "v4"]]
     assert [stage["scope"] for stage in details["stages"]] == [
@@ -140,6 +140,104 @@ def test_video_first_uses_global_retrieval_when_router_is_unavailable():
     assert details["used_fallback"] is True
     assert details["fallback_reason"] == "router_unavailable"
     assert details["stages"][0]["scope"] == "global_fallback"
+
+
+def test_english_frieren_query_routes_to_japanese_video_after_translation():
+    service = local_api.LocalRAGService.__new__(local_api.LocalRAGService)
+    service.engine = type(
+        "Engine",
+        (),
+        {
+            "library": type(
+                "Library",
+                (),
+                {
+                    "videos": {
+                        "frieren1234": {"language": "ja"},
+                        "nba12345678": {"language": "en"},
+                    }
+                },
+            )()
+        },
+    )()
+    service._llm_text_response = lambda **kwargs: {
+        "provider": "chatgpt",
+        "model": "test-model",
+        "text": (
+            '{"translations":{"ja":'
+            '"フリーレンのポッドキャストについて詳しく教えて。何が話されましたか"}}'
+        ),
+    }
+
+    def route_videos(query, *, top_k, language, video_ids=None):
+        del query, top_k
+        if language == "ja":
+            video_id = "frieren1234"
+            lexical_score = 0.7
+        else:
+            video_id = "nba12345678"
+            lexical_score = None
+        assert video_id in video_ids
+        return {
+            "video_ids": [video_id],
+            "results": [
+                {
+                    "video_id": video_id,
+                    "title": video_id,
+                    "language": language,
+                    "source": {"platform": "youtube"},
+                    "dense_score": 0.5,
+                    "lexical_score": lexical_score,
+                }
+            ],
+            "used_fallback": False,
+            "fallback_reason": None,
+            "latency_ms": 1.0,
+        }
+
+    retrieval_calls = []
+
+    def retrieve(query, **kwargs):
+        retrieval_calls.append((query, kwargs["language"], kwargs["video_ids"]))
+        return {
+            "retrieval_mode": "hybrid",
+            "details": {},
+            "results": [
+                {
+                    "video_id": kwargs["video_ids"][0],
+                    "chunk_index": 0,
+                    "text": "フリーレンの番組で出演者が作品について話しました",
+                }
+            ],
+        }
+
+    service.route_videos = route_videos
+    service.retrieve = retrieve
+    question = "Tell me more about the Frieren podcasts? What was discussed"
+
+    outcome = service.retrieve_video_first(
+        question,
+        video_top_k=1,
+        provider="chatgpt",
+    )
+    details = outcome["retrieval"]["details"]["video_routing"]
+    grounding = outcome["retrieval"]["details"]["answer_grounding"]
+
+    assert details["selected_video_ids"] == ["frieren1234"]
+    assert details["query_expansion"]["translation_applied"] is True
+    assert details["query_expansion"]["variants"][1]["language"] == "ja"
+    assert grounding == {
+        "question": "フリーレンのポッドキャストについて詳しく教えて。何が話されましたか",
+        "query_language": "ja",
+        "answer_language": "en",
+    }
+    assert retrieval_calls == [
+        (
+            "フリーレンのポッドキャストについて詳しく教えて。何が話されましたか",
+            "ja",
+            ["frieren1234"],
+        )
+    ]
 
 
 def test_ask_route_uses_video_first_only_for_all_videos(monkeypatch):
@@ -193,6 +291,7 @@ def test_ask_route_uses_video_first_only_for_all_videos(monkeypatch):
     assert len(calls) == 1
     assert calls[0][1]["video_top_k"] == 4
     assert calls[0][1]["agentic"] is True
+    assert calls[0][1]["provider"] == "chatgpt"
     assert handler.response_payload["retrieval_details"]["video_routing"]["enabled"]
 
 
