@@ -158,3 +158,95 @@ test("shows supported speaker context on generated study flashcards", async ({ p
   await expect(speaker).toContainText("Speaker: Stephen Curry · interview subject");
   await expect(speaker).toContainText("Supported by section context");
 });
+
+test("routes All videos before Ask and shows YouTube channel provenance", async ({ page }) => {
+  let askBody: Record<string, unknown> | null = null;
+  await page.addInitScript(() => {
+    localStorage.setItem("yt_rag_ingest_unlocked", "1");
+    sessionStorage.setItem("yt_rag_intro_seen", "1");
+  });
+  await page.route("**/v1/videos", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        videos: [
+          {
+            video_id: "bread-demo1",
+            title: "Sourdough Timing",
+            language: "en",
+            num_chunks: 8,
+          },
+        ],
+      }),
+    });
+  });
+  await page.route("**/v1/llm-options", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ providers: [] }) });
+  });
+  await page.route("**/v1/ask", async (route) => {
+    askBody = route.request().postDataJSON();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        question: "When should I feed the starter?",
+        status: "answered",
+        answer: "Feed it after peak fermentation [1].",
+        confidence: "high",
+        provider: "chatgpt",
+        model: "test-model",
+        warnings: [],
+        retrieval_details: {
+          video_routing: {
+            enabled: true,
+            selected_video_ids: ["bread-demo1"],
+          },
+        },
+        citations: [
+          {
+            citation_id: 1,
+            source_type: "transcript",
+            video_id: "bread-demo1",
+            video_title: "Sourdough Timing",
+            chunk_index: 2,
+            start_seconds: 65,
+            end_seconds: 80,
+            timestamp_range_label: "1:05-1:20",
+            snippet: "Feed the starter after peak fermentation.",
+            url: "https://www.youtube.com/watch?v=bread-demo1&t=65s",
+            source: {
+              platform: "youtube",
+              video_id: "bread-demo1",
+              url: "https://www.youtube.com/watch?v=bread-demo1",
+              channel: {
+                id: "UC-bread",
+                name: "Bread Lab",
+                url: "https://www.youtube.com/channel/UC-bread",
+              },
+            },
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto("/index.html#/qa");
+  await page.getByLabel("Video scope").selectOption("");
+  await page.getByLabel("Question").fill("When should I feed the starter?");
+  await page.getByRole("button", { name: "Generate Answer" }).click();
+
+  await expect.poll(() => askBody).not.toBeNull();
+  expect(askBody).toMatchObject({
+    video_routing: "multi_vector",
+    video_top_k: 3,
+  });
+  await expect(page.getByText("YouTube · Bread Lab")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Video", exact: true })).toHaveAttribute(
+    "href",
+    "https://www.youtube.com/watch?v=bread-demo1",
+  );
+  await expect(page.getByRole("link", { name: "Channel", exact: true })).toHaveAttribute(
+    "href",
+    "https://www.youtube.com/channel/UC-bread",
+  );
+});

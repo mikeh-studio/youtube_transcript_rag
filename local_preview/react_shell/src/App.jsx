@@ -486,6 +486,22 @@ function evidenceFramePath(row) {
   return row?.frame_path || row?.metadata?.frame_path || "";
 }
 
+function evidenceSource(row) {
+  const source = row?.source || row?.metadata?.source;
+  return source && typeof source === "object" ? source : null;
+}
+
+function evidenceProvenanceLabel(row) {
+  const source = evidenceSource(row);
+  if (!source) {
+    return "";
+  }
+  const platform = String(source.platform || "youtube").trim();
+  const channel = String(source.channel?.name || "").trim();
+  const platformLabel = platform.toLowerCase() === "youtube" ? "YouTube" : platform;
+  return channel ? `${platformLabel} · ${channel}` : platformLabel;
+}
+
 function extractVideoId(value) {
   const raw = String(value || "").trim();
   if (YOUTUBE_ID_PATTERN.test(raw)) {
@@ -1850,6 +1866,8 @@ function QAStudioPage({ locale }) {
           k: Number(kAsk || 5),
           retrieval_mode: askMode,
           video_id: askVideoId || undefined,
+          video_routing: askVideoId ? "none" : "multi_vector",
+          video_top_k: 3,
           provider,
           model: model || undefined,
           agentic: askAgentic,
@@ -1876,6 +1894,7 @@ function QAStudioPage({ locale }) {
       ? askResponse.retrieved_chunks
       : [];
   const answerWarnings = Array.isArray(askResponse?.warnings) ? askResponse.warnings : [];
+  const videoRoutingDetails = askResponse?.retrieval_details?.video_routing;
   const answerSummaryFields = [
     qaAnswerText(locale, "answerCitationCount", { count: answerCitationCount }),
     qaAnswerText(locale, "answerConfidence", {
@@ -1887,6 +1906,9 @@ function QAStudioPage({ locale }) {
     qaAnswerText(locale, "answerModel", {
       value: askResponse?.model || "-",
     }),
+    ...(videoRoutingDetails
+      ? [`routed videos: ${Number(videoRoutingDetails.selected_video_ids?.length || 0)}`]
+      : []),
   ];
 
   return (
@@ -2074,6 +2096,10 @@ function QAStudioPage({ locale }) {
                       const pending = !!(key && reviewPendingByKey[key]);
                       const active = reviewState?.label || null;
                       const sourceHref = safeExternalUrl(row.url);
+                      const source = evidenceSource(row);
+                      const videoHref = safeExternalUrl(source?.url || row.video_url);
+                      const channelHref = safeExternalUrl(source?.channel?.url);
+                      const provenanceLabel = evidenceProvenanceLabel(row);
                       const statusClass = reviewState?.tone
                         ? `review-status ${reviewState.tone}`
                         : "review-status";
@@ -2099,6 +2125,17 @@ function QAStudioPage({ locale }) {
                               <span>score {Number(row.score || 0).toFixed(4)}</span>
                             ) : null}
                           </div>
+                          {provenanceLabel ? (
+                            <div className="search-meta source-provenance">
+                              <span>{provenanceLabel}</span>
+                              {videoHref ? (
+                                <a href={videoHref} target="_blank" rel="noreferrer">Video</a>
+                              ) : null}
+                              {channelHref ? (
+                                <a href={channelHref} target="_blank" rel="noreferrer">Channel</a>
+                              ) : null}
+                            </div>
+                          ) : null}
                           <p className="search-snippet">{row.snippet || row.text}</p>
                           {evidenceFramePath(row) ? <p className="frame-path">{evidenceFramePath(row)}</p> : null}
                           {row.reason ? <p className="citation-reason">{row.reason}</p> : null}

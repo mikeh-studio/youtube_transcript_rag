@@ -1,0 +1,513 @@
+{
+  "schema_version": "video-routing-eval-v1",
+  "dataset_id": "video-routing-v1",
+  "description": "Synthetic multi-video corpus for deterministic video-first routing evaluation.",
+  "label_provenance": {
+    "method": "independent_fixture_authoring",
+    "system_under_test_used": false,
+    "evidence_basis": [
+      "transcript_excerpt",
+      "source_metadata"
+    ],
+    "notes": "Gold videos, chunks, and distractors were authored before router integration and are never derived from router rankings."
+  },
+  "videos": [
+    {
+      "video_id": "kitchen-fermentation-basics",
+      "title": "Fermentation Basics: Salt, Time, and Temperature",
+      "transcript_excerpt": "A two percent salt brine suppresses unwanted microbes while vegetables ferment. Cooler temperatures slow fermentation and produce a steadier flavor.",
+      "source": {
+        "platform": "youtube",
+        "video_id": "kitchen-fermentation-basics",
+        "url": "https://www.youtube.com/watch?v=kitchen-fermentation-basics",
+        "channel": {
+          "id": "UC-KITCHEN-LAB",
+          "name": "Practical Kitchen Lab",
+          "url": "https://www.youtube.com/channel/UC-KITCHEN-LAB",
+          "aliases": []
+        }
+      },
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "text": "For most vegetable ferments, start with a two percent salt brine measured against the combined water and vegetable weight."
+        },
+        {
+          "chunk_index": 1,
+          "text": "Keep the jar cool and out of direct sunlight; lower temperatures slow the process and help flavor develop evenly."
+        }
+      ]
+    },
+    {
+      "video_id": "kitchen-knife-skills",
+      "title": "Knife Skills for Faster Weeknight Cooking",
+      "transcript_excerpt": "Use a stable cutting board, curl fingertips into a claw grip, and guide the blade with the knuckles.",
+      "source": {
+        "platform": "youtube",
+        "video_id": "kitchen-knife-skills",
+        "url": "https://www.youtube.com/watch?v=kitchen-knife-skills",
+        "channel": {
+          "id": "UC-KITCHEN-LAB",
+          "name": "Practical Kitchen Lab",
+          "url": "https://www.youtube.com/channel/UC-KITCHEN-LAB",
+          "aliases": []
+        }
+      },
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "text": "Place a damp towel under the cutting board so it cannot slide while you work."
+        },
+        {
+          "chunk_index": 1,
+          "text": "Curl your fingertips into a claw and let your knuckles guide the side of the knife."
+        }
+      ]
+    },
+    {
+      "video_id": "garden-compost-fermentation",
+      "title": "Fermentation in the Garden? Understanding Compost",
+      "transcript_excerpt": "Healthy compost is primarily aerobic decomposition. Turn a wet pile to restore oxygen and reduce sour anaerobic odors.",
+      "source": {
+        "platform": "youtube",
+        "video_id": "garden-compost-fermentation",
+        "url": "https://www.youtube.com/watch?v=garden-compost-fermentation",
+        "channel": {
+          "id": "UC-BACKYARD-SCIENCE",
+          "name": "Backyard Science",
+          "url": "https://www.youtube.com/channel/UC-BACKYARD-SCIENCE",
+          "aliases": []
+        }
+      },
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "text": "A working compost pile depends on aerobic decomposers, enough moisture, and pore space for oxygen."
+        },
+        {
+          "chunk_index": 1,
+          "text": "If the pile smells sour and feels waterlogged, turn it and mix in dry browns to restore airflow."
+        }
+      ]
+    },
+    {
+      "video_id": "ml-vector-search-intro",
+      "title": "Vector Search Explained",
+      "transcript_excerpt": "Dense embeddings retrieve semantic neighbors while BM25 rewards lexical overlap. Hybrid search can fuse both rankings.",
+      "source": {
+        "platform": "youtube",
+        "video_id": "ml-vector-search-intro",
+        "url": "https://www.youtube.com/watch?v=ml-vector-search-intro",
+        "channel": {
+          "id": "UC-APPLIED-ML",
+          "name": "Applied ML Classroom",
+          "url": "https://www.youtube.com/channel/UC-APPLIED-ML",
+          "aliases": []
+        }
+      },
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "text": "Cosine similarity compares the direction of embedding vectors, capturing semantic relationships beyond exact words."
+        },
+        {
+          "chunk_index": 1,
+          "text": "BM25 remains strong for names and exact terms, so hybrid retrieval can fuse lexical and dense rankings."
+        }
+      ]
+    },
+    {
+      "video_id": "ml-office-hours-42",
+      "title": "Office Hours 42",
+      "transcript_excerpt": "For a large video library, retrieve relevant videos with multiple profile vectors first, then search transcript chunks only inside the selected videos.",
+      "source": {
+        "platform": "youtube",
+        "video_id": "ml-office-hours-42",
+        "url": "https://www.youtube.com/watch?v=ml-office-hours-42",
+        "channel": {
+          "id": "UC-APPLIED-ML",
+          "name": "Applied ML Classroom",
+          "url": "https://www.youtube.com/channel/UC-APPLIED-ML",
+          "aliases": []
+        }
+      },
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "text": "At library scale, route the question to a small set of candidate videos before running detailed chunk retrieval."
+        },
+        {
+          "chunk_index": 1,
+          "text": "Represent each video with identity, overview, and section vectors so a weak title does not hide a relevant transcript."
+        }
+      ]
+    },
+    {
+      "video_id": "infra-rag-at-scale",
+      "title": "RAG at Scale: Sharding the Document Store",
+      "transcript_excerpt": "This infrastructure session covers tenant-aware database sharding, replication, and queue backpressure rather than semantic video selection.",
+      "source": {
+        "platform": "youtube",
+        "video_id": "infra-rag-at-scale",
+        "url": "https://www.youtube.com/watch?v=infra-rag-at-scale",
+        "channel": {
+          "id": "UC-INFRA-NOTES",
+          "name": "Infrastructure Notes",
+          "url": "https://www.youtube.com/channel/UC-INFRA-NOTES",
+          "aliases": []
+        }
+      },
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "text": "Tenant-aware shards keep document-store indexes bounded and simplify operational isolation."
+        },
+        {
+          "chunk_index": 1,
+          "text": "Replication lag and queue backpressure are the dominant concerns during shard rebalancing."
+        }
+      ]
+    },
+    {
+      "video_id": "maps-mercator",
+      "title": "Why the Mercator Projection Distorts Area",
+      "transcript_excerpt": "Mercator preserves local angles for navigation but increasingly stretches area toward the poles.",
+      "source": {
+        "platform": "youtube",
+        "video_id": "maps-mercator",
+        "url": "https://www.youtube.com/watch?v=maps-mercator",
+        "channel": {
+          "id": "UC-MAPS-001",
+          "name": "Atlas Workshop",
+          "url": "https://www.youtube.com/channel/UC-MAPS-001",
+          "aliases": [
+            "Maproom Academy"
+          ]
+        }
+      },
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "text": "The Mercator projection preserves angles, which made compass bearings easier to plot for navigation."
+        },
+        {
+          "chunk_index": 1,
+          "text": "Its scale grows toward the poles, so high-latitude land masses appear much larger than their true area."
+        }
+      ]
+    },
+    {
+      "video_id": "maps-azimuthal",
+      "title": "Reading an Azimuthal Map",
+      "transcript_excerpt": "Azimuthal projections show true directions from a chosen center point but distort other properties away from that center.",
+      "source": {
+        "platform": "youtube",
+        "video_id": "maps-azimuthal",
+        "url": "https://www.youtube.com/watch?v=maps-azimuthal",
+        "channel": {
+          "id": "UC-MAPS-001",
+          "name": "Atlas Workshop",
+          "url": "https://www.youtube.com/channel/UC-MAPS-001",
+          "aliases": [
+            "Maproom Academy"
+          ]
+        }
+      },
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "text": "An azimuthal projection preserves directions from its selected center."
+        },
+        {
+          "chunk_index": 1,
+          "text": "Distance, shape, or area distortion grows as locations move away from that center."
+        }
+      ]
+    },
+    {
+      "video_id": "ocean-deep-current",
+      "title": "Deep Ocean Circulation",
+      "transcript_excerpt": "Cold, salty water becomes dense and sinks, helping drive thermohaline circulation through the deep ocean.",
+      "source": {
+        "platform": "youtube",
+        "video_id": "ocean-deep-current",
+        "url": "https://www.youtube.com/watch?v=ocean-deep-current",
+        "channel": null,
+        "metadata_provider": "fallback"
+      },
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "text": "Cooling and sea-ice formation can make seawater colder, saltier, and dense enough to sink."
+        },
+        {
+          "chunk_index": 1,
+          "text": "Those density differences help power slow thermohaline circulation across ocean basins."
+        }
+      ]
+    },
+    {
+      "video_id": "energy-solar-grid",
+      "title": "Solar Power on a Flexible Grid",
+      "transcript_excerpt": "Solar output follows daylight and clouds. Storage, demand response, and geographic diversity help balance its variability.",
+      "source": {
+        "platform": "youtube",
+        "video_id": "energy-solar-grid",
+        "url": "https://www.youtube.com/watch?v=energy-solar-grid",
+        "channel": {
+          "id": "UC-ENERGY-SYSTEMS",
+          "name": "Energy Systems Lab",
+          "url": "https://www.youtube.com/channel/UC-ENERGY-SYSTEMS",
+          "aliases": []
+        }
+      },
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "text": "Solar generation is predictable at the day scale but varies with cloud cover and falls to zero at night."
+        },
+        {
+          "chunk_index": 1,
+          "text": "Batteries, flexible demand, and wider transmission footprints help the grid absorb solar variability."
+        }
+      ]
+    },
+    {
+      "video_id": "energy-wind-grid",
+      "title": "Wind Forecasting for Grid Operators",
+      "transcript_excerpt": "Wind ramps can occur at any hour. Forecast ensembles and geographically dispersed turbines reduce balancing surprises.",
+      "source": {
+        "platform": "youtube",
+        "video_id": "energy-wind-grid",
+        "url": "https://www.youtube.com/watch?v=energy-wind-grid",
+        "channel": {
+          "id": "UC-GRID-ENGINEERING",
+          "name": "Grid Engineering",
+          "url": "https://www.youtube.com/channel/UC-GRID-ENGINEERING",
+          "aliases": []
+        }
+      },
+      "chunks": [
+        {
+          "chunk_index": 0,
+          "text": "Unlike the solar day-night cycle, wind ramps can arrive at any hour and require short-term forecasting."
+        },
+        {
+          "chunk_index": 1,
+          "text": "Ensemble forecasts and geographic diversity reduce aggregate wind forecast error."
+        }
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "id": "channel_brine",
+      "query": "Which Practical Kitchen Lab video explains a two percent brine for vegetable fermentation?",
+      "language": "en",
+      "categories": [
+        "channel_targeted",
+        "same_channel_distractor",
+        "cross_channel_similar_title"
+      ],
+      "relevant_video_ids": [
+        "kitchen-fermentation-basics"
+      ],
+      "same_channel_distractor_video_ids": [
+        "kitchen-knife-skills"
+      ],
+      "cross_channel_distractor_video_ids": [
+        "garden-compost-fermentation"
+      ],
+      "gold_chunks": [
+        {
+          "video_id": "kitchen-fermentation-basics",
+          "chunk_index": 0
+        }
+      ]
+    },
+    {
+      "id": "weak_title_video_routing",
+      "query": "How should RAG search a huge video library before retrieving individual transcript chunks?",
+      "language": "en",
+      "categories": [
+        "ordinary",
+        "weak_title_strong_transcript",
+        "same_channel_distractor",
+        "cross_channel_similar_title"
+      ],
+      "relevant_video_ids": [
+        "ml-office-hours-42"
+      ],
+      "same_channel_distractor_video_ids": [
+        "ml-vector-search-intro"
+      ],
+      "cross_channel_distractor_video_ids": [
+        "infra-rag-at-scale"
+      ],
+      "gold_chunks": [
+        {
+          "video_id": "ml-office-hours-42",
+          "chunk_index": 0
+        },
+        {
+          "video_id": "ml-office-hours-42",
+          "chunk_index": 1
+        }
+      ]
+    },
+    {
+      "id": "missing_channel_ocean",
+      "query": "What makes cold salty water sink and drive circulation in the deep ocean?",
+      "language": "en",
+      "categories": [
+        "ordinary",
+        "missing_metadata"
+      ],
+      "relevant_video_ids": [
+        "ocean-deep-current"
+      ],
+      "same_channel_distractor_video_ids": [],
+      "cross_channel_distractor_video_ids": [],
+      "gold_chunks": [
+        {
+          "video_id": "ocean-deep-current",
+          "chunk_index": 0
+        }
+      ]
+    },
+    {
+      "id": "renamed_channel_mercator",
+      "query": "In Maproom Academy's Mercator lesson, why do polar regions look too large?",
+      "language": "en",
+      "categories": [
+        "channel_targeted",
+        "renamed_channel",
+        "same_channel_distractor"
+      ],
+      "relevant_video_ids": [
+        "maps-mercator"
+      ],
+      "same_channel_distractor_video_ids": [
+        "maps-azimuthal"
+      ],
+      "cross_channel_distractor_video_ids": [],
+      "gold_chunks": [
+        {
+          "video_id": "maps-mercator",
+          "chunk_index": 1
+        }
+      ]
+    },
+    {
+      "id": "cross_channel_energy_comparison",
+      "query": "Compare how solar and wind variability affect grid balancing and forecasting.",
+      "language": "en",
+      "categories": [
+        "ordinary",
+        "cross_channel_comparison"
+      ],
+      "relevant_video_ids": [
+        "energy-solar-grid",
+        "energy-wind-grid"
+      ],
+      "same_channel_distractor_video_ids": [],
+      "cross_channel_distractor_video_ids": [],
+      "gold_chunks": [
+        {
+          "video_id": "energy-solar-grid",
+          "chunk_index": 0
+        },
+        {
+          "video_id": "energy-wind-grid",
+          "chunk_index": 0
+        }
+      ]
+    },
+    {
+      "id": "ordinary_knife_grip",
+      "query": "How do I protect my fingertips with a claw grip while chopping?",
+      "language": "en",
+      "categories": [
+        "ordinary",
+        "same_channel_distractor"
+      ],
+      "relevant_video_ids": [
+        "kitchen-knife-skills"
+      ],
+      "same_channel_distractor_video_ids": [
+        "kitchen-fermentation-basics"
+      ],
+      "cross_channel_distractor_video_ids": [],
+      "gold_chunks": [
+        {
+          "video_id": "kitchen-knife-skills",
+          "chunk_index": 1
+        }
+      ]
+    },
+    {
+      "id": "ordinary_dense_lexical",
+      "query": "When should vector similarity be combined with BM25 lexical matching?",
+      "language": "en",
+      "categories": [
+        "ordinary"
+      ],
+      "relevant_video_ids": [
+        "ml-vector-search-intro"
+      ],
+      "same_channel_distractor_video_ids": [],
+      "cross_channel_distractor_video_ids": [
+        "infra-rag-at-scale"
+      ],
+      "gold_chunks": [
+        {
+          "video_id": "ml-vector-search-intro",
+          "chunk_index": 1
+        }
+      ]
+    },
+    {
+      "id": "ordinary_compost_oxygen",
+      "query": "Why should I turn a wet, sour-smelling compost pile?",
+      "language": "en",
+      "categories": [
+        "ordinary",
+        "cross_channel_similar_title"
+      ],
+      "relevant_video_ids": [
+        "garden-compost-fermentation"
+      ],
+      "same_channel_distractor_video_ids": [],
+      "cross_channel_distractor_video_ids": [
+        "kitchen-fermentation-basics"
+      ],
+      "gold_chunks": [
+        {
+          "video_id": "garden-compost-fermentation",
+          "chunk_index": 1
+        }
+      ]
+    },
+    {
+      "id": "ordinary_solar_flexibility",
+      "query": "What tools help the grid handle solar generation dropping at night?",
+      "language": "en",
+      "categories": [
+        "ordinary"
+      ],
+      "relevant_video_ids": [
+        "energy-solar-grid"
+      ],
+      "same_channel_distractor_video_ids": [],
+      "cross_channel_distractor_video_ids": [
+        "energy-wind-grid"
+      ],
+      "gold_chunks": [
+        {
+          "video_id": "energy-solar-grid",
+          "chunk_index": 1
+        }
+      ]
+    }
+  ]
+}
