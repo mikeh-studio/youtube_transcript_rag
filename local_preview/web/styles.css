@@ -2645,6 +2645,7 @@ th {
 }
 
 .bottom-tools-menu summary {
+  width: 100%;
   list-style: none;
   cursor: pointer;
 }
