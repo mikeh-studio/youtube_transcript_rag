@@ -1431,6 +1431,161 @@ def test_ask_with_sources_allows_strong_single_chunk_but_caps_confidence():
     assert any("single excerpt" in warning.lower() for warning in result["warnings"])
 
 
+def test_ask_with_sources_allows_cross_lingual_dense_evidence():
+    # An English question over strong Japanese dense matches must not be vetoed
+    # by zero lexical token overlap; the multilingual embedder is expected to
+    # surface the right chunks and the gate should let the answer through.
+    service = _make_service(enabled=False)
+    llm_calls = {"count": 0}
+
+    def _llm(**kwargs):
+        llm_calls["count"] += 1
+        return {
+            "provider": "chatgpt",
+            "model": "gpt-4o-mini",
+            "text": json.dumps(
+                {
+                    "status": "answered",
+                    "confidence": "high",
+                    "answer": "The speaker explains the main character's loneliness [1][2].",
+                    "citations": [
+                        {"citation_id": 1, "reason": "Describes the loneliness directly."},
+                        {"citation_id": 2, "reason": "Adds supporting context."},
+                    ],
+                    "warnings": [],
+                    "has_conflict": False,
+                }
+            ),
+        }
+
+    service._llm_text_response = _llm
+    japanese_sources = [
+        {
+            "video_id": "vidjp",
+            "video_title": "解説動画",
+            "video_url": "https://www.youtube.com/watch?v=vidjp",
+            "language": "ja",
+            "chunk_index": 4,
+            "text": "話者は主人公の孤独について詳しく語り、その背景を説明します。",
+            "start": 120.0,
+            "end": 150.0,
+            "url": "https://www.youtube.com/watch?v=vidjp&t=120s",
+            "rank": 1,
+            "score": 0.9,
+            "dense_score": 0.87,
+        },
+        {
+            "video_id": "vidjp",
+            "video_title": "解説動画",
+            "video_url": "https://www.youtube.com/watch?v=vidjp",
+            "language": "ja",
+            "chunk_index": 5,
+            "text": "続けて、登場人物たちが主人公の孤独をどう受け止めるかを比較します。",
+            "start": 150.0,
+            "end": 180.0,
+            "url": "https://www.youtube.com/watch?v=vidjp&t=150s",
+            "rank": 2,
+            "score": 0.85,
+            "dense_score": 0.85,
+        },
+    ]
+
+    result = service.ask_with_sources(
+        "What does the video say about the main character's loneliness?",
+        japanese_sources,
+        provider="chatgpt",
+        retrieval_mode="dense",
+    )
+
+    assert llm_calls["count"] == 1
+    assert result["status"] == "answered"
+    assert len(result["citations"]) == 2
+
+
+def test_ask_with_sources_still_refuses_weak_cross_lingual_evidence():
+    # Cross-lingual permissiveness must not become "always answer": a weak
+    # dense match should still be gated out without an LLM call.
+    service = _make_service(enabled=False)
+
+    def _unexpected_llm_call(**kwargs):
+        raise AssertionError("LLM should not be called for weak cross-lingual evidence.")
+
+    service._llm_text_response = _unexpected_llm_call
+    weak_japanese_source = [
+        {
+            "video_id": "vidjp",
+            "video_title": "雑談動画",
+            "video_url": "https://www.youtube.com/watch?v=vidjp",
+            "language": "ja",
+            "chunk_index": 0,
+            "text": "今日は天気の話をしてから雑談を始めます。",
+            "start": 5.0,
+            "end": 20.0,
+            "url": "https://www.youtube.com/watch?v=vidjp&t=5s",
+            "rank": 1,
+            "score": 0.58,
+            "dense_score": 0.58,
+        }
+    ]
+
+    result = service.ask_with_sources(
+        "What does the video say about the refund policy?",
+        weak_japanese_source,
+        provider="chatgpt",
+        retrieval_mode="dense",
+    )
+
+    assert result["status"] == "insufficient_evidence"
+    assert result["confidence"] == "low"
+    assert result["citations"] == []
+
+
+def test_ask_with_sources_refuses_cross_lingual_lexical_scores_without_dense_signal():
+    service = _make_service(enabled=False)
+
+    def _unexpected_llm_call(**kwargs):
+        raise AssertionError("LLM should not be called without cross-lingual dense evidence.")
+
+    service._llm_text_response = _unexpected_llm_call
+    lexical_only_sources = [
+        {
+            "video_id": "vidjp",
+            "video_title": "返金について",
+            "language": "ja",
+            "chunk_index": 0,
+            "text": "返金の条件と申請方法を説明します。",
+            "start": 5.0,
+            "end": 20.0,
+            "rank": 1,
+            "score": 8.0,
+            "lexical_score": 8.0,
+        },
+        {
+            "video_id": "vidjp",
+            "video_title": "返金について",
+            "language": "ja",
+            "chunk_index": 1,
+            "text": "払い戻しを受けるための期限を案内します。",
+            "start": 20.0,
+            "end": 35.0,
+            "rank": 2,
+            "score": 7.5,
+            "lexical_score": 7.5,
+        },
+    ]
+
+    result = service.ask_with_sources(
+        "What is the refund policy?",
+        lexical_only_sources,
+        provider="chatgpt",
+        retrieval_mode="lexical",
+    )
+
+    assert result["status"] == "insufficient_evidence"
+    assert result["confidence"] == "low"
+    assert result["citations"] == []
+
+
 def test_ask_with_sources_surfaces_conflicting_evidence_warning():
     service = _make_service(enabled=False)
     service._llm_text_response = lambda **kwargs: {

@@ -181,7 +181,10 @@ def _model_supports_temperature(provider: str, model: str) -> bool:
     # OpenAI reasoning families reject temperature in chat completions.
     return not scoped.startswith(("gpt-5", "o1", "o3", "o4"))
 ASK_MAX_TOKENS = 2000
-ASK_TEMPERATURE = 0.5
+# Grounded Q&A must return strict JSON with faithful, citation-backed claims.
+# Keep sampling low so JSON stays parseable and answers stay grounded; higher
+# temperatures raise both parse failures and hallucination risk on this task.
+ASK_TEMPERATURE = 0.2
 FEEDBACK_ALPHA_QUERY = 0.30
 FEEDBACK_BETA_GLOBAL = 0.10
 FEEDBACK_MAX_ADJUST = 0.35
@@ -917,6 +920,7 @@ class LocalRAGService:
             {
                 "query": question,
                 "language": query_language,
+                "query_language": query_language,
                 "kind": "original",
                 "video_ids": list(video_ids_by_language.get(query_language) or []),
             }
@@ -996,6 +1000,9 @@ class LocalRAGService:
                 {
                     "query": translated or question,
                     "language": target_language,
+                    "query_language": (
+                        target_language if translated else query_language
+                    ),
                     "kind": "translated" if translated else "untranslated_fallback",
                     "video_ids": list(video_ids_by_language[target_language]),
                 }
@@ -3404,6 +3411,7 @@ class LocalRAGService:
                     (
                         original_variant["language"],
                         original_variant["query"],
+                        original_variant["query_language"],
                         None,
                     )
                 ]
@@ -3424,19 +3432,29 @@ class LocalRAGService:
                         original_variant,
                     )
                     grouped_scopes.append(
-                        (video_language, variant["query"], grouped_ids)
+                        (
+                            video_language,
+                            variant["query"],
+                            variant["query_language"],
+                            grouped_ids,
+                        )
                     )
 
             retrievals = []
             agentic_outcomes = []
             deterministic_assessments = []
             language_stages = []
-            for query_language, scoped_query, grouped_ids in grouped_scopes:
+            for (
+                retrieval_language,
+                scoped_query,
+                query_language,
+                grouped_ids,
+            ) in grouped_scopes:
                 if agentic:
                     outcome = self.retrieve_agentic(
                         scoped_query,
                         k=k,
-                        language=query_language,
+                        language=retrieval_language,
                         retrieval_mode=retrieval_mode,
                         retrieval_profile=retrieval_profile,
                         video_ids=grouped_ids,
@@ -3449,7 +3467,7 @@ class LocalRAGService:
                     scoped_retrieval = self.retrieve(
                         scoped_query,
                         k=k,
-                        language=query_language,
+                        language=retrieval_language,
                         retrieval_mode=retrieval_mode,
                         retrieval_profile=retrieval_profile,
                         video_ids=grouped_ids,
@@ -3468,11 +3486,12 @@ class LocalRAGService:
                     )
                     deterministic_assessments.append(assessment)
                     scoped_sufficient = bool(assessment.get("sufficient"))
-                scoped_retrieval["_query_language"] = query_language
+                scoped_retrieval["_query_language"] = retrieval_language
                 retrievals.append(scoped_retrieval)
                 language_stages.append(
                     {
-                        "language": query_language,
+                        "language": retrieval_language,
+                        "query_language": query_language,
                         "video_ids": grouped_ids,
                         "result_count": len(scoped_retrieval.get("results") or []),
                         "sufficient": scoped_sufficient,
@@ -3582,6 +3601,7 @@ class LocalRAGService:
                 "variants": [
                     {
                         "language": variant["language"],
+                        "query_language": variant["query_language"],
                         "kind": variant["kind"],
                         "query": variant["query"],
                         "video_count": len(variant["video_ids"]),
@@ -3611,7 +3631,7 @@ class LocalRAGService:
             )
             retrieval_details["answer_grounding"] = {
                 "question": grounding_variant["query"],
-                "query_language": grounding_language,
+                "query_language": grounding_variant["query_language"],
                 "answer_language": expansion["query_language"],
             }
         return {
