@@ -1540,6 +1540,52 @@ def test_ask_with_sources_still_refuses_weak_cross_lingual_evidence():
     assert result["citations"] == []
 
 
+def test_ask_with_sources_refuses_cross_lingual_lexical_scores_without_dense_signal():
+    service = _make_service(enabled=False)
+
+    def _unexpected_llm_call(**kwargs):
+        raise AssertionError("LLM should not be called without cross-lingual dense evidence.")
+
+    service._llm_text_response = _unexpected_llm_call
+    lexical_only_sources = [
+        {
+            "video_id": "vidjp",
+            "video_title": "返金について",
+            "language": "ja",
+            "chunk_index": 0,
+            "text": "返金の条件と申請方法を説明します。",
+            "start": 5.0,
+            "end": 20.0,
+            "rank": 1,
+            "score": 8.0,
+            "lexical_score": 8.0,
+        },
+        {
+            "video_id": "vidjp",
+            "video_title": "返金について",
+            "language": "ja",
+            "chunk_index": 1,
+            "text": "払い戻しを受けるための期限を案内します。",
+            "start": 20.0,
+            "end": 35.0,
+            "rank": 2,
+            "score": 7.5,
+            "lexical_score": 7.5,
+        },
+    ]
+
+    result = service.ask_with_sources(
+        "What is the refund policy?",
+        lexical_only_sources,
+        provider="chatgpt",
+        retrieval_mode="lexical",
+    )
+
+    assert result["status"] == "insufficient_evidence"
+    assert result["confidence"] == "low"
+    assert result["citations"] == []
+
+
 def test_ask_with_sources_surfaces_conflicting_evidence_warning():
     service = _make_service(enabled=False)
     service._llm_text_response = lambda **kwargs: {

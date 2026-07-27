@@ -376,14 +376,21 @@ def assess_grounded_answer_evidence(
         # English question over Japanese transcripts), the two token sets never
         # intersect, so a raw overlap of 0 would veto otherwise-strong
         # cross-lingual dense matches surfaced by the multilingual embedder.
-        # For those rows, drop the lexical-overlap term from the score and use
-        # the normalized dense score as the semantic-overlap proxy that the
-        # sufficiency thresholds gate on.
+        # For those rows with an explicit dense signal, drop the lexical-overlap
+        # term from the score and use normalized dense similarity as the proxy
+        # that the sufficiency thresholds gate on. Without a real dense score,
+        # retain the lexical gate so a generic/lexical score cannot masquerade
+        # as semantic similarity.
         same_language = row_language == query_lang
+        use_cross_lingual_dense_proxy = (
+            not same_language
+            and scoped_mode in {"dense", "hybrid"}
+            and row.get("dense_score") is not None
+        )
         weighted_components = [
             (0.15, rank_signal),
         ]
-        if same_language:
+        if not use_cross_lingual_dense_proxy:
             weighted_components.append((0.45, overlap_signal))
             effective_overlap = overlap_ratio
         else:

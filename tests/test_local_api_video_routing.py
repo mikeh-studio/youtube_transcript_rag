@@ -387,6 +387,102 @@ def test_english_frieren_query_routes_to_japanese_video_after_translation():
     ]
 
 
+def test_untranslated_fallback_keeps_source_query_language_for_grounding():
+    service = local_api.LocalRAGService.__new__(local_api.LocalRAGService)
+    service.engine = type(
+        "Engine",
+        (),
+        {
+            "library": type(
+                "Library",
+                (),
+                {"videos": {"frieren1234": {"language": "ja"}}},
+            )()
+        },
+    )()
+
+    def unavailable_translation(**kwargs):
+        raise RuntimeError("translation unavailable")
+
+    service._llm_text_response = unavailable_translation
+    service._tokenize_for_lexical = lambda text, language: (
+        list(text) if language == "ja" else text.lower().split()
+    )
+
+    def route_videos(query, *, top_k, language, video_ids=None):
+        del query, top_k
+        selected_ids = ["frieren1234"] if language == "ja" else []
+        assert all(video_id in (video_ids or []) for video_id in selected_ids)
+        return {
+            "video_ids": selected_ids,
+            "results": [
+                {
+                    "video_id": video_id,
+                    "language": language,
+                    "dense_score": 0.9,
+                }
+                for video_id in selected_ids
+            ],
+            "used_fallback": False,
+            "fallback_reason": None,
+            "dense_available": True,
+            "lexical_available": False,
+            "fusion": "rrf",
+            "latency_ms": 1.0,
+        }
+
+    def retrieve(query, **kwargs):
+        assert query == "What does the video say about loneliness?"
+        assert kwargs["language"] == "ja"
+        assert kwargs["video_ids"] == ["frieren1234"]
+        return {
+            "retrieval_mode": "dense",
+            "details": {},
+            "results": [
+                {
+                    "video_id": "frieren1234",
+                    "chunk_index": 1,
+                    "language": "ja",
+                    "rank": 1,
+                    "dense_score": 0.87,
+                    "score": 0.87,
+                    "text": "主人公の孤独について詳しく説明します。",
+                },
+                {
+                    "video_id": "frieren1234",
+                    "chunk_index": 2,
+                    "language": "ja",
+                    "rank": 2,
+                    "dense_score": 0.85,
+                    "score": 0.85,
+                    "text": "登場人物たちが主人公の孤独をどう受け止めるか比較します。",
+                },
+            ],
+        }
+
+    service.route_videos = route_videos
+    service.retrieve = retrieve
+
+    outcome = service.retrieve_video_first(
+        "What does the video say about loneliness?",
+        video_top_k=1,
+        retrieval_mode="dense",
+        provider="chatgpt",
+    )
+    details = outcome["retrieval"]["details"]
+    japanese_variant = details["video_routing"]["query_expansion"]["variants"][1]
+
+    assert japanese_variant["kind"] == "untranslated_fallback"
+    assert japanese_variant["language"] == "ja"
+    assert japanese_variant["query_language"] == "en"
+    assert details["video_routing"]["stages"][0]["sufficient"] is True
+    assert details["answer_grounding"] == {
+        "question": "What does the video say about loneliness?",
+        "query_language": "en",
+        "answer_language": "en",
+    }
+
+
 def test_ask_route_uses_video_first_only_for_all_videos(monkeypatch):
     calls = []
 
