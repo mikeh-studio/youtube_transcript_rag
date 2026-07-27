@@ -181,7 +181,10 @@ def _model_supports_temperature(provider: str, model: str) -> bool:
     # OpenAI reasoning families reject temperature in chat completions.
     return not scoped.startswith(("gpt-5", "o1", "o3", "o4"))
 ASK_MAX_TOKENS = 2000
-ASK_TEMPERATURE = 0.5
+# Grounded Q&A must return strict JSON with faithful, citation-backed claims.
+# Keep sampling low so JSON stays parseable and answers stay grounded; higher
+# temperatures raise both parse failures and hallucination risk on this task.
+ASK_TEMPERATURE = 0.2
 FEEDBACK_ALPHA_QUERY = 0.30
 FEEDBACK_BETA_GLOBAL = 0.10
 FEEDBACK_MAX_ADJUST = 0.35

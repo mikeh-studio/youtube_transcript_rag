@@ -2,6 +2,15 @@
 
 Historical release notes moved out of the README so the project landing page can stay focused on the portfolio narrative.
 
+## [Unreleased] - 2026-07-26
+
+### Fixed
+- Grounded Q&A (`/v1/ask`) no longer vetoes strong cross-lingual matches. The evidence-sufficiency gate now classifies each chunk against the language the query was tokenized in (the translated/evidence language when available) instead of the answer language, and for genuinely cross-lingual chunks it uses the normalized dense score as the overlap proxy rather than failing on zero lexical token overlap.
+- Imported the missing `Optional` name in `local_preview/grounded_answer.py` (previously masked only by `from __future__ import annotations`; surfaces as `F821` and would break runtime annotation evaluation).
+
+### Changed
+- Lowered the grounded-answer sampling temperature from `0.5` to `0.2` so strict-JSON answers stay parseable and faithful to the retrieved evidence.
+
 ## Previous README What's New
 
 ### Retrieval Add-ons
