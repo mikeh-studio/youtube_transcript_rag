@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 
 ANSWER_STATUSES = {"answered", "insufficient_evidence", "error"}
@@ -340,6 +340,13 @@ def assess_grounded_answer_evidence(
             "reason_code": "no_results",
         }
 
+    # Language the query was tokenized in. When the caller translated the
+    # question into the evidence language (query_language set), overlap is
+    # computed in that language; otherwise it falls back to the answer
+    # language. Cross-lingual detection below compares each row against this,
+    # not the answer language, so a translated same-language assessment is not
+    # misclassified as cross-lingual.
+    query_lang = str(query_language or answer_language or "").strip().lower()
     query_tokens = tokenize_fn(question, query_language or answer_language)
     query_token_set = {token for token in query_tokens if token}
     top_lexical_score = max(
@@ -350,7 +357,8 @@ def assess_grounded_answer_evidence(
 
     for row in rows:
         text = str(row.get("text") or "").strip()
-        row_tokens = tokenize_fn(text, str(row.get("language") or answer_language))
+        row_language = str(row.get("language") or query_lang).strip().lower()
+        row_tokens = tokenize_fn(text, row_language)
         row_token_set = {token for token in row_tokens if token}
         overlap_ratio = (
             len(query_token_set & row_token_set) / max(len(query_token_set), 1)
@@ -363,10 +371,23 @@ def assess_grounded_answer_evidence(
         lexical_signal = _normalize_lexical_signal(row, top_lexical_score)
         overlap_signal = _clamp(overlap_ratio / 0.6)
 
+        # Lexical token overlap only makes sense within a single language. When
+        # the question language differs from the evidence language (e.g. an
+        # English question over Japanese transcripts), the two token sets never
+        # intersect, so a raw overlap of 0 would veto otherwise-strong
+        # cross-lingual dense matches surfaced by the multilingual embedder.
+        # For those rows, drop the lexical-overlap term from the score and use
+        # the normalized dense score as the semantic-overlap proxy that the
+        # sufficiency thresholds gate on.
+        same_language = row_language == query_lang
         weighted_components = [
-            (0.45, overlap_signal),
             (0.15, rank_signal),
         ]
+        if same_language:
+            weighted_components.append((0.45, overlap_signal))
+            effective_overlap = overlap_ratio
+        else:
+            effective_overlap = dense_signal
         if scoped_mode in {"dense", "hybrid"}:
             weighted_components.append((0.25, dense_signal))
         if scoped_mode in {"lexical", "hybrid"}:
@@ -383,6 +404,7 @@ def assess_grounded_answer_evidence(
                 "row": row,
                 "rank": rank,
                 "overlap_ratio": overlap_ratio,
+                "effective_overlap": effective_overlap,
                 "dense_signal": dense_signal,
                 "lexical_signal": lexical_signal,
                 "evidence_strength": evidence_strength,
@@ -398,7 +420,7 @@ def assess_grounded_answer_evidence(
     supporting_rows = [
         item
         for item in assessed_rows
-        if item["evidence_strength"] >= 0.55 and item["overlap_ratio"] >= 0.18
+        if item["evidence_strength"] >= 0.55 and item["effective_overlap"] >= 0.18
     ]
 
     if len(supporting_rows) >= 2:
@@ -416,7 +438,7 @@ def assess_grounded_answer_evidence(
         }
 
     strong_single = (
-        top_row["evidence_strength"] >= 0.72 and top_row["overlap_ratio"] >= 0.28
+        top_row["evidence_strength"] >= 0.72 and top_row["effective_overlap"] >= 0.28
     )
     weak_runner_up = runner_up is None or runner_up["evidence_strength"] < 0.48
     if strong_single and weak_runner_up:
