@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "cases": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "properties": {
+          "case_type": {
+            "type": "string",
+            "enum": [
+              "direct_fact_1",
+              "direct_fact_2",
+              "semantic_paraphrase",
+              "cross_lingual",
+              "distractor_resistant",
+              "multi_evidence"
+            ]
+          },
+          "query": {"type": "string"},
+          "language": {"type": "string", "enum": ["en", "ja"]},
+          "query_type": {
+            "type": "string",
+            "enum": ["factual", "thematic", "navigational"]
+          },
+          "difficulty": {
+            "type": "string",
+            "enum": ["easy", "medium", "hard"]
+          },
+          "gold_evidence": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "properties": {
+                "video_id": {"type": "string"},
+                "chunk_index": {"type": "integer"}
+              },
+              "required": ["video_id", "chunk_index"],
+              "additionalProperties": false
+            }
+          },
+          "required_facts": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 6,
+            "items": {"type": "string"}
+          },
+          "notes": {"type": "string"},
+          "confidence": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          },
+          "risk_flags": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {"type": "string"}
+          }
+        },
+        "required": [
+          "case_type",
+          "query",
+          "language",
+          "query_type",
+          "difficulty",
+          "gold_evidence",
+          "required_facts",
+          "notes",
+          "confidence",
+          "risk_flags"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["cases"],
+  "additionalProperties": false
+}

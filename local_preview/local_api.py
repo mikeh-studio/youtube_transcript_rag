@@ -101,6 +101,7 @@ from grounded_answer import (  # noqa: E402
     default_insufficient_answer,
     normalize_grounded_answer_payload,
 )
+from eval_generator import EvalGeneratorError, EvalGeneratorService  # noqa: E402
 
 
 VIDEO_ID_RE = re.compile(r"[a-zA-Z0-9_-]{11}")
@@ -808,6 +809,29 @@ class LocalRAGService:
                 }
             )
         return results
+
+    def _eval_generator_service(self) -> EvalGeneratorService:
+        """Return the lazy local Codex evaluation generator service."""
+        service = getattr(self, "eval_generator", None)
+        if service is None:
+            def generator_video(video_id: str):
+                video = self.engine.library.videos.get(video_id)
+                if not isinstance(video, dict):
+                    return None
+                return {
+                    **video,
+                    "chunking": self.engine.library.get_video_chunking_metadata(
+                        video_id
+                    ),
+                }
+
+            service = EvalGeneratorService(
+                root_dir=ROOT_DIR,
+                runtime_dir=self.runtime_data_dir,
+                video_getter=generator_video,
+            )
+            self.eval_generator = service
+        return service
 
     def delete_video(self, video_id: str):
         self.engine.library.remove_video(video_id)
@@ -7787,6 +7811,19 @@ class Handler(BaseHTTPRequestHandler):
             json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         )
 
+    def _download(self, payload: bytes, filename: str):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header(
+            "Content-Disposition", f'attachment; filename="{filename}"'
+        )
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header(
+            "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0"
+        )
+        self.end_headers()
+        self.wfile.write(payload)
+
     def _read_json_body(self):
         length = int(self.headers.get("Content-Length", "0") or "0")
         raw = self.rfile.read(length) if length > 0 else b"{}"
@@ -7835,6 +7872,68 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
 
         try:
+            if path == "/v1/eval-generator/capabilities":
+                capabilities = SERVICE._eval_generator_service().capabilities()
+                self._json({"ok": True, "capabilities": capabilities})
+                return
+
+            if path == "/v1/eval-generator/jobs":
+                jobs = SERVICE._eval_generator_service().list_jobs()
+                self._json({"ok": True, "count": len(jobs), "jobs": jobs})
+                return
+
+            if path.startswith("/v1/eval-generator/jobs/"):
+                job_id = unquote(path.rsplit("/", 1)[-1])
+                job = SERVICE._eval_generator_service().get_job(job_id)
+                if not job:
+                    raise EvalGeneratorError(
+                        "JOB_NOT_FOUND", "Generator job was not found.", 404
+                    )
+                self._json({"ok": True, "job": job})
+                return
+
+            if path == "/v1/eval-generator/drafts":
+                drafts = SERVICE._eval_generator_service().list_drafts()
+                self._json({"ok": True, "count": len(drafts), "drafts": drafts})
+                return
+
+            if path.startswith("/v1/eval-generator/drafts/"):
+                draft_id = unquote(path.rsplit("/", 1)[-1])
+                draft = SERVICE._eval_generator_service().get_draft(draft_id)
+                self._json({"ok": True, "draft": draft})
+                return
+
+            if path == "/v1/eval-generator/datasets":
+                datasets = SERVICE._eval_generator_service().list_datasets()
+                self._json(
+                    {"ok": True, "count": len(datasets), "datasets": datasets}
+                )
+                return
+
+            if (
+                path.startswith("/v1/eval-generator/datasets/")
+                and path.endswith("/export")
+            ):
+                parts = [part for part in path.split("/") if part]
+                if len(parts) != 5:
+                    raise EvalGeneratorError(
+                        "DATASET_NOT_FOUND", "Dataset was not found.", 404
+                    )
+                dataset_id = unquote(parts[3])
+                filename, payload = SERVICE._eval_generator_service().export_dataset(
+                    dataset_id
+                )
+                self._download(payload, filename)
+                return
+
+
+            if path.startswith("/v1/eval-generator/datasets/"):
+                dataset_id = unquote(path.rsplit("/", 1)[-1])
+                dataset = SERVICE._eval_generator_service().get_dataset(dataset_id)
+                result = SERVICE._eval_generator_service()._finalize_response(dataset)
+                self._json({"ok": True, **result})
+                return
+
             if path == "/v1/health":
                 self._json(
                     {
@@ -8109,6 +8208,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             self._serve_static(path)
+        except EvalGeneratorError as exc:
+            self._json(
+                {
+                    "ok": False,
+                    "error": {"code": exc.code, "message": str(exc)},
+                },
+                exc.status,
+            )
         except Exception as exc:
             traceback.print_exc()
             self._json(
@@ -8179,6 +8286,50 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             body = self._read_json_body()
+
+            if path == "/v1/eval-generator/jobs":
+                job = SERVICE._eval_generator_service().start_job(
+                    body.get("video_ids")
+                    if isinstance(body.get("video_ids"), list)
+                    else []
+                )
+                self._json({"ok": True, "job": job}, 202)
+                return
+
+            if (
+                path.startswith("/v1/eval-generator/drafts/")
+                and path.endswith("/review")
+            ):
+                parts = [part for part in path.split("/") if part]
+                if len(parts) != 5:
+                    raise EvalGeneratorError(
+                        "DRAFT_NOT_FOUND", "Draft was not found.", 404
+                    )
+                draft_id = unquote(parts[3])
+                decisions = body.get("decisions")
+                if not isinstance(decisions, list):
+                    raise EvalGeneratorError(
+                        "INVALID_REVIEW", "decisions must be a list."
+                    )
+                draft = SERVICE._eval_generator_service().save_review(
+                    draft_id, decisions
+                )
+                self._json({"ok": True, "draft": draft})
+                return
+
+            if (
+                path.startswith("/v1/eval-generator/drafts/")
+                and path.endswith("/finalize")
+            ):
+                parts = [part for part in path.split("/") if part]
+                if len(parts) != 5:
+                    raise EvalGeneratorError(
+                        "DRAFT_NOT_FOUND", "Draft was not found.", 404
+                    )
+                draft_id = unquote(parts[3])
+                result = SERVICE._eval_generator_service().finalize(draft_id)
+                self._json({"ok": True, **result})
+                return
 
             if path == "/v1/ingest/videos":
                 result = SERVICE.ingest(
@@ -8675,6 +8826,14 @@ class Handler(BaseHTTPRequestHandler):
                     "error": {"code": "NOT_FOUND", "message": "Route not found"},
                 },
                 404,
+            )
+        except EvalGeneratorError as exc:
+            self._json(
+                {
+                    "ok": False,
+                    "error": {"code": exc.code, "message": str(exc)},
+                },
+                exc.status,
             )
         except ValueError as exc:
             self._json(

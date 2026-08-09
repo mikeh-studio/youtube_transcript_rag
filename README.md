@@ -66,6 +66,20 @@ Notes:
 - Japanese lexical (BM25) search tokenizes with fugashi morphological analysis,
   falling back to character bigrams if fugashi is unavailable.
 
+### Seed an Evaluation Dataset with Codex
+
+The Evaluation workspace can turn one to three already-ingested transcripts into
+a six-case retrieval draft. Install the Codex CLI, run `codex login`, then open
+`http://127.0.0.1:8000/evaluation.html`. Every proposal remains a draft until you
+approve, edit, or reject each case. Finalization creates a browser query set and
+a downloadable JSONL dataset under the gitignored `data/runtime/eval_generator/`
+directory.
+
+The local API invokes one ephemeral Codex pass in a read-only sandbox, validates
+all cited chunk references against the selected videos, and does not forward
+provider API-key environment variables. `YT_RAG_CODEX_BIN` can select a specific
+CLI executable, and `YT_RAG_CODEX_MODEL` can optionally override its model.
+
 ## What It Solves
 
 Most RAG demos stop after retrieving chunks. This project focuses on whether retrieval is actually good.
@@ -103,6 +117,7 @@ The local workflow lets you:
 - Citation-backed Q&A with fallback states and selectable OpenAI, Claude, or Sakana AI providers.
 - Study Studio for transcript-grounded flashcards, topic maps, per-topic explanations, run history, and study-quality checks.
 - Search-result review and assisted labeling helpers.
+- Codex CLI-assisted retrieval dataset drafts with required human review and JSONL export.
 - Browser-local evaluation query sets, labels, run snapshots, and metrics.
 - Read-only evidence curation reports from local pipeline artifacts.
 - Local-video OCR for `.mp4`, `.m4v`, `.mov`, `.mkv`, and `.webm` files.
