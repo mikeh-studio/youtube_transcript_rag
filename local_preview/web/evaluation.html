@@ -86,6 +86,58 @@
         <ul id="guidelinesList" class="eval-guidelines"></ul>
       </section>
 
+      <section id="datasetGeneratorPanel" class="panel eval-generator-panel">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">
+              <img src="./icons/icon-jobs.svg" alt="" aria-hidden="true" />
+              <span id="generatorHeading">Generate a Dataset</span>
+            </h2>
+            <p id="generatorIntro" class="section-desc">Select up to three videos. Codex drafts six retrieval cases; you approve the evidence before they become evaluation data.</p>
+          </div>
+          <span id="generatorCapability" class="eval-generator-capability pending">Checking Codex CLI…</span>
+        </div>
+
+        <ol class="eval-generator-steps" aria-label="Dataset generation steps">
+          <li id="generatorStepSelect" class="active"><span>1</span><strong>Select</strong></li>
+          <li id="generatorStepGenerate"><span>2</span><strong>Generate</strong></li>
+          <li id="generatorStepReview"><span>3</span><strong>Review</strong></li>
+          <li id="generatorStepFinalize"><span>4</span><strong>Finalize</strong></li>
+        </ol>
+
+        <div class="eval-generator-controls">
+          <div>
+            <div class="eval-generator-control-head">
+              <h3 id="generatorVideosHeading" class="chart-heading">Choose 1–3 videos</h3>
+              <span id="generatorSelectionCount" class="evidence-pill">0 / 3</span>
+            </div>
+            <div id="generatorVideoList" class="eval-generator-video-list" aria-live="polite"></div>
+          </div>
+          <div class="eval-generator-actions">
+            <label>
+              <span id="generatorDraftLabel">Saved draft</span>
+              <select id="generatorDraftSelect">
+                <option value="">No saved drafts</option>
+              </select>
+            </label>
+            <button id="loadGeneratorDraftBtn" class="btn secondary" type="button">Load Draft</button>
+            <button id="generateEvalDatasetBtn" class="btn" type="button" disabled>Generate 6 Cases</button>
+          </div>
+        </div>
+
+        <div id="generatorStatus" class="eval-generator-status" role="status" aria-live="polite">Preparing Dataset Builder…</div>
+        <div id="generatorWarnings" class="eval-generator-warnings" hidden></div>
+        <div id="generatorReviewCards" class="eval-generator-review-list"></div>
+
+        <div id="generatorFinalizeActions" class="eval-generator-finalize" hidden>
+          <p id="generatorReviewSummary" class="section-desc"></p>
+          <div class="eval-toolbar">
+            <button id="finalizeEvalDatasetBtn" class="btn" type="button" disabled>Create Query Set</button>
+            <a id="downloadEvalDatasetLink" class="btn secondary" href="#" hidden>Download JSONL</a>
+          </div>
+        </div>
+      </section>
+
       <section class="panel">
         <div class="section-head">
           <h2 class="section-title">

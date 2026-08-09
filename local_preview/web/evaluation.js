@@ -40,6 +40,27 @@ const els = {
   heroSubtitle: document.getElementById("heroSubtitle"),
   guidelinesHeading: document.getElementById("guidelinesHeading"),
   guidelinesList: document.getElementById("guidelinesList"),
+  generatorHeading: document.getElementById("generatorHeading"),
+  generatorIntro: document.getElementById("generatorIntro"),
+  generatorCapability: document.getElementById("generatorCapability"),
+  generatorVideosHeading: document.getElementById("generatorVideosHeading"),
+  generatorSelectionCount: document.getElementById("generatorSelectionCount"),
+  generatorVideoList: document.getElementById("generatorVideoList"),
+  generatorDraftLabel: document.getElementById("generatorDraftLabel"),
+  generatorDraftSelect: document.getElementById("generatorDraftSelect"),
+  loadGeneratorDraftBtn: document.getElementById("loadGeneratorDraftBtn"),
+  generateEvalDatasetBtn: document.getElementById("generateEvalDatasetBtn"),
+  generatorStatus: document.getElementById("generatorStatus"),
+  generatorWarnings: document.getElementById("generatorWarnings"),
+  generatorReviewCards: document.getElementById("generatorReviewCards"),
+  generatorFinalizeActions: document.getElementById("generatorFinalizeActions"),
+  generatorReviewSummary: document.getElementById("generatorReviewSummary"),
+  finalizeEvalDatasetBtn: document.getElementById("finalizeEvalDatasetBtn"),
+  downloadEvalDatasetLink: document.getElementById("downloadEvalDatasetLink"),
+  generatorStepSelect: document.getElementById("generatorStepSelect"),
+  generatorStepGenerate: document.getElementById("generatorStepGenerate"),
+  generatorStepReview: document.getElementById("generatorStepReview"),
+  generatorStepFinalize: document.getElementById("generatorStepFinalize"),
   querySetsHeading: document.getElementById("querySetsHeading"),
   newQuerySetBtn: document.getElementById("newQuerySetBtn"),
   saveQuerySetBtn: document.getElementById("saveQuerySetBtn"),
@@ -118,6 +139,47 @@ const I18N = {
       "Unsure: partial overlap, unclear intent match, or insufficient context.",
       "Use reason codes for not relevant/unsure labels to speed error triage.",
     ],
+    generatorHeading: "Generate a Dataset",
+    generatorIntro: "Select up to three videos. Codex drafts six retrieval cases; you approve the evidence before they become evaluation data.",
+    generatorVideosHeading: "Choose 1–3 videos",
+    generatorDraftLabel: "Saved draft",
+    loadGeneratorDraftBtn: "Load Draft",
+    generateEvalDatasetBtn: "Generate 6 Cases",
+    generatorChecking: "Checking Codex CLI…",
+    generatorReady: "Codex CLI ready",
+    generatorUnavailable: "Codex CLI unavailable",
+    generatorLoading: "Loading videos and saved drafts…",
+    generatorSelectPrompt: "Select at least one video to start.",
+    generatorNoVideos: "No ingested videos with transcript chunks are available.",
+    generatorNoDrafts: "No saved drafts",
+    generatorQueued: "Generation queued…",
+    generatorStepStatus: "Generator: {step}",
+    generatorFailed: "Generation failed: {message}",
+    generatorDraftReady: "Draft ready. Review every case before finalizing.",
+    generatorWarningsHeading: "Generator warnings",
+    generatorFactsHeading: "Required facts",
+    generatorEvidenceHeading: "Gold evidence",
+    generatorApprove: "Approve",
+    generatorEdit: "Edit",
+    generatorReject: "Reject",
+    generatorSaveEdit: "Save & Approve",
+    generatorCancelEdit: "Cancel",
+    generatorQuestionLabel: "Question",
+    generatorFactsLabel: "Required facts (one per line)",
+    generatorNotesLabel: "Notes",
+    generatorDifficultyLabel: "Difficulty",
+    generatorPending: "Pending",
+    generatorApproved: "Approved",
+    generatorEdited: "Edited",
+    generatorRejected: "Rejected",
+    generatorReviewSummary: "{decided}/{total} reviewed · {accepted} accepted",
+    generatorCreateQuerySet: "Create Query Set",
+    generatorDownload: "Download JSONL",
+    generatorFinalized: "Dataset finalized with {count} cases. The query set is ready to run.",
+    generatorStepSelectLabel: "Select",
+    generatorStepGenerateLabel: "Generate",
+    generatorStepReviewLabel: "Review",
+    generatorStepFinalizeLabel: "Finalize",
     querySetsHeading: "Query Sets",
     newQuerySetBtn: "New Set",
     saveQuerySetBtn: "Save Set",
@@ -201,6 +263,47 @@ const I18N = {
       "不明: 一部一致するが意図一致が曖昧、または文脈不足。",
       "関連なし/不明には理由コードを付与して原因分析を高速化します。",
     ],
+    generatorHeading: "評価データセットを生成",
+    generatorIntro: "最大3本の動画を選択します。Codexが6件の検索ケースを提案し、承認後に評価データになります。",
+    generatorVideosHeading: "動画を1〜3本選択",
+    generatorDraftLabel: "保存済みドラフト",
+    loadGeneratorDraftBtn: "ドラフトを開く",
+    generateEvalDatasetBtn: "6ケースを生成",
+    generatorChecking: "Codex CLIを確認中…",
+    generatorReady: "Codex CLI 準備完了",
+    generatorUnavailable: "Codex CLIを利用できません",
+    generatorLoading: "動画とドラフトを読み込み中…",
+    generatorSelectPrompt: "開始するには動画を1本以上選択してください。",
+    generatorNoVideos: "文字起こしチャンク付きの動画がありません。",
+    generatorNoDrafts: "保存済みドラフトなし",
+    generatorQueued: "生成を待機中…",
+    generatorStepStatus: "生成状況: {step}",
+    generatorFailed: "生成失敗: {message}",
+    generatorDraftReady: "ドラフト準備完了。確定前に全ケースをレビューしてください。",
+    generatorWarningsHeading: "生成時の警告",
+    generatorFactsHeading: "必須の事実",
+    generatorEvidenceHeading: "正解エビデンス",
+    generatorApprove: "承認",
+    generatorEdit: "編集",
+    generatorReject: "却下",
+    generatorSaveEdit: "編集して承認",
+    generatorCancelEdit: "キャンセル",
+    generatorQuestionLabel: "質問",
+    generatorFactsLabel: "必須の事実（1行に1件）",
+    generatorNotesLabel: "メモ",
+    generatorDifficultyLabel: "難易度",
+    generatorPending: "未確認",
+    generatorApproved: "承認済み",
+    generatorEdited: "編集済み",
+    generatorRejected: "却下済み",
+    generatorReviewSummary: "{decided}/{total} 件確認 · {accepted} 件採用",
+    generatorCreateQuerySet: "クエリセットを作成",
+    generatorDownload: "JSONLをダウンロード",
+    generatorFinalized: "{count}件でデータセットを確定しました。クエリセットを実行できます。",
+    generatorStepSelectLabel: "選択",
+    generatorStepGenerateLabel: "生成",
+    generatorStepReviewLabel: "レビュー",
+    generatorStepFinalizeLabel: "確定",
     querySetsHeading: "クエリセット",
     newQuerySetBtn: "新規セット",
     saveQuerySetBtn: "保存",
@@ -276,6 +379,13 @@ let state = loadEvalState();
 let currentQuerySetId = null;
 let currentRunId = null;
 let currentRunQueryId = null;
+let generatorCapability = null;
+let generatorVideos = [];
+let generatorDrafts = [];
+let currentGeneratorDraft = null;
+let activeGeneratorJobId = null;
+let generatorPollTimer = null;
+let editingGeneratorCaseId = null;
 
 function t(key, vars = {}) {
   const base = I18N[currentLocale] || I18N[DEFAULT_LOCALE];
@@ -473,6 +583,21 @@ function saveEvalState() {
   localStorage.setItem(EVAL_STORAGE_KEY, JSON.stringify(state));
 }
 
+function restoreGeneratedQuerySet(row, { select = false } = {}) {
+  const normalized = normalizeQuerySet(row);
+  const exists = state.query_sets.some((querySet) => querySet.id === normalized.id);
+  if (!exists) {
+    state.query_sets.push(normalized);
+  }
+  if (select) {
+    currentQuerySetId = normalized.id;
+  }
+  if (!exists || select) {
+    saveEvalState();
+  }
+  return { normalized, restored: !exists };
+}
+
 async function apiRequest(path, { method = "GET", body } = {}) {
   const response = await fetch(path, {
     method,
@@ -485,6 +610,384 @@ async function apiRequest(path, { method = "GET", body } = {}) {
     throw new Error(json?.error?.message || `Request failed (${response.status})`);
   }
   return json;
+}
+
+function setGeneratorStatus(message, { error = false } = {}) {
+  els.generatorStatus.textContent = message;
+  els.generatorStatus.classList.toggle("error", error);
+}
+
+function selectedGeneratorVideoIds() {
+  return Array.from(
+    els.generatorVideoList.querySelectorAll("input[type='checkbox']:checked"),
+  ).map((input) => input.value);
+}
+
+function renderGeneratorCapability() {
+  if (!generatorCapability) {
+    els.generatorCapability.textContent = t("generatorChecking");
+    els.generatorCapability.className = "eval-generator-capability pending";
+    return;
+  }
+  const ready = Boolean(
+    generatorCapability.available && generatorCapability.authenticated,
+  );
+  els.generatorCapability.textContent = ready
+    ? `${t("generatorReady")} · ${generatorCapability.version || "codex"}`
+    : `${t("generatorUnavailable")} · ${generatorCapability.message || ""}`;
+  els.generatorCapability.className = `eval-generator-capability ${ready ? "ok" : "error"}`;
+}
+
+function renderGeneratorVideos() {
+  const selected = new Set(selectedGeneratorVideoIds());
+  if (!generatorVideos.length) {
+    els.generatorVideoList.innerHTML = `<p class="section-desc">${escapeHtml(t("generatorNoVideos"))}</p>`;
+    els.generatorSelectionCount.textContent = "0 / 3";
+    updateGeneratorControls();
+    return;
+  }
+  els.generatorVideoList.innerHTML = generatorVideos.map((video) => {
+    const checked = selected.has(video.video_id) ? "checked" : "";
+    return `
+      <label class="eval-generator-video-option">
+        <input type="checkbox" value="${escapeHtml(video.video_id)}" ${checked} />
+        <span>
+          <strong class="eval-generator-video-title">${escapeHtml(video.title)}</strong>
+          <span class="eval-generator-video-meta">${escapeHtml(video.language || "-")} · ${Number(video.num_chunks || 0)} chunks</span>
+        </span>
+      </label>
+    `;
+  }).join("");
+  updateGeneratorControls();
+}
+
+function renderGeneratorDraftSelector() {
+  if (!generatorDrafts.length) {
+    els.generatorDraftSelect.innerHTML = `<option value="">${escapeHtml(t("generatorNoDrafts"))}</option>`;
+    els.loadGeneratorDraftBtn.disabled = true;
+    return;
+  }
+  els.generatorDraftSelect.innerHTML = generatorDrafts.map((draft) => {
+    const label = `${String(draft.created_at || "").slice(0, 19).replace("T", " ")} · ${draft.decided_count}/${draft.case_count}`;
+    return `<option value="${escapeHtml(draft.draft_id)}">${escapeHtml(label)}</option>`;
+  }).join("");
+  if (currentGeneratorDraft?.draft_id) {
+    els.generatorDraftSelect.value = currentGeneratorDraft.draft_id;
+  }
+  els.loadGeneratorDraftBtn.disabled = false;
+}
+
+function updateGeneratorControls() {
+  const selectionCount = selectedGeneratorVideoIds().length;
+  const ready = Boolean(
+    generatorCapability?.available && generatorCapability?.authenticated,
+  );
+  els.generatorSelectionCount.textContent = `${selectionCount} / 3`;
+  els.generateEvalDatasetBtn.disabled = !ready
+    || selectionCount < 1
+    || selectionCount > 3
+    || Boolean(activeGeneratorJobId);
+  els.generatorVideoList.querySelectorAll("input[type='checkbox']").forEach((input) => {
+    input.disabled = Boolean(activeGeneratorJobId)
+      || (!input.checked && selectionCount >= 3);
+  });
+}
+
+function setGeneratorStep(step) {
+  const steps = [
+    ["select", els.generatorStepSelect],
+    ["generate", els.generatorStepGenerate],
+    ["review", els.generatorStepReview],
+    ["finalize", els.generatorStepFinalize],
+  ];
+  const activeIndex = Math.max(0, steps.findIndex(([name]) => name === step));
+  steps.forEach(([, element], index) => {
+    element.classList.toggle("active", index === activeIndex);
+    element.classList.toggle("complete", index < activeIndex);
+  });
+}
+
+function generatorCaseValues(caseRow) {
+  const finalValues = caseRow.review?.final_values || {};
+  return {
+    query: finalValues.query || caseRow.query,
+    required_facts: finalValues.required_facts || caseRow.required_facts || [],
+    gold_evidence: finalValues.gold_evidence || caseRow.gold_evidence || [],
+    difficulty: finalValues.difficulty || caseRow.difficulty,
+    notes: finalValues.notes ?? caseRow.notes ?? "",
+  };
+}
+
+function generatorDecisionLabel(decision) {
+  return {
+    approved: t("generatorApproved"),
+    edited: t("generatorEdited"),
+    rejected: t("generatorRejected"),
+    pending: t("generatorPending"),
+  }[decision] || t("generatorPending");
+}
+
+function renderGeneratorReview() {
+  const draft = currentGeneratorDraft;
+  if (!draft) {
+    els.generatorWarnings.hidden = true;
+    els.generatorReviewCards.innerHTML = "";
+    els.generatorFinalizeActions.hidden = true;
+    setGeneratorStep(activeGeneratorJobId ? "generate" : "select");
+    return;
+  }
+  setGeneratorStep(draft.status === "finalized" ? "finalize" : "review");
+  const warnings = Array.isArray(draft.warnings) ? draft.warnings : [];
+  els.generatorWarnings.hidden = warnings.length === 0;
+  els.generatorWarnings.innerHTML = warnings.length
+    ? `<strong>${escapeHtml(t("generatorWarningsHeading"))}</strong><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
+    : "";
+
+  const cases = Array.isArray(draft.cases) ? draft.cases : [];
+  els.generatorReviewCards.innerHTML = cases.map((caseRow, index) => {
+    const decision = caseRow.review?.decision || "pending";
+    const values = generatorCaseValues(caseRow);
+    const isEditing = editingGeneratorCaseId === caseRow.id;
+    const keptEvidenceIds = new Set(
+      values.gold_evidence.map((row) => row.evidence_id),
+    );
+    const badges = [caseRow.case_type, caseRow.language, values.difficulty, decision]
+      .map((value) => `<span class="eval-generator-case-badge">${escapeHtml(value)}</span>`)
+      .join("");
+    const warningsHtml = [...(caseRow.warnings || []), ...(caseRow.risk_flags || [])]
+      .map((warning) => `<span class="eval-generator-case-badge">⚠ ${escapeHtml(warning)}</span>`)
+      .join("");
+    const evidenceHtml = (caseRow.gold_evidence || []).map((evidence) => `
+      <label class="eval-generator-evidence">
+        <input type="checkbox" data-evidence-id="${escapeHtml(evidence.evidence_id)}" ${keptEvidenceIds.has(evidence.evidence_id) ? "checked" : ""} ${isEditing ? "" : "disabled"} />
+        <span>
+          <a href="${escapeHtml(evidence.url)}" target="_blank" rel="noreferrer">${escapeHtml(evidence.video_title)} · ${formatSeconds(evidence.start)} · chunk ${Number(evidence.chunk_index)}</a>
+          <p>${escapeHtml(truncate(evidence.text, 360))}</p>
+        </span>
+      </label>
+    `).join("");
+    const editHtml = isEditing ? `
+      <div class="eval-generator-edit-grid">
+        <label class="full">
+          <span>${escapeHtml(t("generatorQuestionLabel"))}</span>
+          <input data-edit-field="query" value="${escapeHtml(values.query)}" />
+        </label>
+        <label>
+          <span>${escapeHtml(t("generatorDifficultyLabel"))}</span>
+          <select data-edit-field="difficulty">
+            ${["easy", "medium", "hard"].map((value) => `<option value="${value}" ${values.difficulty === value ? "selected" : ""}>${value}</option>`).join("")}
+          </select>
+        </label>
+        <label>
+          <span>${escapeHtml(t("generatorNotesLabel"))}</span>
+          <input data-edit-field="notes" value="${escapeHtml(values.notes)}" />
+        </label>
+        <label class="full">
+          <span>${escapeHtml(t("generatorFactsLabel"))}</span>
+          <textarea data-edit-field="required_facts">${escapeHtml(values.required_facts.join("\n"))}</textarea>
+        </label>
+      </div>
+    ` : `
+      <div>
+        <strong class="eval-generator-video-meta">${escapeHtml(t("generatorFactsHeading"))}</strong>
+        <ul class="eval-guidelines">${values.required_facts.map((fact) => `<li>${escapeHtml(fact)}</li>`).join("")}</ul>
+      </div>
+    `;
+    let actions = "";
+    if (isEditing) {
+      actions = `
+        <button class="btn" type="button" data-generator-action="save-edit">${escapeHtml(t("generatorSaveEdit"))}</button>
+        <button class="btn secondary" type="button" data-generator-action="cancel-edit">${escapeHtml(t("generatorCancelEdit"))}</button>
+      `;
+    } else {
+      actions = `
+        ${decision !== "edited" ? `<button class="btn secondary ${decision === "approved" ? "active" : ""}" type="button" data-generator-action="approve">${escapeHtml(t("generatorApprove"))}</button>` : ""}
+        <button class="btn secondary" type="button" data-generator-action="edit">${escapeHtml(t("generatorEdit"))}</button>
+        <button class="btn secondary danger" type="button" data-generator-action="reject">${escapeHtml(t("generatorReject"))}</button>
+      `;
+    }
+    return `
+      <article class="eval-generator-case ${escapeHtml(decision)}" data-case-id="${escapeHtml(caseRow.id)}">
+        <div class="eval-generator-case-head">
+          <h3 class="eval-generator-case-title">${index + 1}. ${escapeHtml(values.query)}</h3>
+          <span class="review-status ${decision === "rejected" ? "error" : decision === "pending" ? "pending" : "ok"}">${escapeHtml(generatorDecisionLabel(decision))}</span>
+        </div>
+        <div class="eval-generator-case-badges">${badges}${warningsHtml}</div>
+        ${editHtml}
+        <div class="eval-generator-evidence-list">
+          <strong class="eval-generator-video-meta">${escapeHtml(t("generatorEvidenceHeading"))}</strong>
+          ${evidenceHtml}
+        </div>
+        <div class="eval-generator-case-actions">${actions}</div>
+      </article>
+    `;
+  }).join("");
+
+  const counts = cases.reduce((acc, caseRow) => {
+    const decision = caseRow.review?.decision || "pending";
+    if (decision !== "pending") acc.decided += 1;
+    if (decision === "approved" || decision === "edited") acc.accepted += 1;
+    return acc;
+  }, { decided: 0, accepted: 0 });
+  els.generatorFinalizeActions.hidden = false;
+  els.generatorReviewSummary.textContent = t("generatorReviewSummary", {
+    decided: counts.decided,
+    total: cases.length,
+    accepted: counts.accepted,
+  });
+  els.finalizeEvalDatasetBtn.disabled = draft.status === "finalized"
+    || counts.decided !== cases.length
+    || counts.accepted < 1;
+}
+
+async function refreshGeneratorDrafts() {
+  const response = await apiRequest("/v1/eval-generator/drafts");
+  generatorDrafts = Array.isArray(response.drafts) ? response.drafts : [];
+  renderGeneratorDraftSelector();
+}
+
+async function loadGeneratorDraft(draftId) {
+  if (!draftId) return;
+  const response = await apiRequest(`/v1/eval-generator/drafts/${encodeURIComponent(draftId)}`);
+  currentGeneratorDraft = response.draft;
+  editingGeneratorCaseId = null;
+  renderGeneratorDraftSelector();
+  renderGeneratorReview();
+  if (currentGeneratorDraft.status === "finalized" && currentGeneratorDraft.dataset_id) {
+    const datasetResponse = await apiRequest(
+      `/v1/eval-generator/datasets/${encodeURIComponent(currentGeneratorDraft.dataset_id)}`,
+    );
+    restoreGeneratedQuerySet(datasetResponse.query_set, { select: true });
+    els.downloadEvalDatasetLink.href = `/v1/eval-generator/datasets/${encodeURIComponent(currentGeneratorDraft.dataset_id)}/export`;
+    els.downloadEvalDatasetLink.download = `${currentGeneratorDraft.dataset_id}.jsonl`;
+    els.downloadEvalDatasetLink.hidden = false;
+    rerender();
+  } else {
+    els.downloadEvalDatasetLink.hidden = true;
+  }
+  setGeneratorStatus(t("generatorDraftReady"));
+}
+
+async function pollGeneratorJob(jobId) {
+  if (generatorPollTimer) {
+    clearTimeout(generatorPollTimer);
+    generatorPollTimer = null;
+  }
+  try {
+    const response = await apiRequest(`/v1/eval-generator/jobs/${encodeURIComponent(jobId)}`);
+    const job = response.job;
+    if (job.status === "completed") {
+      activeGeneratorJobId = null;
+      await refreshGeneratorDrafts();
+      await loadGeneratorDraft(job.draft_id);
+      updateGeneratorControls();
+      return;
+    }
+    if (job.status === "failed") {
+      activeGeneratorJobId = null;
+      setGeneratorStatus(t("generatorFailed", { message: job.error_message || job.error_code }), { error: true });
+      setGeneratorStep("select");
+      updateGeneratorControls();
+      return;
+    }
+    setGeneratorStatus(t("generatorStepStatus", { step: job.step || job.status }));
+    setGeneratorStep("generate");
+    generatorPollTimer = setTimeout(() => {
+      pollGeneratorJob(jobId);
+    }, 1200);
+  } catch (err) {
+    activeGeneratorJobId = null;
+    setGeneratorStatus(t("generatorFailed", { message: String(err.message || err) }), { error: true });
+    updateGeneratorControls();
+  }
+}
+
+async function startGeneratorJob() {
+  const videoIds = selectedGeneratorVideoIds();
+  if (videoIds.length < 1 || videoIds.length > 3) return;
+  els.downloadEvalDatasetLink.hidden = true;
+  currentGeneratorDraft = null;
+  editingGeneratorCaseId = null;
+  renderGeneratorReview();
+  setGeneratorStatus(t("generatorQueued"));
+  setGeneratorStep("generate");
+  const response = await apiRequest("/v1/eval-generator/jobs", {
+    method: "POST",
+    body: { video_ids: videoIds },
+  });
+  activeGeneratorJobId = response.job.job_id;
+  updateGeneratorControls();
+  await pollGeneratorJob(activeGeneratorJobId);
+}
+
+async function saveGeneratorDecision(caseRow, payload) {
+  const response = await apiRequest(
+    `/v1/eval-generator/drafts/${encodeURIComponent(currentGeneratorDraft.draft_id)}/review`,
+    { method: "POST", body: { decisions: [{ id: caseRow.id, ...payload }] } },
+  );
+  currentGeneratorDraft = response.draft;
+  editingGeneratorCaseId = null;
+  await refreshGeneratorDrafts();
+  renderGeneratorReview();
+}
+
+async function finalizeGeneratorDraft() {
+  if (!currentGeneratorDraft) return;
+  const response = await apiRequest(
+    `/v1/eval-generator/drafts/${encodeURIComponent(currentGeneratorDraft.draft_id)}/finalize`,
+    { method: "POST", body: {} },
+  );
+  restoreGeneratedQuerySet(response.query_set, { select: true });
+  currentGeneratorDraft.status = "finalized";
+  currentGeneratorDraft.dataset_id = response.dataset.dataset_id;
+  els.downloadEvalDatasetLink.href = response.export_url;
+  els.downloadEvalDatasetLink.download = `${response.dataset.dataset_id}.jsonl`;
+  els.downloadEvalDatasetLink.hidden = false;
+  setGeneratorStep("finalize");
+  setGeneratorStatus(t("generatorFinalized", { count: response.dataset.row_count }));
+  rerender();
+  renderGeneratorReview();
+}
+
+async function initEvalGenerator() {
+  setGeneratorStatus(t("generatorLoading"));
+  try {
+    const [capabilityResponse, videosResponse, draftsResponse, datasetsResponse] = await Promise.all([
+      apiRequest("/v1/eval-generator/capabilities"),
+      apiRequest("/v1/videos"),
+      apiRequest("/v1/eval-generator/drafts"),
+      apiRequest("/v1/eval-generator/datasets"),
+    ]);
+    generatorCapability = capabilityResponse.capabilities || null;
+    generatorVideos = (videosResponse.videos || []).filter((video) => Number(video.num_chunks || 0) > 0);
+    generatorDrafts = draftsResponse.drafts || [];
+    let restoredCount = 0;
+    let selectedRestoredSet = false;
+    for (const dataset of datasetsResponse.datasets || []) {
+      const result = restoreGeneratedQuerySet(dataset.query_set);
+      if (result.restored) {
+        restoredCount += 1;
+        if (!selectedRestoredSet) {
+          currentQuerySetId = result.normalized.id;
+          selectedRestoredSet = true;
+        }
+      }
+    }
+    renderGeneratorCapability();
+    renderGeneratorVideos();
+    renderGeneratorDraftSelector();
+    if (restoredCount > 0) rerender();
+    setGeneratorStatus(t("generatorSelectPrompt"));
+  } catch (err) {
+    generatorCapability = {
+      available: false,
+      authenticated: false,
+      message: String(err.message || err),
+    };
+    renderGeneratorCapability();
+    setGeneratorStatus(t("generatorFailed", { message: String(err.message || err) }), { error: true });
+    updateGeneratorControls();
+  }
 }
 
 function selectedQuerySet() {
@@ -1215,6 +1718,23 @@ function applyLocale(locale) {
     .map((line) => `<li>${escapeHtml(line)}</li>`)
     .join("");
 
+  els.generatorHeading.textContent = t("generatorHeading");
+  els.generatorIntro.textContent = t("generatorIntro");
+  els.generatorVideosHeading.textContent = t("generatorVideosHeading");
+  els.generatorDraftLabel.textContent = t("generatorDraftLabel");
+  els.loadGeneratorDraftBtn.textContent = t("loadGeneratorDraftBtn");
+  els.generateEvalDatasetBtn.textContent = t("generateEvalDatasetBtn");
+  els.finalizeEvalDatasetBtn.textContent = t("generatorCreateQuerySet");
+  els.downloadEvalDatasetLink.textContent = t("generatorDownload");
+  els.generatorStepSelect.querySelector("strong").textContent = t("generatorStepSelectLabel");
+  els.generatorStepGenerate.querySelector("strong").textContent = t("generatorStepGenerateLabel");
+  els.generatorStepReview.querySelector("strong").textContent = t("generatorStepReviewLabel");
+  els.generatorStepFinalize.querySelector("strong").textContent = t("generatorStepFinalizeLabel");
+  renderGeneratorCapability();
+  renderGeneratorVideos();
+  renderGeneratorDraftSelector();
+  renderGeneratorReview();
+
   els.querySetsHeading.textContent = t("querySetsHeading");
   els.newQuerySetBtn.textContent = t("newQuerySetBtn");
   els.saveQuerySetBtn.textContent = t("saveQuerySetBtn");
@@ -1263,6 +1783,91 @@ function applyLocale(locale) {
 function wireEvents() {
   els.localeSelect.addEventListener("change", () => {
     applyLocale(els.localeSelect.value);
+  });
+
+  els.generatorVideoList.addEventListener("change", (event) => {
+    if (event.target.matches("input[type='checkbox']")) {
+      updateGeneratorControls();
+    }
+  });
+  els.generateEvalDatasetBtn.addEventListener("click", () => {
+    startGeneratorJob().catch((err) => {
+      activeGeneratorJobId = null;
+      setGeneratorStatus(
+        t("generatorFailed", { message: String(err?.message || err) }),
+        { error: true },
+      );
+      setGeneratorStep("select");
+      updateGeneratorControls();
+    });
+  });
+  els.loadGeneratorDraftBtn.addEventListener("click", () => {
+    loadGeneratorDraft(els.generatorDraftSelect.value).catch((err) => {
+      setGeneratorStatus(
+        t("generatorFailed", { message: String(err?.message || err) }),
+        { error: true },
+      );
+    });
+  });
+  els.generatorReviewCards.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-generator-action]");
+    const card = button?.closest("article[data-case-id]");
+    if (!button || !card || !currentGeneratorDraft) return;
+    const caseRow = currentGeneratorDraft.cases.find(
+      (row) => row.id === card.dataset.caseId,
+    );
+    if (!caseRow) return;
+    const action = button.dataset.generatorAction;
+    if (action === "edit") {
+      editingGeneratorCaseId = caseRow.id;
+      renderGeneratorReview();
+      return;
+    }
+    if (action === "cancel-edit") {
+      editingGeneratorCaseId = null;
+      renderGeneratorReview();
+      return;
+    }
+    let payload;
+    if (action === "approve" || action === "reject") {
+      payload = { decision: action === "approve" ? "approved" : "rejected" };
+    } else if (action === "save-edit") {
+      const query = card.querySelector("[data-edit-field='query']").value;
+      const facts = card.querySelector("[data-edit-field='required_facts']").value
+        .split("\n")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      payload = {
+        decision: "edited",
+        query,
+        required_facts: facts,
+        difficulty: card.querySelector("[data-edit-field='difficulty']").value,
+        notes: card.querySelector("[data-edit-field='notes']").value,
+        kept_evidence_ids: Array.from(
+          card.querySelectorAll("input[data-evidence-id]:checked"),
+        ).map((input) => input.dataset.evidenceId),
+      };
+    } else {
+      return;
+    }
+    button.disabled = true;
+    saveGeneratorDecision(caseRow, payload).catch((err) => {
+      button.disabled = false;
+      setGeneratorStatus(
+        t("generatorFailed", { message: String(err?.message || err) }),
+        { error: true },
+      );
+    });
+  });
+  els.finalizeEvalDatasetBtn.addEventListener("click", () => {
+    els.finalizeEvalDatasetBtn.disabled = true;
+    finalizeGeneratorDraft().catch((err) => {
+      setGeneratorStatus(
+        t("generatorFailed", { message: String(err?.message || err) }),
+        { error: true },
+      );
+      renderGeneratorReview();
+    });
   });
 
   els.querySetSelect.addEventListener("change", () => {
@@ -1390,6 +1995,12 @@ function init() {
   if (!els.runStatus.textContent.trim()) {
     setRunStatus(t("runIdle"));
   }
+  initEvalGenerator().catch((err) => {
+    setGeneratorStatus(
+      t("generatorFailed", { message: String(err?.message || err) }),
+      { error: true },
+    );
+  });
 }
 
 init();
