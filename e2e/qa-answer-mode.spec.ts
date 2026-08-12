@@ -259,7 +259,7 @@ test("visualizes agentic attempts and reranked results", async ({ page }) => {
         warnings: [],
         provider: "chatgpt",
         model: "gpt-5.4-mini",
-        retrieval_mode: "hybrid",
+        retrieval_mode: "lexical",
         retrieval_details: {
           fusion: "rrf",
           dense_candidates: 30,
@@ -280,14 +280,16 @@ test("visualizes agentic attempts and reranked results", async ({ page }) => {
             sufficient: true,
             stopped_reason: "sufficient_evidence",
             final_query: "retrieval retry reranking",
-            final_retrieval_mode: "hybrid",
+            final_retrieval_mode: "lexical",
+            final_tool: "read_context",
             final_k: 5,
             attempts: [
               {
                 attempt: 1,
                 strategy: "initial",
+                tool: "semantic_search",
                 query: "How is the retrieval update different?",
-                retrieval_mode: "hybrid",
+                retrieval_mode: "dense",
                 k: 5,
                 result_count: 1,
                 sufficient: false,
@@ -297,13 +299,27 @@ test("visualizes agentic attempts and reranked results", async ({ page }) => {
               {
                 attempt: 2,
                 strategy: "rewrite_query",
+                tool: "keyword_search",
                 query: "retrieval retry reranking",
-                retrieval_mode: "hybrid",
+                retrieval_mode: "lexical",
                 k: 5,
                 result_count: 5,
                 sufficient: true,
                 reason_code: "multi_chunk_support",
                 confidence_cap: "high",
+              },
+              {
+                attempt: 3,
+                strategy: "read_context",
+                tool: "read_context",
+                query: "retrieval retry reranking",
+                retrieval_mode: "lexical",
+                k: 5,
+                result_count: 5,
+                sufficient: true,
+                reason_code: "multi_chunk_support",
+                confidence_cap: "high",
+                calls: [{ video_id: "vid1", timestamp: 65, window: 30 }],
               },
             ],
           },
@@ -316,7 +332,7 @@ test("visualizes agentic attempts and reranked results", async ({ page }) => {
   await prepareQAStudio(page);
   await page.getByLabel("Question").fill("How is the retrieval update different?");
   await expect(page.getByLabel("Video scope")).toHaveValue("vid1");
-  await expect(page.getByLabel("Agentic retry")).toBeChecked();
+  await expect(page.getByLabel("Agentic tool search")).toBeChecked();
   await page.getByLabel("Reranker").selectOption("cross_encoder");
   await page.getByRole("button", { name: "Generate Answer" }).click();
 
@@ -329,13 +345,99 @@ test("visualizes agentic attempts and reranked results", async ({ page }) => {
   expect(requestBody).not.toHaveProperty("source_mode");
   await expect(page.locator(".qa-ask-form").getByLabel("Evidence", { exact: true })).toHaveCount(0);
   await expect(page.getByTestId("agentic-attempt-timeline")).toBeVisible();
-  await expect(page.locator(".agentic-attempt")).toHaveCount(2);
+  await expect(page.locator(".agentic-attempt")).toHaveCount(3);
   await expect(page.getByTestId("agentic-attempt-timeline").getByText("Rewritten query")).toBeVisible();
+  await expect(page.getByTestId("agentic-attempt-timeline").getByText("Semantic · E5 + FAISS")).toBeVisible();
+  await expect(page.getByTestId("agentic-attempt-timeline").getByText("Keyword · Japanese BM25")).toBeVisible();
+  await expect(
+    page.getByTestId("agentic-attempt-timeline").getByText("Raw transcript context", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".agentic-attempt.selected")).toContainText("Raw transcript context");
   await expect(page.getByTestId("retrieval-stage-funnel")).toHaveCount(0);
   await expect(page.getByTestId("result-ranking-profile")).toContainText("↑2");
   await expect(page.getByTestId("result-ranking-profile")).toContainText("↓1");
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("enables agentic tool search from the Search tab", async ({ page }) => {
+  let requestBody = null;
+  await page.route("**/v1/search", async (route) => {
+    requestBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        query: "エージェント検索",
+        k: 5,
+        agentic: true,
+        retrieval_mode: "lexical",
+        result_count: 1,
+        results: [{
+          rank: 1,
+          video_id: "vid1",
+          video_title: "Demo Video",
+          chunk_index: 1,
+          start: 30,
+          end: 60,
+          score: 0.8,
+          text: "Nearby raw transcript context.",
+          language: "ja",
+        }],
+        retrieval_details: {
+          agentic_retrieval: {
+            sufficient: true,
+            final_query: "エージェント検索",
+            final_retrieval_mode: "lexical",
+            final_tool: "read_context",
+            final_k: 5,
+            stopped_reason: "sufficient_evidence",
+            attempts: [
+              {
+                attempt: 1,
+                strategy: "initial",
+                tool: "keyword_search",
+                query: "エージェント検索",
+                retrieval_mode: "lexical",
+                k: 5,
+                result_count: 1,
+                sufficient: true,
+                reason_code: "strong_single_chunk",
+              },
+              {
+                attempt: 2,
+                strategy: "read_context",
+                tool: "read_context",
+                query: "エージェント検索",
+                retrieval_mode: "lexical",
+                k: 5,
+                result_count: 1,
+                sufficient: true,
+                reason_code: "strong_single_chunk",
+                calls: [{ video_id: "vid1", timestamp: 30, window: 30 }],
+              },
+            ],
+          },
+        },
+      }),
+    });
+  });
+
+  await prepareQAStudio(page);
+  await page.getByRole("tab", { name: "Search", exact: true }).click();
+  await page.getByPlaceholder("Search transcript evidence").fill("エージェント検索");
+  await page.getByLabel("Agentic tool search").check();
+  await expect(page.getByText("Semantic · BM25 · Context")).toBeVisible();
+  await page.getByRole("button", { name: "Run Search" }).click();
+
+  expect(requestBody).toMatchObject({
+    query: "エージェント検索",
+    agentic: true,
+    retrieval_mode: "hybrid",
+  });
+  await expect(page.getByTestId("agentic-attempt-timeline")).toBeVisible();
+  await expect(page.locator(".agentic-attempt.selected")).toContainText("Raw transcript context");
 });
 
 test("keeps OCR ingestion and multimodal Ask in the Local Video tool", async ({ page }) => {

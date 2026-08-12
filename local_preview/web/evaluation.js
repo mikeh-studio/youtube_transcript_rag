@@ -85,6 +85,10 @@ const els = {
   runQuerySetBtn: document.getElementById("runQuerySetBtn"),
   exportRunBtn: document.getElementById("exportRunBtn"),
   resetEvalDataBtn: document.getElementById("resetEvalDataBtn"),
+  runStrategyLabel: document.getElementById("runStrategyLabel"),
+  runStrategy: document.getElementById("runStrategy"),
+  runStrategyDirectOption: document.getElementById("runStrategyDirectOption"),
+  runStrategyAgenticOption: document.getElementById("runStrategyAgenticOption"),
   runModeLabel: document.getElementById("runModeLabel"),
   runMode: document.getElementById("runMode"),
   runKLabel: document.getElementById("runKLabel"),
@@ -121,16 +125,16 @@ const els = {
 
 const I18N = {
   "en-US": {
-    pageTitle: "YouTube Transcript RAG | Evaluation",
+    pageTitle: "YouTube Transcript Retrieval Lab | Evaluation",
     localeLabel: "Language",
     navIngest: "Ingest",
-    eyebrowText: "YouTube Transcript RAG",
+    eyebrowText: "YouTube Transcript Retrieval Lab",
     navStudio: "Studio",
     navReviews: "Reviews",
     navEvidence: "Evidence",
     navEvaluation: "Evaluation",
     navChunking: "Chunking",
-    heroTitle: "Semantic Retrieval Evaluation",
+    heroTitle: "Retrieval Strategy Evaluation",
     heroSubtitle: "Create query sets, run ranked retrieval snapshots, label results locally, and compare metrics across runs.",
     guidelinesHeading: "Relevance Guidelines",
     guidelines: [
@@ -201,7 +205,10 @@ const I18N = {
     runQuerySetBtn: "Run Query Set",
     exportRunBtn: "Export Run",
     resetEvalDataBtn: "Reset Local Eval Data",
-    runModeLabel: "Retrieval Mode",
+    runStrategyLabel: "Search Strategy",
+    runStrategyDirect: "Direct retrieval",
+    runStrategyAgentic: "Agentic tool search",
+    runModeLabel: "Direct Retrieval Mode",
     runKLabel: "Top K",
     runSelectLabel: "Run Snapshot",
     runIdle: "Ready.",
@@ -225,6 +232,10 @@ const I18N = {
     labelUnsure: "Unsure",
     reasonPlaceholder: "reason",
     reviewEmpty: "No run results available yet.",
+    agenticPathLabel: "Agentic tool path",
+    toolSemantic: "Semantic · E5 + FAISS",
+    toolKeyword: "Keyword · Japanese BM25",
+    toolContext: "Raw transcript context",
     compareHeading: "Run Comparison",
     compareRunALabel: "Run A",
     compareRunBLabel: "Run B",
@@ -245,10 +256,10 @@ const I18N = {
     unlabeled: "unlabeled",
   },
   "ja-JP": {
-    pageTitle: "YouTube Transcript RAG | 評価",
+    pageTitle: "YouTube Transcript Retrieval Lab | 評価",
     localeLabel: "言語",
     navIngest: "取り込み",
-    eyebrowText: "YouTube Transcript RAG",
+    eyebrowText: "YouTube Transcript Retrieval Lab",
     navStudio: "Studio",
     navReviews: "レビュー",
     navEvidence: "エビデンス",
@@ -325,7 +336,10 @@ const I18N = {
     runQuerySetBtn: "クエリセット実行",
     exportRunBtn: "ランをエクスポート",
     resetEvalDataBtn: "ローカル評価データ初期化",
-    runModeLabel: "検索モード",
+    runStrategyLabel: "検索戦略",
+    runStrategyDirect: "直接検索",
+    runStrategyAgentic: "エージェント型ツール検索",
+    runModeLabel: "直接検索モード",
     runKLabel: "Top K",
     runSelectLabel: "ランスナップショット",
     runIdle: "準備完了。",
@@ -349,6 +363,10 @@ const I18N = {
     labelUnsure: "不明",
     reasonPlaceholder: "理由",
     reviewEmpty: "レビュー可能なラン結果がありません。",
+    agenticPathLabel: "エージェント型ツール経路",
+    toolSemantic: "Semantic · E5 + FAISS",
+    toolKeyword: "Keyword · 日本語 BM25",
+    toolContext: "生の文字起こしコンテキスト",
     compareHeading: "ラン比較",
     compareRunALabel: "Run A",
     compareRunBLabel: "Run B",
@@ -535,6 +553,7 @@ function normalizeRun(row) {
     query_set_id: String(row?.query_set_id || ""),
     started_at: String(row?.started_at || nowIso()),
     completed_at: String(row?.completed_at || row?.started_at || nowIso()),
+    strategy: row?.strategy === "agentic" ? "agentic" : "retrieval",
     retrieval_mode: ["hybrid", "dense", "lexical"].includes(row?.retrieval_mode) ? row.retrieval_mode : "hybrid",
     k: Number(row?.k || 5),
     candidate_k: Number(row?.candidate_k || 0),
@@ -1051,7 +1070,8 @@ function renderQuerySetEditor() {
 
 function runLabel(run) {
   const when = String(run.completed_at || run.started_at || "").replace("T", " ").slice(0, 19);
-  return `${run.id} | ${run.retrieval_mode} | k=${run.k} | ${when}`;
+  const strategy = run.strategy === "agentic" ? "agentic" : "direct";
+  return `${run.id} | ${strategy} · ${run.retrieval_mode} | k=${run.k} | ${when}`;
 }
 
 function renderRunSelectors() {
@@ -1097,6 +1117,7 @@ function renderRunStatus() {
   els.runStatus.textContent = JSON.stringify({
     run_id: run.id,
     query_set_id: run.query_set_id,
+    strategy: run.strategy,
     retrieval_mode: run.retrieval_mode,
     k: run.k,
     completed_at: run.completed_at,
@@ -1250,7 +1271,27 @@ function renderRunResultCards() {
     return;
   }
 
-  els.runResultCards.innerHTML = queryRun.items.map((item, idx) => {
+  const attempts = queryRun.retrieval_details?.agentic_retrieval?.attempts;
+  const agenticTrace = Array.isArray(attempts) && attempts.length
+    ? `
+      <div class="eval-agentic-trace">
+        <strong>${escapeHtml(t("agenticPathLabel"))}</strong>
+        ${attempts.map((attempt) => {
+          const toolKey = attempt.tool === "semantic_search"
+            ? "toolSemantic"
+            : attempt.tool === "keyword_search"
+              ? "toolKeyword"
+              : attempt.tool === "read_context"
+                ? "toolContext"
+                : null;
+          const label = toolKey ? t(toolKey) : String(attempt.tool || attempt.retrieval_mode || "retrieval");
+          return `<span class="eval-agentic-tool">${escapeHtml(label)}</span>`;
+        }).join("")}
+      </div>
+    `
+    : "";
+
+  const cards = queryRun.items.map((item, idx) => {
     const key = getChunkKey(item);
     const labelState = queryRun.labels?.[key] || {};
     const active = labelState.label || "";
@@ -1286,6 +1327,7 @@ function renderRunResultCards() {
       </article>
     `;
   }).join("");
+  els.runResultCards.innerHTML = `${agenticTrace}${cards}`;
 }
 
 function renderCompareOutput(text) {
@@ -1450,6 +1492,14 @@ function setRunStatus(message) {
   els.runStatus.textContent = message;
 }
 
+function updateRunStrategyControls() {
+  const isAgentic = els.runStrategy.value === "agentic";
+  els.runMode.disabled = isAgentic;
+  els.runMode.title = isAgentic
+    ? t("runStrategyAgentic")
+    : t("runStrategyDirect");
+}
+
 async function runQuerySet() {
   const set = selectedQuerySet();
   if (!set) {
@@ -1463,6 +1513,7 @@ async function runQuerySet() {
   }
 
   const mode = els.runMode.value;
+  const strategy = els.runStrategy.value === "agentic" ? "agentic" : "retrieval";
   const k = Math.max(1, Math.min(12, Number(els.runK.value || 5)));
   els.runK.value = String(k);
 
@@ -1471,13 +1522,14 @@ async function runQuerySet() {
     query_set_id: set.id,
     started_at: nowIso(),
     completed_at: "",
+    strategy,
     retrieval_mode: mode,
     k,
     candidate_k: Math.max(20, k * 4),
     index_snapshot_id: "local_library_latest",
     system_version: {
       app_version: APP_VERSION,
-      retriever_version: mode,
+      retriever_version: strategy === "agentic" ? "agentic_tool_policy_v1" : mode,
       chunking_version: "unknown",
     },
     results: [],
@@ -1501,6 +1553,7 @@ async function runQuerySet() {
             query: query.text,
             k,
             retrieval_mode: mode,
+            agentic: strategy === "agentic",
             language: set.language === "mixed" ? undefined : set.language,
           },
         });
@@ -1650,6 +1703,7 @@ function compareRuns() {
   const output = {
     run_a: {
       id: runA.id,
+      strategy: runA.strategy,
       mode: runA.retrieval_mode,
       k: runA.k,
       completed_at: runA.completed_at,
@@ -1657,6 +1711,7 @@ function compareRuns() {
     },
     run_b: {
       id: runB.id,
+      strategy: runB.strategy,
       mode: runB.retrieval_mode,
       k: runB.k,
       completed_at: runB.completed_at,
@@ -1756,7 +1811,11 @@ function applyLocale(locale) {
   els.runQuerySetBtn.textContent = t("runQuerySetBtn");
   els.exportRunBtn.textContent = t("exportRunBtn");
   els.resetEvalDataBtn.textContent = t("resetEvalDataBtn");
+  els.runStrategyLabel.textContent = t("runStrategyLabel");
+  els.runStrategyDirectOption.textContent = t("runStrategyDirect");
+  els.runStrategyAgenticOption.textContent = t("runStrategyAgentic");
   els.runModeLabel.textContent = t("runModeLabel");
+  updateRunStrategyControls();
   els.runKLabel.textContent = t("runKLabel");
   els.runSelectLabel.textContent = t("runSelectLabel");
 
@@ -1943,6 +2002,8 @@ function wireEvents() {
     renderRunResultCards();
   });
 
+  els.runStrategy.addEventListener("change", updateRunStrategyControls);
+
   els.runQuerySetBtn.addEventListener("click", () => {
     runQuerySet().catch((err) => {
       setRunStatus(String(err?.message || err));
@@ -1992,6 +2053,7 @@ function init() {
   currentQuerySetId = state.query_sets[0]?.id || null;
   wireEvents();
   applyLocale(currentLocale);
+  updateRunStrategyControls();
   if (!els.runStatus.textContent.trim()) {
     setRunStatus(t("runIdle"));
   }

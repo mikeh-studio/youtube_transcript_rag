@@ -1,1 +1,1 @@
-"""Offline retrieval benchmarks for the local YouTube Transcript RAG stack."""
+"""Offline benchmarks for YouTube Transcript Retrieval Lab."""

@@ -105,10 +105,10 @@ const VIDEO_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
 
 const I18N = {
   "en-US": {
-    pageTitle: "YouTube Transcript RAG | Local Preview",
+    pageTitle: "YouTube Transcript Retrieval Lab | Local Preview",
     localeLabel: "Language",
     navHome: "Home",
-    eyebrowText: "YouTube Transcript RAG",
+    eyebrowText: "YouTube Transcript Retrieval Lab",
     navEvaluation: "Evaluation",
     navReviews: "Reviews",
     heroTitle: "Local Preview Console",
@@ -236,10 +236,10 @@ const I18N = {
     askError: "Ask failed: {message}",
   },
   "ja-JP": {
-    pageTitle: "YouTube Transcript RAG | ローカルプレビュー",
+    pageTitle: "YouTube Transcript Retrieval Lab | ローカルプレビュー",
     localeLabel: "言語",
     navHome: "ホーム",
-    eyebrowText: "YouTube Transcript RAG",
+    eyebrowText: "YouTube Transcript Retrieval Lab",
     navEvaluation: "評価",
     navReviews: "レビュー",
     heroTitle: "ローカルプレビューコンソール",

@@ -22,3 +22,10 @@ def test_runner_writes_reports_and_selects_optimized_config(tmp_path):
     assert result["selected_run"]["name"] == "optimized_hybrid"
     assert result["thresholds"]["small_sample"] is True
     assert result["thresholds"]["passed"] is True
+    agentic = next(run for run in result["runs"] if run["name"] == "agentic")
+    assert agentic["strategy"] == "agentic"
+    assert "Precision@5" in agentic["metrics"]
+    assert "Precision@10" in agentic["metrics"]
+    trace = agentic["per_query"][0]["retrieval_details"]["agentic_retrieval"]
+    assert trace["policy"] == "deterministic_tool_policy_v1"
+    assert trace["attempts"][-1]["tool"] == "read_context"

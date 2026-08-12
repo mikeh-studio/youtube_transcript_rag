@@ -13,9 +13,9 @@ const DEFAULT_LOCALE = "en-US";
 // ------------------------------------------------------------------
 const I18N = {
   "en-US": {
-    pageTitle: "YouTube Transcript RAG | Chunking",
+    pageTitle: "YouTube Transcript Retrieval Lab | Chunking",
     localeLabel: "Language",
-    eyebrowText: "YouTube Transcript RAG",
+    eyebrowText: "YouTube Transcript Retrieval Lab",
     heroTitle: "Chunking Strategy Comparison",
     heroSubtitle: "Compare chunking strategies side-by-side and measure their effect on search results.",
     videoHeading: "Video & Strategy Selection",
@@ -59,9 +59,9 @@ const I18N = {
     navChunking: "Chunking",
   },
   "ja-JP": {
-    pageTitle: "YouTube Transcript RAG | チャンキング",
+    pageTitle: "YouTube Transcript Retrieval Lab | チャンキング",
     localeLabel: "言語",
-    eyebrowText: "YouTube Transcript RAG",
+    eyebrowText: "YouTube Transcript Retrieval Lab",
     heroTitle: "チャンキング戦略比較",
     heroSubtitle: "チャンキング戦略を並べて比較し、検索結果への影響を測定します。",
     videoHeading: "動画と戦略の選択",

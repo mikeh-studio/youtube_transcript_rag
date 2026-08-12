@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>YouTube Transcript RAG | Evaluation</title>
+    <title>YouTube Transcript Retrieval Lab | Evaluation</title>
     <link rel="icon" type="image/svg+xml" href="./icons/favicon-ytrag.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -15,7 +15,7 @@
       <a id="homeBrandLink" class="brand brand-link" href="./index.html" aria-label="Ingest">
         <img src="./icons/icon-play.svg" alt="" aria-hidden="true" />
         <div>
-          <p id="eyebrowText" class="eyebrow">YouTube Transcript RAG</p>
+          <p id="eyebrowText" class="eyebrow">YouTube Transcript Retrieval Lab</p>
           <p class="brand-sub">Evaluation Workspace</p>
         </div>
       </a>
@@ -74,7 +74,7 @@
 
     <main class="shell">
       <header class="hero">
-        <h1 id="heroTitle">Semantic Retrieval Evaluation</h1>
+        <h1 id="heroTitle">Retrieval Strategy Evaluation</h1>
         <p id="heroSubtitle" class="subtitle">Create query sets, run ranked retrieval snapshots, label results locally, and compare metrics across runs.</p>
       </header>
 
@@ -203,7 +203,14 @@
             <button id="resetEvalDataBtn" class="btn secondary danger" type="button">Reset Local Eval Data</button>
           </div>
         </div>
-        <form class="grid eval-grid-three" onsubmit="return false;">
+        <form class="grid eval-grid-four" onsubmit="return false;">
+          <label>
+            <span id="runStrategyLabel">Search Strategy</span>
+            <select id="runStrategy">
+              <option id="runStrategyDirectOption" value="retrieval">Direct retrieval</option>
+              <option id="runStrategyAgenticOption" value="agentic">Agentic tool search</option>
+            </select>
+          </label>
           <label>
             <span id="runModeLabel">Retrieval Mode</span>
             <select id="runMode">

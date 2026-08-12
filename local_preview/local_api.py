@@ -87,8 +87,9 @@ from feedback_keys import (  # noqa: E402
 from agentic_retrieval import (  # noqa: E402
     heuristic_query_rewrite,
     normalize_query_for_compare,
-    run_agentic_retrieval,
+    run_agentic_tool_search,
 )
+from retrieval_tools import TranscriptRetrievalTools  # noqa: E402
 from grounded_answer import (  # noqa: E402
     ANSWER_CONFIDENCE_LEVELS,
     ANSWER_STATUSES,
@@ -3279,6 +3280,30 @@ class LocalRAGService:
             return None
         return candidate
 
+    def _get_transcript_retrieval_tools(self) -> TranscriptRetrievalTools:
+        tools = getattr(self, "_transcript_retrieval_tools", None)
+        if tools is None:
+            engine = getattr(self, "engine", None)
+            tools = TranscriptRetrievalTools(
+                library=getattr(engine, "library", None),
+                retrieve_fn=self.retrieve,
+            )
+            self._transcript_retrieval_tools = tools
+        return tools
+
+    def read_context(
+        self,
+        video_id: str,
+        timestamp: float,
+        window: float = 30.0,
+    ) -> dict:
+        """Read canonical raw transcript segments near a timestamp."""
+        return self._get_transcript_retrieval_tools().read_context(
+            video_id=video_id,
+            timestamp=timestamp,
+            window=window,
+        )
+
     def retrieve_agentic(
         self,
         question: str,
@@ -3290,25 +3315,29 @@ class LocalRAGService:
         retrieval_profile: Optional[str] = None,
         reranker: Optional[str] = None,
     ) -> dict:
-        """Retrieve with evidence-driven retries for grounded answering.
-
-        Runs the agentic retrieval loop: assess evidence after each attempt
-        and retry with a rewritten query, a different retrieval mode, or a
-        broader top-k until the evidence is sufficient or the attempt budget
-        runs out. The attempt trace is embedded in the retrieval details as
-        details['agentic_retrieval'].
-        """
+        """Use semantic, keyword, and transcript-context tools for retrieval."""
         answer_language = self._infer_query_language(question)
+        tools = self._get_transcript_retrieval_tools()
 
-        def retrieve_fn(*, query: str, retrieval_mode: str, k: int) -> dict:
-            return self.retrieve(
+        def semantic_search_fn(*, query: str, k: int) -> dict:
+            return tools.semantic_search(
                 query,
                 k=k,
                 language=language,
-                retrieval_mode=retrieval_mode,
-                retrieval_profile=retrieval_profile,
                 video_id=video_id,
                 video_ids=video_ids,
+                retrieval_profile=retrieval_profile,
+                reranker=reranker,
+            )
+
+        def keyword_search_fn(*, query: str, k: int) -> dict:
+            return tools.keyword_search(
+                query,
+                k=k,
+                language=language,
+                video_id=video_id,
+                video_ids=video_ids,
+                retrieval_profile=retrieval_profile,
                 reranker=reranker,
             )
 
@@ -3328,13 +3357,15 @@ class LocalRAGService:
                 language=answer_language,
             )
 
-        outcome = run_agentic_retrieval(
+        outcome = run_agentic_tool_search(
             question=question,
-            retrieve_fn=retrieve_fn,
+            semantic_search_fn=semantic_search_fn,
+            keyword_search_fn=keyword_search_fn,
+            read_context_fn=tools.read_context,
             assess_fn=assess_fn,
             rewrite_fn=rewrite_fn,
             k=k,
-            retrieval_mode=retrieval_mode,
+            language=answer_language,
         )
         details = outcome["retrieval"].setdefault("details", {})
         details["agentic_retrieval"] = {
@@ -3344,7 +3375,10 @@ class LocalRAGService:
             "stopped_reason": outcome["stopped_reason"],
             "final_query": outcome["final_query"],
             "final_retrieval_mode": outcome["final_mode"],
+            "final_tool": outcome["final_tool"],
             "final_k": outcome["final_k"],
+            "policy": "deterministic_tool_policy_v1",
+            "requested_retrieval_mode": retrieval_mode,
             "rewrite_method": "deterministic_heuristic",
             "attempts": outcome["attempts"],
         }
@@ -8627,19 +8661,35 @@ class Handler(BaseHTTPRequestHandler):
                         400,
                     )
                     return
-                retrieval = SERVICE.retrieve(
-                    query,
-                    k=k,
-                    language=normalize_language(language) if language else None,
-                    retrieval_mode=retrieval_mode,
-                    retrieval_profile=retrieval_profile,
-                    reranker=body.get("reranker"),
+                agentic = _coerce_request_flag(
+                    body.get("agentic", body.get("agentic_retrieval")),
+                    default=_env_flag(AGENTIC_RETRIEVAL_ENV),
                 )
+                if agentic:
+                    agentic_outcome = SERVICE.retrieve_agentic(
+                        query,
+                        k=k,
+                        language=normalize_language(language) if language else None,
+                        retrieval_mode=retrieval_mode,
+                        retrieval_profile=retrieval_profile,
+                        reranker=body.get("reranker"),
+                    )
+                    retrieval = agentic_outcome["retrieval"]
+                else:
+                    retrieval = SERVICE.retrieve(
+                        query,
+                        k=k,
+                        language=normalize_language(language) if language else None,
+                        retrieval_mode=retrieval_mode,
+                        retrieval_profile=retrieval_profile,
+                        reranker=body.get("reranker"),
+                    )
                 self._json(
                     {
                         "ok": True,
                         "query": query,
                         "k": k,
+                        "agentic": agentic,
                         "retrieval_mode": retrieval["retrieval_mode"],
                         "retrieval_details": retrieval["details"],
                         "result_count": len(retrieval["results"]),

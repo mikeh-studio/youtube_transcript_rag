@@ -1442,6 +1442,38 @@ th {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.eval-grid-four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.eval-agentic-trace {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.75rem;
+  padding: 0.72rem;
+  border: 1px solid rgba(101, 191, 255, 0.2);
+  border-radius: 10px;
+  background: rgba(101, 191, 255, 0.045);
+}
+
+.eval-agentic-trace strong {
+  margin-right: 0.2rem;
+  color: var(--text);
+  font-size: 0.78rem;
+}
+
+.eval-agentic-tool {
+  border: 1px solid rgba(101, 191, 255, 0.26);
+  border-radius: 999px;
+  background: rgba(101, 191, 255, 0.08);
+  color: #bfe5ff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.2rem 0.5rem;
+}
+
 .eval-query-table input,
 .eval-query-table select {
   width: 100%;
@@ -2080,8 +2112,7 @@ th {
 }
 
 .qa-addon-controls-search {
-  grid-template-columns: minmax(230px, 0.5fr);
-  justify-content: start;
+  grid-template-columns: repeat(2, minmax(230px, 1fr));
 }
 
 .qa-addon-controls legend {
@@ -2149,6 +2180,19 @@ th {
   margin: 0;
   color: var(--text-muted);
   font-size: 0.74rem;
+}
+
+.agent-tool-summary {
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+  border: 1px solid rgba(101, 191, 255, 0.28);
+  border-radius: 9px;
+  background: rgba(101, 191, 255, 0.08);
+  color: #d7ecff;
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 0.5rem 0.65rem;
 }
 
 .retrieval-visuals {
@@ -2287,6 +2331,32 @@ th {
   font-size: 0.66rem;
   font-weight: 700;
   text-transform: uppercase;
+}
+
+.agentic-tool-badge {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 0.28rem;
+  border: 1px solid rgba(101, 191, 255, 0.28);
+  border-radius: 999px;
+  background: rgba(101, 191, 255, 0.08);
+  color: #bfe5ff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0.18rem 0.46rem;
+}
+
+.agentic-tool-badge.tool-keyword_search {
+  border-color: rgba(255, 194, 92, 0.3);
+  background: rgba(255, 194, 92, 0.08);
+  color: #ffdc9e;
+}
+
+.agentic-tool-badge.tool-read_context {
+  border-color: rgba(127, 224, 179, 0.3);
+  background: rgba(127, 224, 179, 0.08);
+  color: #b9f3d7;
 }
 
 .agentic-attempt-query {
@@ -3012,6 +3082,7 @@ th {
 
   .eval-grid-two,
   .eval-grid-three,
+  .eval-grid-four,
   .eval-metric-cards,
   .eval-generator-controls,
   .eval-generator-edit-grid,
