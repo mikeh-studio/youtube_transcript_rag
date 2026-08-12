@@ -1,9 +1,12 @@
-# YouTube Transcript Retrieval Evaluation Workbench
+# YouTube Transcript Retrieval Lab
 
-[![CI](https://github.com/mikeh-studio/youtube_transcript_rag/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mikeh-studio/youtube_transcript_rag/actions/workflows/ci.yml)
+[![CI](https://github.com/mikeh-studio/youtube-transcript-retrieval-lab/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mikeh-studio/youtube-transcript-retrieval-lab/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Local-first RAG workbench for YouTube transcripts that evaluates retrieval quality before the answer layer. It ingests English and Japanese transcripts, chunks them with timestamps, builds local FAISS indexes, and supports dense, lexical, and hybrid retrieval for citation-backed Q&A.
+Local-first transcript retrieval workbench that compares semantic, lexical,
+hybrid, and deterministic agentic search before the answer layer. It preserves
+the raw timestamped transcript as evidence, derives E5 + FAISS and Japanese
+BM25 search views, and uses retrieved evidence for citation-backed Q&A.
 
 **Benchmark snapshot:** optimized hybrid improved nDCG@10 from 0.845 to 1.000
 (+18.3%) versus baseline RRF on the checked-in eight-query Japanese regression
@@ -65,6 +68,9 @@ Notes:
 - For fully offline startup, run `YT_RAG_FORCE_HASH_EMBEDDINGS=1 python local_preview/local_api.py`.
 - Japanese lexical (BM25) search tokenizes with fugashi morphological analysis,
   falling back to character bigrams if fugashi is unavailable.
+- Agentic search is deterministic and provider-free: it chooses semantic or
+  keyword search, switches tools when evidence is weak, and reads nearby raw
+  transcript segments around the strongest timestamp anchors.
 
 ### Seed an Evaluation Dataset with Codex
 
@@ -87,7 +93,7 @@ Most RAG demos stop after retrieving chunks. This project focuses on whether ret
 The local workflow lets you:
 
 - ingest transcript evidence
-- test dense, lexical, and hybrid retrieval
+- compare semantic, lexical, hybrid, and agentic retrieval
 - label retrieved results
 - compute ranking metrics
 - compare runs before and after changes
@@ -99,7 +105,8 @@ The local workflow lets you:
 1. Ingest a YouTube transcript.
 2. Normalize and chunk the transcript with timestamp metadata.
 3. Build a local FAISS index.
-4. Retrieve chunks with dense, lexical, or hybrid search.
+4. Retrieve chunks directly, or let the deterministic agent choose semantic,
+   keyword, and nearby-context tools.
 5. Label results in the Evaluation workspace.
 6. Compare retrieval runs with ranking metrics.
 7. Ask questions backed by retrieved evidence.
@@ -113,7 +120,8 @@ The local workflow lets you:
 - Local FAISS indexes for transcript and OCR evidence.
 - Retrieval modes: `dense`, `lexical`, and `hybrid`.
 - Opt-in cross-encoder reranking stage for retrieval candidates.
-- Opt-in agentic retrieval loop that retries weak-evidence questions with query rewrites, retrieval-mode switches, and broader top-k.
+- Opt-in deterministic agentic search across semantic, Japanese keyword, and
+  raw timestamp-context tools, with an auditable decision trace.
 - Citation-backed Q&A with fallback states and selectable OpenAI, Claude, or Sakana AI providers.
 - Study Studio for transcript-grounded flashcards, topic maps, per-topic explanations, run history, and study-quality checks.
 - Search-result review and assisted labeling helpers.
@@ -204,16 +212,14 @@ feedback tuning and diversity selection. Enable it per request with
 model cannot be downloaded, reranking is skipped and the load error is
 reported in `retrieval_details.reranker`.
 
-The agentic retrieval loop retries `/v1/ask` retrieval when the grounded
-evidence check finds the results too weak: it rewrites the query with a
-deterministic English/Japanese heuristic, switches retrieval mode, or broadens
-top-k, for up to three attempts. Query rewriting does not call an LLM. Enable
-it per request with `"agentic": true` or globally with
-`YT_RAG_AGENTIC_RETRIEVAL=1`.
-The attempt trace is returned in `retrieval_details.agentic_retrieval`. If no
-attempt reaches sufficient evidence, the attempt with the most retrieved
-evidence (the original query on ties) is returned and the normal
-insufficient-evidence answer applies.
+Agentic search is available on `/v1/search` and `/v1/ask`. Its deterministic,
+provider-free policy chooses Japanese BM25 or E5 + FAISS, can try the other
+search tool when evidence is weak, and calls `read_context` around strong
+timestamp anchors in the canonical raw transcript. Enable it per request with
+`"agentic": true` or globally with `YT_RAG_AGENTIC_RETRIEVAL=1`.
+The auditable tool trace is returned in `retrieval_details.agentic_retrieval`.
+If no path reaches sufficient evidence, the strongest attempted result set is
+returned and the normal insufficient-evidence answer behavior still applies.
 
 ## Offline Retrieval Benchmark
 
@@ -226,8 +232,9 @@ python -m evals.runner \
   --out evals/reports/latest
 ```
 
-The runner compares dense, lexical, baseline hybrid, and optimized hybrid
-retrieval, then writes a compact leaderboard plus machine-readable metrics.
+The runner compares dense, lexical, baseline hybrid, optimized hybrid, and
+agentic retrieval, then writes a compact leaderboard plus machine-readable
+metrics.
 The local app keeps baseline RRF as the default hybrid profile unless
 `retrieval_profile` or `YT_RAG_HYBRID_PROFILE` explicitly opts into another
 profile.

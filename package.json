@@ -1,7 +1,12 @@
 {
-  "name": "youtube-rag-v2-portfolio",
+  "name": "youtube-transcript-retrieval-lab",
   "private": true,
   "version": "0.1.0",
+  "description": "Local-first lab for semantic, lexical, hybrid, and agentic YouTube transcript retrieval.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mikeh-studio/youtube-transcript-retrieval-lab.git"
+  },
   "scripts": {
     "dev:web": "vite --config local_preview/react_shell/vite.config.js",
     "build:web": "vite build --config local_preview/react_shell/vite.config.js",

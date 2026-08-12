@@ -1,4 +1,4 @@
-# Retrieval Benchmarks
+# YouTube Transcript Retrieval Lab Benchmarks
 
 This package provides a reproducible offline benchmark for transcript retrieval.
 It runs without YouTube access, provider keys, Hugging Face downloads, or paid API
@@ -18,7 +18,7 @@ python -m evals.runner \
 Outputs:
 
 - `evals/reports/latest/results.json` - run metrics and threshold checks.
-- `evals/reports/latest/leaderboard.md` - dense, lexical, baseline hybrid, and optimized hybrid comparison.
+- `evals/reports/latest/leaderboard.md` - dense, lexical, hybrid, and agentic comparison.
 - `evals/reports/latest/failures.md` - query execution failures and threshold failures.
 - `evals/reports/latest/per_query_results.jsonl` - one row per query/run.
 - `evals/reports/latest/per_query/*.jsonl` - per-run query details.
@@ -47,6 +47,7 @@ Gold evidence can match either:
 
 ## Metrics
 
+- `Precision@K`: share of the top K ranks containing gold evidence.
 - `gold_recall@K`: share of gold evidence found in the top K results.
 - `MRR@10`: reciprocal rank of the first gold hit in the top 10.
 - `nDCG@10`: rank-sensitive score for gold hits in the top 10.
@@ -59,6 +60,12 @@ Gold evidence can match either:
 The app still exposes the same retrieval modes: `dense`, `lexical`, and
 `hybrid`. The production default for `hybrid` remains `baseline_rrf`, the
 existing rank-based reciprocal-rank fusion behavior.
+
+Agentic search is an orchestration strategy, not a fourth retrieval mode. A run
+with `strategy: "agentic"` deterministically chooses BM25 or E5 + FAISS, tries
+the other search tool when evidence is weak, and calls `read_context` on the
+persisted raw transcript around strong timestamp anchors. Its per-query report
+includes the complete tool trace and requires no provider key.
 
 `optimized_v1` is an explicit benchmark candidate. It combines normalized dense
 and lexical scores with equal weights plus a small dual-signal bonus. It is not
@@ -78,7 +85,7 @@ generalizes to real embedding indexes.
 
 The implementation is intentionally narrow:
 
-- no ingestion changes
+- no ingestion format migration; existing `full_transcript.segments` is canonical
 - no UI route changes
 - no paid API calls
 - no network dependency in the benchmark
@@ -90,10 +97,13 @@ The implementation is intentionally narrow:
 The latest local fixture run selected `optimized_hybrid` as the best benchmark
 candidate, while the app default remains `baseline_rrf`.
 
-| Run | Recall@5 | MRR@10 | nDCG@10 | p95 ms |
-| --- | ---: | ---: | ---: | ---: |
-| `hybrid_baseline` | 1.0000 | 0.7917 | 0.8452 | 0.87 |
-| `optimized_hybrid` | 1.0000 | 1.0000 | 1.0000 | 0.80 |
+| Run | Strategy | Precision@5 | Recall@5 | MRR@10 | nDCG@10 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `dense` | retrieval | 0.2000 | 1.0000 | 0.4896 | 0.6193 |
+| `lexical` | retrieval | 0.2000 | 1.0000 | 0.9375 | 0.9539 |
+| `hybrid_baseline` | retrieval | 0.2000 | 1.0000 | 0.7917 | 0.8452 |
+| `optimized_hybrid` | retrieval | 0.2000 | 1.0000 | 1.0000 | 1.0000 |
+| `agentic` | agentic | 0.2000 | 1.0000 | 0.9375 | 0.9539 |
 
 The fixture has only 8 queries, so the runner reports small-sample mode and
 uses absolute pass/fail checks instead of claiming stable relative percentages.

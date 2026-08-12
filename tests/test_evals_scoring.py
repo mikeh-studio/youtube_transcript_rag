@@ -7,6 +7,7 @@ from evals.scoring import (
     gold_matches_result,
     mrr_at_k,
     ndcg_at_k,
+    precision_at_k,
     recall_at_k,
     select_optimized_run,
 )
@@ -40,6 +41,19 @@ def test_recall_at_k_counts_unique_gold_hits():
     assert recall_at_k(gold, results, 1) == 0.0
     assert recall_at_k(gold, results, 2) == 0.5
     assert recall_at_k(gold, results, 3) == 1.0
+
+
+def test_precision_at_k_counts_relevant_ranked_rows():
+    gold = [{"video_id": "vid1", "chunk_index": 1}]
+    results = [
+        {"video_id": "vid1", "chunk_index": 1},
+        {"video_id": "vid1", "chunk_index": 0},
+        {"video_id": "vid1", "chunk_index": 1},
+    ]
+
+    assert precision_at_k(gold, results, 1) == 1.0
+    assert precision_at_k(gold, results, 3) == 2 / 3
+    assert precision_at_k(gold, results, 5) == 2 / 5
 
 
 def test_mrr_at_k_uses_first_gold_rank():

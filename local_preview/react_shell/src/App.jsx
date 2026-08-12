@@ -1478,6 +1478,13 @@ const RETRIEVAL_STRATEGY_LABELS = {
   rewrite_query: "Rewritten query",
   switch_mode: "Mode switch",
   broaden_top_k: "Broader search",
+  read_context: "Read nearby context",
+};
+
+const RETRIEVAL_TOOL_LABELS = {
+  semantic_search: "Semantic · E5 + FAISS",
+  keyword_search: "Keyword · Japanese BM25",
+  read_context: "Raw transcript context",
 };
 
 const RETRIEVAL_REASON_LABELS = {
@@ -1501,18 +1508,29 @@ function RetrievalAttemptTimeline({ details }) {
     return null;
   }
 
-  const selectedAttempt = attempts.findIndex((attempt) => (
-    String(attempt.query || "") === String(trace.final_query || "")
-    && String(attempt.retrieval_mode || "") === String(trace.final_retrieval_mode || "")
-    && Number(attempt.k) === Number(trace.final_k)
-  ));
+  let selectedAttempt = -1;
+  for (let index = attempts.length - 1; index >= 0; index -= 1) {
+    const attempt = attempts[index];
+    const toolMatches = trace.final_tool
+      ? String(attempt.tool || "") === String(trace.final_tool)
+      : true;
+    const retrievalMatches = (
+      String(attempt.query || "") === String(trace.final_query || "")
+      && String(attempt.retrieval_mode || "") === String(trace.final_retrieval_mode || "")
+      && Number(attempt.k) === Number(trace.final_k)
+    );
+    if (toolMatches && retrievalMatches) {
+      selectedAttempt = index;
+      break;
+    }
+  }
 
   return (
     <section className="retrieval-visual-block agentic-trace" data-testid="agentic-attempt-timeline">
       <div className="retrieval-visual-heading">
         <div>
-          <h3>Agentic attempt timeline</h3>
-          <p>See why retrieval retried and which attempt supplied the final evidence.</p>
+          <h3>Agentic tool path</h3>
+          <p>See how semantic search, Japanese BM25, and raw transcript context built the evidence.</p>
         </div>
         <span className={`retrieval-outcome ${trace.sufficient ? "sufficient" : "limited"}`}>
           {trace.sufficient ? "Evidence ready" : "Best available evidence"}
@@ -1524,6 +1542,9 @@ function RetrievalAttemptTimeline({ details }) {
       >
         {attempts.map((attempt, index) => {
           const isSelected = index === selectedAttempt;
+          const toolLabel = RETRIEVAL_TOOL_LABELS[attempt.tool]
+            || String(attempt.tool || attempt.retrieval_mode || "Retrieval tool").replaceAll("_", " ");
+          const contextCalls = Array.isArray(attempt.calls) ? attempt.calls : [];
           const reason = RETRIEVAL_REASON_LABELS[attempt.reason_code]
             || String(attempt.reason_code || "Evidence assessed").replaceAll("_", " ");
           return (
@@ -1539,10 +1560,16 @@ function RetrievalAttemptTimeline({ details }) {
                   <strong>{RETRIEVAL_STRATEGY_LABELS[attempt.strategy] || attempt.strategy}</strong>
                   {isSelected ? <span>Selected</span> : null}
                 </div>
+                <span className={`agentic-tool-badge tool-${attempt.tool || "retrieval"}`}>
+                  {toolLabel}
+                </span>
                 <p className="agentic-attempt-query">{attempt.query || "-"}</p>
                 <div className="agentic-attempt-meta">
-                  <span>{attempt.retrieval_mode}</span>
-                  <span>top {attempt.k}</span>
+                  {attempt.retrieval_mode ? <span>{attempt.retrieval_mode}</span> : null}
+                  {attempt.tool !== "read_context" ? <span>top {attempt.k}</span> : null}
+                  {contextCalls.length ? (
+                    <span>{contextCalls.length} context window{contextCalls.length === 1 ? "" : "s"}</span>
+                  ) : null}
                   <span>{attempt.result_count} result{Number(attempt.result_count) === 1 ? "" : "s"}</span>
                 </div>
                 <p className="agentic-attempt-reason">{reason}</p>
@@ -1643,6 +1670,7 @@ function QAStudioPage({ locale }) {
   const [query, setQuery] = useState("");
   const [kSearch, setKSearch] = useState(5);
   const [searchMode, setSearchMode] = useState("hybrid");
+  const [searchAgentic, setSearchAgentic] = useState(false);
   const [searchReranker, setSearchReranker] = useState("none");
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchResponse, setSearchResponse] = useState(null);
@@ -1839,6 +1867,7 @@ function QAStudioPage({ locale }) {
           query: query.trim(),
           k: Number(kSearch || 5),
           retrieval_mode: searchMode,
+          agentic: searchAgentic,
           reranker: searchReranker,
         },
       });
@@ -1985,12 +2014,16 @@ function QAStudioPage({ locale }) {
                   />
                 </label>
                 <label>
-                  <span>Retrieval Mode</span>
-                  <select value={askMode} onChange={(event) => setAskMode(event.target.value)}>
-                    <option value="hybrid">hybrid</option>
-                    <option value="dense">dense</option>
-                    <option value="lexical">lexical</option>
-                  </select>
+                  <span>{askAgentic ? "Agent-selected tools" : "Retrieval Mode"}</span>
+                  {askAgentic ? (
+                    <div className="agent-tool-summary">Semantic · BM25 · Context</div>
+                  ) : (
+                    <select value={askMode} onChange={(event) => setAskMode(event.target.value)}>
+                      <option value="hybrid">hybrid</option>
+                      <option value="dense">dense</option>
+                      <option value="lexical">lexical</option>
+                    </select>
+                  )}
                 </label>
                 <label>
                   <span>Provider</span>
@@ -2025,8 +2058,8 @@ function QAStudioPage({ locale }) {
                     onChange={(event) => setAskAgentic(event.target.checked)}
                   />
                   <span>
-                    <strong>Agentic retry</strong>
-                    <small>Retry weak evidence with a rewrite, mode switch, or broader top K.</small>
+                    <strong>Agentic tool search</strong>
+                    <small>Choose semantic or Japanese BM25 search, then read nearby raw transcript context.</small>
                   </span>
                 </label>
                 <label className="qa-addon-select">
@@ -2216,12 +2249,16 @@ function QAStudioPage({ locale }) {
                   />
                 </label>
                 <label>
-                  <span>Retrieval Mode</span>
-                  <select value={searchMode} onChange={(event) => setSearchMode(event.target.value)}>
-                    <option value="hybrid">hybrid</option>
-                    <option value="dense">dense</option>
-                    <option value="lexical">lexical</option>
-                  </select>
+                  <span>{searchAgentic ? "Agent-selected tools" : "Retrieval Mode"}</span>
+                  {searchAgentic ? (
+                    <div className="agent-tool-summary">Semantic · BM25 · Context</div>
+                  ) : (
+                    <select value={searchMode} onChange={(event) => setSearchMode(event.target.value)}>
+                      <option value="hybrid">hybrid</option>
+                      <option value="dense">dense</option>
+                      <option value="lexical">lexical</option>
+                    </select>
+                  )}
                 </label>
                 <button className="btn" type="submit" disabled={searchLoading}>
                   {searchLoading ? "Searching..." : "Run Search"}
@@ -2229,6 +2266,17 @@ function QAStudioPage({ locale }) {
               </div>
               <fieldset className="qa-addon-controls qa-addon-controls-search">
                 <legend>Retrieval add-ons</legend>
+                <label className="qa-addon-switch">
+                  <input
+                    type="checkbox"
+                    checked={searchAgentic}
+                    onChange={(event) => setSearchAgentic(event.target.checked)}
+                  />
+                  <span>
+                    <strong>Agentic tool search</strong>
+                    <small>Choose semantic or Japanese BM25 search, then read nearby raw transcript context.</small>
+                  </span>
+                </label>
                 <label className="qa-addon-select">
                   <span>
                     <strong>Reranker</strong>
@@ -3520,7 +3568,7 @@ function App() {
         <div className="site-intro" data-testid="intro-overlay" aria-hidden="true">
           <div className="site-intro-glow" />
           <div className="site-intro-content">
-            <p className="site-intro-eyebrow">YouTube Transcript RAG</p>
+            <p className="site-intro-eyebrow">YouTube Transcript Retrieval Lab</p>
             <p className="site-intro-title">Local Studio</p>
           </div>
         </div>
@@ -3529,7 +3577,7 @@ function App() {
         <a className="brand brand-link" href="#/ingest" onClick={() => navigate(ROUTES.INGEST)}>
           <img src="/icons/icon-play.svg" alt="" aria-hidden="true" />
           <div>
-            <p className="eyebrow">YouTube Transcript RAG</p>
+            <p className="eyebrow">YouTube Transcript Retrieval Lab</p>
             <p className="brand-sub">Local Studio</p>
           </div>
         </a>

@@ -83,9 +83,9 @@ const els = {
 
 const I18N = {
   "en-US": {
-    pageTitle: "YouTube Transcript RAG | Evidence",
+    pageTitle: "YouTube Transcript Retrieval Lab | Evidence",
     localeLabel: "Language",
-    eyebrowText: "YouTube Transcript RAG",
+    eyebrowText: "YouTube Transcript Retrieval Lab",
     navIngest: "Ingest",
     navStudio: "Studio",
     navReviews: "Reviews",
@@ -156,9 +156,9 @@ const I18N = {
     duration: "duration",
   },
   "ja-JP": {
-    pageTitle: "YouTube Transcript RAG | エビデンス",
+    pageTitle: "YouTube Transcript Retrieval Lab | エビデンス",
     localeLabel: "言語",
-    eyebrowText: "YouTube Transcript RAG",
+    eyebrowText: "YouTube Transcript Retrieval Lab",
     navIngest: "取り込み",
     navStudio: "Studio",
     navReviews: "レビュー",

@@ -1,4 +1,4 @@
-# Local Preview
+# YouTube Transcript Retrieval Lab — Local Preview
 
 Run the local UI and API for transcript ingestion, retrieval testing, evidence review, and evaluation.
 
@@ -29,6 +29,8 @@ YT_RAG_FORCE_HASH_EMBEDDINGS=1 python local_preview/local_api.py
 - One local process for the HTTP API and static UI.
 - YouTube video and playlist transcript ingestion.
 - Transcript search with `hybrid`, `dense`, and `lexical` modes.
+- Optional deterministic agentic search over semantic, keyword, and raw
+  timestamp-context tools.
 - Citation-backed Q&A with grounded evidence and fallback states.
 - Study Studio for flashcards, topic maps, Explain Topic notes, run history, and quality checks.
 - Search-result review with `relevant` and `not_relevant` labels.
@@ -84,9 +86,16 @@ Static hosting or mocked `/v1/*` responses are not valid ingestion verification.
 ```
 
 The Q&A Studio sends these fields automatically when **Video scope** is
-**All videos**. Explicit single-video Ask and `/v1/search` keep their existing
-behavior. Routing details, selected video IDs, fallbacks, and latency are
+**All videos**. Routing details, selected video IDs, fallbacks, and latency are
 returned under `retrieval_details.video_routing`.
+
+## Agentic Search
+
+`POST /v1/search` and `POST /v1/ask` accept `"agentic": true`. The deterministic
+policy selects Japanese BM25 or E5 + FAISS, can try the other search tool, and
+then reads nearby evidence from canonical `full_transcript.segments`. The
+existing plain search behavior remains the default. Tool decisions are returned
+under `retrieval_details.agentic_retrieval`.
 
 Each YouTube record also exposes `source.platform`, canonical video URL, and
 channel ID/name/URL. Set optional `YOUTUBE_API_KEY` to use the YouTube Data API;

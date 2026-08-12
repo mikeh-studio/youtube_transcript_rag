@@ -21,6 +21,12 @@ STRATEGY_INITIAL = "initial"
 STRATEGY_REWRITE_QUERY = "rewrite_query"
 STRATEGY_SWITCH_MODE = "switch_mode"
 STRATEGY_BROADEN_TOP_K = "broaden_top_k"
+STRATEGY_READ_CONTEXT = "read_context"
+
+TOOL_SEMANTIC_SEARCH = "semantic_search"
+TOOL_KEYWORD_SEARCH = "keyword_search"
+TOOL_READ_CONTEXT = "read_context"
+AGENTIC_CONTEXT_ANCHOR_LIMIT = 3
 
 STOPPED_SUFFICIENT = "sufficient_evidence"
 STOPPED_MAX_ATTEMPTS = "max_attempts"
@@ -106,6 +112,241 @@ def heuristic_query_rewrite(question: str, language: Optional[str] = None) -> Op
     if normalize_query_for_compare(rewritten) == original:
         return None
     return rewritten
+
+
+def choose_initial_search_tool(question: str, language: Optional[str] = None) -> str:
+    """Choose a deterministic first retrieval tool for an agentic search."""
+    text = str(question or "")
+    is_japanese = language == "ja" or bool(_JP_CHAR_RE.search(text))
+    has_quote = bool(re.search(r'["“”「」『』]', text))
+    has_number = bool(re.search(r"\d", text))
+    has_acronym = bool(re.search(r"\b[A-Z]{2,}\b", text))
+    if is_japanese or has_quote or has_number or has_acronym:
+        return TOOL_KEYWORD_SEARCH
+    return TOOL_SEMANTIC_SEARCH
+
+
+def _agentic_tool_attempt(
+    *,
+    attempt_no: int,
+    strategy: str,
+    tool: str,
+    query: str,
+    response: dict,
+    assessment: dict,
+    k: int,
+) -> dict:
+    rows = list(response.get("results") or [])
+    return {
+        "attempt": attempt_no,
+        "strategy": strategy,
+        "tool": tool,
+        "query": query,
+        "retrieval_mode": response.get("retrieval_mode"),
+        "k": k,
+        "result_count": len(rows),
+        "sufficient": bool(assessment.get("sufficient")),
+        "reason_code": str(assessment.get("reason_code") or ""),
+        "confidence_cap": str(assessment.get("confidence_cap") or "low"),
+    }
+
+
+def run_agentic_tool_search(
+    *,
+    question: str,
+    semantic_search_fn: Callable[..., dict],
+    keyword_search_fn: Callable[..., dict],
+    read_context_fn: Callable[..., dict],
+    assess_fn: Callable[..., dict],
+    rewrite_fn: Optional[Callable[..., Optional[str]]] = None,
+    k: int = 5,
+    language: Optional[str] = None,
+    context_window: float = 30.0,
+) -> dict:
+    """Run a bounded deterministic semantic/keyword/context tool policy."""
+    original_query = str(question or "").strip()
+    initial_tool = choose_initial_search_tool(original_query, language=language)
+    alternate_tool = (
+        TOOL_SEMANTIC_SEARCH
+        if initial_tool == TOOL_KEYWORD_SEARCH
+        else TOOL_KEYWORD_SEARCH
+    )
+    search_fns = {
+        TOOL_SEMANTIC_SEARCH: semantic_search_fn,
+        TOOL_KEYWORD_SEARCH: keyword_search_fn,
+    }
+    attempts = []
+    outcomes = []
+
+    first_response = search_fns[initial_tool](query=original_query, k=k)
+    first_rows = list(first_response.get("results") or [])
+    first_assessment = assess_fn(
+        rows=first_rows,
+        retrieval_mode=str(first_response.get("retrieval_mode") or "dense"),
+    )
+    attempts.append(
+        _agentic_tool_attempt(
+            attempt_no=1,
+            strategy=STRATEGY_INITIAL,
+            tool=initial_tool,
+            query=original_query,
+            response=first_response,
+            assessment=first_assessment,
+            k=k,
+        )
+    )
+    outcomes.append(
+        {
+            "retrieval": first_response,
+            "rows": first_rows,
+            "assessment": first_assessment,
+            "query": original_query,
+            "tool": initial_tool,
+        }
+    )
+
+    if not first_assessment.get("sufficient"):
+        rewritten = None
+        if rewrite_fn is not None:
+            rewritten = rewrite_fn(
+                query=original_query,
+                attempted_queries={normalize_query_for_compare(original_query)},
+            )
+        alternate_query = str(rewritten or original_query).strip()
+        second_response = search_fns[alternate_tool](query=alternate_query, k=k)
+        second_rows = list(second_response.get("results") or [])
+        second_assessment = assess_fn(
+            rows=second_rows,
+            retrieval_mode=str(second_response.get("retrieval_mode") or "lexical"),
+        )
+        attempts.append(
+            _agentic_tool_attempt(
+                attempt_no=2,
+                strategy=(
+                    STRATEGY_REWRITE_QUERY if rewritten else STRATEGY_SWITCH_MODE
+                ),
+                tool=alternate_tool,
+                query=alternate_query,
+                response=second_response,
+                assessment=second_assessment,
+                k=k,
+            )
+        )
+        outcomes.append(
+            {
+                "retrieval": second_response,
+                "rows": second_rows,
+                "assessment": second_assessment,
+                "query": alternate_query,
+                "tool": alternate_tool,
+            }
+        )
+
+    best = outcomes[0]
+    for candidate in outcomes[1:]:
+        candidate_sufficient = bool(candidate["assessment"].get("sufficient"))
+        best_sufficient = bool(best["assessment"].get("sufficient"))
+        if candidate_sufficient and not best_sufficient:
+            best = candidate
+        elif candidate_sufficient == best_sufficient and len(candidate["rows"]) > len(
+            best["rows"]
+        ):
+            best = candidate
+
+    context_rows = []
+    context_calls = []
+    for row_index, row in enumerate(best["rows"]):
+        if row_index >= AGENTIC_CONTEXT_ANCHOR_LIMIT:
+            context_rows.append(row)
+            continue
+        video_id = str(row.get("video_id") or "").strip()
+        if not video_id:
+            context_rows.append(row)
+            continue
+        timestamp = float(row.get("start", 0.0))
+        try:
+            context = read_context_fn(
+                video_id=video_id,
+                timestamp=timestamp,
+                window=context_window,
+            )
+        except (KeyError, TypeError, ValueError):
+            context_rows.append(row)
+            continue
+        if not str(context.get("text") or "").strip():
+            context_rows.append(row)
+            continue
+        expanded = dict(row)
+        expanded.update(
+            {
+                "text": context["text"],
+                "context_start": context["start"],
+                "context_end": context["end"],
+                "context_segments": context["segments"],
+                "context_segment_count": context["segment_count"],
+                "source_basis": context["source_basis"],
+            }
+        )
+        context_rows.append(expanded)
+        context_calls.append(
+            {
+                "video_id": video_id,
+                "timestamp": timestamp,
+                "window": float(context_window),
+                "start": context["start"],
+                "end": context["end"],
+                "segment_count": context["segment_count"],
+            }
+        )
+
+    final_assessment = best["assessment"]
+    final_rows = best["rows"]
+    if context_calls:
+        final_rows = context_rows
+        final_assessment = assess_fn(
+            rows=final_rows,
+            retrieval_mode=str(best["retrieval"].get("retrieval_mode") or "dense"),
+        )
+        attempts.append(
+            {
+                "attempt": len(attempts) + 1,
+                "strategy": STRATEGY_READ_CONTEXT,
+                "tool": TOOL_READ_CONTEXT,
+                "query": best["query"],
+                "retrieval_mode": best["retrieval"].get("retrieval_mode"),
+                "k": k,
+                "result_count": len(final_rows),
+                "sufficient": bool(final_assessment.get("sufficient")),
+                "reason_code": str(final_assessment.get("reason_code") or ""),
+                "confidence_cap": str(
+                    final_assessment.get("confidence_cap") or "low"
+                ),
+                "calls": context_calls,
+            }
+        )
+
+    retrieval = dict(best["retrieval"])
+    retrieval["results"] = final_rows
+    retrieval["details"] = dict(retrieval.get("details") or {})
+    stopped_reason = (
+        STOPPED_SUFFICIENT
+        if final_assessment.get("sufficient")
+        else STOPPED_MAX_ATTEMPTS
+    )
+    return {
+        "question": original_query,
+        "retrieval": retrieval,
+        "rows": final_rows,
+        "assessment": final_assessment,
+        "final_query": best["query"],
+        "final_mode": retrieval.get("retrieval_mode"),
+        "final_k": k,
+        "final_tool": TOOL_READ_CONTEXT if context_calls else best["tool"],
+        "sufficient": bool(final_assessment.get("sufficient")),
+        "agentic_applied": len(attempts) > 1,
+        "stopped_reason": stopped_reason,
+        "attempts": attempts,
+    }
 
 
 def _next_step(

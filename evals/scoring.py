@@ -11,6 +11,9 @@ import math
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
+METRIC_PRECISION_1 = "Precision@1"
+METRIC_PRECISION_5 = "Precision@5"
+METRIC_PRECISION_10 = "Precision@10"
 METRIC_RECALL_1 = "gold_recall@1"
 METRIC_RECALL_5 = "gold_recall@5"
 METRIC_RECALL_10 = "gold_recall@10"
@@ -18,6 +21,9 @@ METRIC_MRR_10 = "MRR@10"
 METRIC_NDCG_10 = "nDCG@10"
 
 QUALITY_METRICS = (
+    METRIC_PRECISION_1,
+    METRIC_PRECISION_5,
+    METRIC_PRECISION_10,
     METRIC_RECALL_1,
     METRIC_RECALL_5,
     METRIC_RECALL_10,
@@ -113,6 +119,21 @@ def recall_at_k(gold_evidence: Sequence[dict], results: Sequence[dict], k: int) 
     )
 
 
+def precision_at_k(
+    gold_evidence: Sequence[dict], results: Sequence[dict], k: int
+) -> float:
+    """Compute the share of the top-K ranks containing relevant evidence."""
+    limit = max(0, int(k))
+    if not gold_evidence or limit <= 0:
+        return 0.0
+    relevant = sum(
+        1
+        for row in list(results)[:limit]
+        if any(gold_matches_result(gold, row) for gold in gold_evidence)
+    )
+    return relevant / float(limit)
+
+
 def mrr_at_k(gold_evidence: Sequence[dict], results: Sequence[dict], k: int) -> float:
     """Compute reciprocal rank of the first gold hit within K."""
     if not gold_evidence:
@@ -158,6 +179,9 @@ def score_query_results(query_case: dict, results: Sequence[dict]) -> Dict[str, 
             f"{query_case.get('id', '<unknown>')} gold_evidence must be a list"
         )
     return {
+        METRIC_PRECISION_1: precision_at_k(gold_evidence, results, 1),
+        METRIC_PRECISION_5: precision_at_k(gold_evidence, results, 5),
+        METRIC_PRECISION_10: precision_at_k(gold_evidence, results, 10),
         METRIC_RECALL_1: recall_at_k(gold_evidence, results, 1),
         METRIC_RECALL_5: recall_at_k(gold_evidence, results, 5),
         METRIC_RECALL_10: recall_at_k(gold_evidence, results, 10),

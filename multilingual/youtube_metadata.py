@@ -174,7 +174,10 @@ class YouTubeMetadataClient:
         return results
 
     def _read_json(self, url: str) -> dict:
-        request = Request(url, headers={"User-Agent": "youtube-rag/1.0"})
+        request = Request(
+            url,
+            headers={"User-Agent": "youtube-transcript-retrieval-lab/1.0"},
+        )
         with self.opener(request, timeout=self.timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
         return payload if isinstance(payload, dict) else {}

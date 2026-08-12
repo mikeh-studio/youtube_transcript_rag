@@ -59,13 +59,13 @@ const els = {
 
 const I18N = {
   "en-US": {
-    pageTitle: "YouTube Transcript RAG | Reviews",
+    pageTitle: "YouTube Transcript Retrieval Lab | Reviews",
     localeLabel: "Language",
     navIngest: "Ingest",
     navStudio: "Studio",
     navReviews: "Reviews",
     navEvidence: "Evidence",
-    eyebrowText: "YouTube Transcript RAG",
+    eyebrowText: "YouTube Transcript Retrieval Lab",
     navEvaluation: "Evaluation",
     navChunking: "Chunking",
     heroTitle: "Review Analytics",
@@ -102,13 +102,13 @@ const I18N = {
     partialVideoLoadError: "Video summary load failed. Showing reviews without video filter stats.",
   },
   "ja-JP": {
-    pageTitle: "YouTube Transcript RAG | レビュー",
+    pageTitle: "YouTube Transcript Retrieval Lab | レビュー",
     localeLabel: "言語",
     navIngest: "取り込み",
     navStudio: "Studio",
     navReviews: "レビュー",
     navEvidence: "エビデンス",
-    eyebrowText: "YouTube Transcript RAG",
+    eyebrowText: "YouTube Transcript Retrieval Lab",
     navEvaluation: "評価",
     navChunking: "チャンキング",
     heroTitle: "レビュー分析",

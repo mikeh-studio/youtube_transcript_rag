@@ -23,6 +23,11 @@
       "name": "optimized_hybrid",
       "retrieval_mode": "hybrid",
       "retrieval_profile": "optimized_v1"
+    },
+    {
+      "name": "agentic",
+      "strategy": "agentic",
+      "retrieval_mode": "hybrid"
     }
   ],
   "success_criteria": {

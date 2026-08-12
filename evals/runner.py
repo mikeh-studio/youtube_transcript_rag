@@ -25,6 +25,8 @@ os.environ.setdefault("YT_RAG_SKIP_GLOBAL_SERVICE", "1")
 from evals.scoring import (  # noqa: E402
     METRIC_MRR_10,
     METRIC_NDCG_10,
+    METRIC_PRECISION_5,
+    METRIC_PRECISION_10,
     METRIC_RECALL_1,
     METRIC_RECALL_5,
     METRIC_RECALL_10,
@@ -160,7 +162,29 @@ class FixtureLibrary:
                 ),
                 "language": str(video.get("language") or "ja"),
                 "chunks": chunks,
+                "full_transcript": self._full_transcript(video),
             }
+
+    @staticmethod
+    def _full_transcript(video: dict) -> Optional[dict]:
+        segments = []
+        for segment in video.get("transcript_segments", []):
+            text = str(segment.get("text") or "").strip()
+            if not text:
+                continue
+            start = float(segment.get("start", 0.0))
+            end = float(segment.get("end", start))
+            segments.append({"start": start, "end": end, "text": text})
+        if not segments:
+            return None
+        full_text = "\n".join(segment["text"] for segment in segments)
+        return {
+            "version": 1,
+            "text": full_text,
+            "segments": segments,
+            "segment_count": len(segments),
+            "char_count": len(full_text),
+        }
 
 
 class FixtureEngine:
@@ -288,6 +312,9 @@ def run_one_config(
 ) -> dict:
     name = str(run_config.get("name") or run_config.get("retrieval_mode") or "run")
     mode = str(run_config.get("retrieval_mode") or "hybrid")
+    strategy = str(run_config.get("strategy") or "retrieval").strip().lower()
+    if strategy not in {"retrieval", "agentic"}:
+        raise ValueError("run strategy must be one of: retrieval, agentic")
     profile = run_config.get("retrieval_profile")
     reranker = run_config.get("reranker")
     top_k = int(run_config.get("top_k") or default_top_k)
@@ -303,14 +330,25 @@ def run_one_config(
         try:
             for _idx in range(max(1, int(latency_repetitions))):
                 started = time.perf_counter()
-                response = service.retrieve(
-                    query_case["query"],
-                    k=top_k,
-                    language=query_case.get("language"),
-                    retrieval_mode=mode,
-                    retrieval_profile=profile,
-                    reranker=reranker,
-                )
+                if strategy == "agentic":
+                    outcome = service.retrieve_agentic(
+                        query_case["query"],
+                        k=top_k,
+                        language=query_case.get("language"),
+                        retrieval_mode=mode,
+                        retrieval_profile=profile,
+                        reranker=reranker,
+                    )
+                    response = outcome["retrieval"]
+                else:
+                    response = service.retrieve(
+                        query_case["query"],
+                        k=top_k,
+                        language=query_case.get("language"),
+                        retrieval_mode=mode,
+                        retrieval_profile=profile,
+                        reranker=reranker,
+                    )
                 iteration_latencies.append((time.perf_counter() - started) * 1000.0)
             latency_ms = float(median(iteration_latencies))
             rows = response.get("results") or []
@@ -388,6 +426,7 @@ def run_one_config(
 
     return {
         "name": name,
+        "strategy": strategy,
         "retrieval_mode": mode,
         "retrieval_profile": profile,
         "reranker": reranker,
@@ -426,20 +465,23 @@ def render_leaderboard(result: dict) -> str:
         )
     lines.extend(
         [
-            "| Selected | Run | Mode | Profile | Recall@1 | Recall@5 | Recall@10 | "
+            "| Selected | Run | Strategy | Mode | Profile | Precision@5 | Precision@10 | Recall@1 | Recall@5 | Recall@10 | "
             "MRR@10 | nDCG@10 | Mean ms | p95 ms | Failures |",
-            "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for run in result.get("runs", []):
         metrics = run.get("metrics") or {}
         selected = "yes" if run.get("name") == selected_name else ""
         lines.append(
-            "| {selected} | {name} | {mode} | {profile} | {r1} | {r5} | {r10} | {mrr} | {ndcg} | {mean_ms} | {p95_ms} | {failures} |".format(
+            "| {selected} | {name} | {strategy} | {mode} | {profile} | {p5} | {p10} | {r1} | {r5} | {r10} | {mrr} | {ndcg} | {mean_ms} | {p95_ms} | {failures} |".format(
                 selected=selected,
                 name=run.get("name"),
+                strategy=run.get("strategy") or "retrieval",
                 mode=run.get("retrieval_mode"),
                 profile=run.get("retrieval_profile") or "-",
+                p5=_format_float(metrics.get(METRIC_PRECISION_5)),
+                p10=_format_float(metrics.get(METRIC_PRECISION_10)),
                 r1=_format_float(metrics.get(METRIC_RECALL_1)),
                 r5=_format_float(metrics.get(METRIC_RECALL_5)),
                 r10=_format_float(metrics.get(METRIC_RECALL_10)),
@@ -585,6 +627,7 @@ def run_benchmark(dataset_path: Path, config_path: Path, out_dir: Path) -> dict:
         "selected_run": (
             {
                 "name": selected_run["name"],
+                "strategy": selected_run.get("strategy") or "retrieval",
                 "retrieval_mode": selected_run["retrieval_mode"],
                 "retrieval_profile": selected_run.get("retrieval_profile"),
                 "metrics": selected_run["metrics"],

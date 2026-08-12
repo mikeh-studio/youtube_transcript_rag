@@ -25,9 +25,14 @@ from agentic_retrieval import (  # noqa: E402
     STRATEGY_BROADEN_TOP_K,
     STRATEGY_INITIAL,
     STRATEGY_REWRITE_QUERY,
+    STRATEGY_READ_CONTEXT,
     STRATEGY_SWITCH_MODE,
+    TOOL_KEYWORD_SEARCH,
+    TOOL_SEMANTIC_SEARCH,
+    choose_initial_search_tool,
     heuristic_query_rewrite,
     run_agentic_retrieval,
+    run_agentic_tool_search,
 )
 
 
@@ -68,6 +73,131 @@ def test_heuristic_query_rewrite_returns_none_when_unchanged_or_empty():
     assert heuristic_query_rewrite("jetson orin") is None
     assert heuristic_query_rewrite("   ") is None
     assert heuristic_query_rewrite("what is the?") is None
+
+
+def test_agentic_tool_policy_prefers_keyword_for_japanese_and_exact_queries():
+    assert choose_initial_search_tool("代理店施策の勝ち筋") == TOOL_KEYWORD_SEARCH
+    assert choose_initial_search_tool('find "Jetson Orin"') == TOOL_KEYWORD_SEARCH
+    assert choose_initial_search_tool("What supports robot inference?") == TOOL_SEMANTIC_SEARCH
+
+
+def test_agentic_tool_search_reads_raw_context_around_strong_anchor():
+    calls = []
+
+    def semantic_search(*, query, k):
+        calls.append((TOOL_SEMANTIC_SEARCH, query))
+        return {
+            "retrieval_mode": "dense",
+            "details": {},
+            "results": [_row(2, "robot inference anchor")],
+        }
+
+    def keyword_search(*, query, k):
+        raise AssertionError("sufficient semantic evidence should not switch search tools")
+
+    def read_context(*, video_id, timestamp, window):
+        calls.append(("read_context", video_id))
+        return {
+            "start": 0.0,
+            "end": 20.0,
+            "text": "before\nrobot inference anchor\nafter",
+            "segments": [
+                {"start": 0.0, "end": 5.0, "text": "before"},
+                {"start": 5.0, "end": 10.0, "text": "robot inference anchor"},
+                {"start": 10.0, "end": 20.0, "text": "after"},
+            ],
+            "segment_count": 3,
+            "source_basis": "full_transcript.segments",
+        }
+
+    outcome = run_agentic_tool_search(
+        question="What supports robot inference?",
+        semantic_search_fn=semantic_search,
+        keyword_search_fn=keyword_search,
+        read_context_fn=read_context,
+        assess_fn=lambda *, rows, retrieval_mode: _assessment(
+            True, "multi_chunk_support", "high"
+        ),
+        k=3,
+    )
+
+    assert calls == [(TOOL_SEMANTIC_SEARCH, "What supports robot inference?"), ("read_context", "vid1")]
+    assert outcome["final_tool"] == "read_context"
+    assert outcome["rows"][0]["chunk_index"] == 2
+    assert outcome["rows"][0]["text"].startswith("before")
+    assert outcome["rows"][0]["source_basis"] == "full_transcript.segments"
+    assert outcome["attempts"][-1]["strategy"] == STRATEGY_READ_CONTEXT
+
+
+def test_agentic_tool_search_switches_to_semantic_after_weak_japanese_keyword_hit():
+    calls = []
+
+    def keyword_search(*, query, k):
+        calls.append((TOOL_KEYWORD_SEARCH, query))
+        return {"retrieval_mode": "lexical", "details": {}, "results": []}
+
+    def semantic_search(*, query, k):
+        calls.append((TOOL_SEMANTIC_SEARCH, query))
+        return {
+            "retrieval_mode": "dense",
+            "details": {},
+            "results": [_row(3, "semantic hit"), _row(4, "supporting hit")],
+        }
+
+    outcome = run_agentic_tool_search(
+        question="これは何ですか",
+        keyword_search_fn=keyword_search,
+        semantic_search_fn=semantic_search,
+        read_context_fn=lambda **kwargs: (_ for _ in ()).throw(ValueError("legacy")),
+        assess_fn=lambda *, rows, retrieval_mode: _assessment(
+            len(rows) >= 2, "no_results" if not rows else "multi_chunk_support"
+        ),
+        rewrite_fn=lambda *, query, attempted_queries: "これは",
+    )
+
+    assert calls == [
+        (TOOL_KEYWORD_SEARCH, "これは何ですか"),
+        (TOOL_SEMANTIC_SEARCH, "これは"),
+    ]
+    assert outcome["sufficient"] is True
+    assert outcome["final_mode"] == "dense"
+    assert outcome["attempts"][1]["strategy"] == STRATEGY_REWRITE_QUERY
+
+
+def test_agentic_context_expansion_preserves_legacy_and_lower_ranked_results():
+    rows = [_row(index, f"row {index}") for index in range(5)]
+    for index, row in enumerate(rows):
+        row["start"] = index * 10
+
+    def read_context(*, video_id, timestamp, window):
+        if timestamp == 0:
+            return {
+                "start": 0,
+                "end": 20,
+                "text": "expanded row 0",
+                "segments": [{"start": 0, "end": 20, "text": "expanded row 0"}],
+                "segment_count": 1,
+                "source_basis": "full_transcript.segments",
+            }
+        raise ValueError("legacy transcript")
+
+    outcome = run_agentic_tool_search(
+        question="semantic question",
+        semantic_search_fn=lambda **kwargs: {
+            "retrieval_mode": "dense",
+            "details": {},
+            "results": rows,
+        },
+        keyword_search_fn=lambda **kwargs: {"results": []},
+        read_context_fn=read_context,
+        assess_fn=lambda *, rows, retrieval_mode: _assessment(True),
+        k=5,
+    )
+
+    assert len(outcome["rows"]) == 5
+    assert outcome["rows"][0]["text"] == "expanded row 0"
+    assert [row["chunk_index"] for row in outcome["rows"]] == [0, 1, 2, 3, 4]
+    assert len(outcome["attempts"][-1]["calls"]) == 1
 
 
 def test_sufficient_first_attempt_stops_immediately():
@@ -385,6 +515,46 @@ def test_ask_route_uses_agentic_retrieval_when_flag_set(monkeypatch):
     handler = _FakeHandler("/v1/ask", {"question": "q?", "provider": "chatgpt"})
     local_api.Handler.do_POST(handler)
     assert handler.response_status == 200
+    assert calls == {"agentic": 1, "plain": 1}
+
+
+def test_search_route_uses_agentic_retrieval_only_when_requested(monkeypatch):
+    calls = {"agentic": 0, "plain": 0}
+
+    class StubService:
+        def retrieve_agentic(self, question, **kwargs):
+            calls["agentic"] += 1
+            return {
+                "retrieval": {
+                    "retrieval_mode": "lexical",
+                    "details": {
+                        "agentic_retrieval": {
+                            "final_tool": "read_context",
+                            "applied": True,
+                        }
+                    },
+                    "results": [_row(1)],
+                }
+            }
+
+        def retrieve(self, question, **kwargs):
+            calls["plain"] += 1
+            return {"retrieval_mode": "hybrid", "details": {}, "results": []}
+
+    monkeypatch.delenv(local_api.AGENTIC_RETRIEVAL_ENV, raising=False)
+    monkeypatch.setattr(local_api, "SERVICE", StubService())
+
+    handler = _FakeHandler("/v1/search", {"query": "検索", "agentic": True})
+    local_api.Handler.do_POST(handler)
+    assert handler.response_status == 200
+    assert handler.response_payload["agentic"] is True
+    assert handler.response_payload["retrieval_mode"] == "lexical"
+    assert calls == {"agentic": 1, "plain": 0}
+
+    handler = _FakeHandler("/v1/search", {"query": "検索"})
+    local_api.Handler.do_POST(handler)
+    assert handler.response_status == 200
+    assert handler.response_payload["agentic"] is False
     assert calls == {"agentic": 1, "plain": 1}
 
 
