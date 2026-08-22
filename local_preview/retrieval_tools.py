@@ -70,9 +70,10 @@ class TranscriptRetrievalTools:
     ) -> dict:
         """Read raw transcript segments around ``timestamp``.
 
-        ``window`` is a symmetric radius in seconds. The returned bounds are
-        clamped to the transcript while the stored segment timestamps and text
-        remain unchanged.
+        ``window`` is a symmetric radius in seconds. ``requested_start`` and
+        ``requested_end`` describe that clamped window; ``start`` and ``end``
+        cover the complete stored segments included in the returned text so
+        downstream citations match the evidence they display.
         """
         scoped_video_id = str(video_id or "").strip()
         if not scoped_video_id:
@@ -135,13 +136,23 @@ class TranscriptRetrievalTools:
                 "timestamp must fall within the raw transcript bounds "
                 f"({transcript_start:g}-{transcript_end:g})"
             )
-        context_start = max(transcript_start, requested_timestamp - requested_window)
-        context_end = min(transcript_end, requested_timestamp + requested_window)
+        requested_start = max(
+            transcript_start, requested_timestamp - requested_window
+        )
+        requested_end = min(
+            transcript_end, requested_timestamp + requested_window
+        )
         selected = [
             row
             for row in normalized_segments
-            if row["end"] >= context_start and row["start"] <= context_end
+            if row["end"] >= requested_start and row["start"] <= requested_end
         ]
+        context_start = (
+            min(row["start"] for row in selected) if selected else requested_start
+        )
+        context_end = (
+            max(row["end"] for row in selected) if selected else requested_end
+        )
         text = "\n".join(row["text"] for row in selected)
         video_url = str(
             video.get("url")
@@ -156,6 +167,8 @@ class TranscriptRetrievalTools:
             "language": str(video.get("language") or "ja"),
             "timestamp": requested_timestamp,
             "window": requested_window,
+            "requested_start": requested_start,
+            "requested_end": requested_end,
             "start": context_start,
             "end": context_end,
             "segments": selected,

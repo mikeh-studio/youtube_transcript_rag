@@ -1479,12 +1479,14 @@ const RETRIEVAL_STRATEGY_LABELS = {
   switch_mode: "Mode switch",
   broaden_top_k: "Broader search",
   read_context: "Read nearby context",
+  multilingual_fusion: "Fuse language results",
 };
 
 const RETRIEVAL_TOOL_LABELS = {
   semantic_search: "Semantic · E5 + FAISS",
   keyword_search: "Keyword · Japanese BM25",
   read_context: "Raw transcript context",
+  multilingual_fusion: "Multilingual result fusion",
 };
 
 const RETRIEVAL_REASON_LABELS = {
@@ -1494,6 +1496,7 @@ const RETRIEVAL_REASON_LABELS = {
   thin_support: "Evidence too thin",
   single_weak_chunk: "One weak chunk",
   mixed_signals: "Retrieval signals disagree",
+  multilingual_fusion: "Combined language-specific evidence",
 };
 
 function finiteNumber(value) {
@@ -1565,6 +1568,10 @@ function RetrievalAttemptTimeline({ details }) {
                 </span>
                 <p className="agentic-attempt-query">{attempt.query || "-"}</p>
                 <div className="agentic-attempt-meta">
+                  {attempt.language ? <span>{attempt.language}</span> : null}
+                  {Array.isArray(attempt.languages) && attempt.languages.length ? (
+                    <span>{attempt.languages.join(" + ")}</span>
+                  ) : null}
                   {attempt.retrieval_mode ? <span>{attempt.retrieval_mode}</span> : null}
                   {attempt.tool !== "read_context" ? <span>top {attempt.k}</span> : null}
                   {contextCalls.length ? (

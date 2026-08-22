@@ -105,6 +105,123 @@ def test_video_first_agentic_expands_shortlist_before_global_fallback():
     assert details["used_fallback"] is False
 
 
+def test_video_first_agentic_preserves_multilingual_tool_traces():
+    service = local_api.LocalRAGService.__new__(local_api.LocalRAGService)
+    service.engine = type(
+        "Engine",
+        (),
+        {
+            "library": type(
+                "Library",
+                (),
+                {
+                    "videos": {
+                        "en_video": {"language": "en"},
+                        "ja_video": {"language": "ja"},
+                    }
+                },
+            )()
+        },
+    )()
+    service._expand_query_for_video_languages = lambda *args, **kwargs: {
+        "query_language": "en",
+        "translation_applied": True,
+        "translation_error": None,
+        "variants": [
+            {
+                "language": "en",
+                "query": "starter timing",
+                "query_language": "en",
+                "kind": "original",
+                "video_ids": ["en_video"],
+            },
+            {
+                "language": "ja",
+                "query": "発酵のタイミング",
+                "query_language": "ja",
+                "kind": "translation",
+                "video_ids": ["ja_video"],
+            },
+        ],
+    }
+    service._route_query_variants = lambda *args, **kwargs: {
+        "video_ids": ["en_video", "ja_video"],
+        "results": [],
+        "used_fallback": False,
+        "fallback_reason": None,
+        "dense_available": True,
+        "lexical_available": True,
+        "fusion": "rrf",
+        "latency_ms": 1.0,
+        "route_attempts": [],
+    }
+
+    def retrieve_agentic(query, **kwargs):
+        language = kwargs["language"]
+        tool = "keyword_search" if language == "ja" else "semantic_search"
+        mode = "lexical" if language == "ja" else "dense"
+        video_id = kwargs["video_ids"][0]
+        return {
+            "retrieval": {
+                "retrieval_mode": mode,
+                "details": {
+                    "agentic_retrieval": {
+                        "enabled": True,
+                        "applied": False,
+                        "sufficient": True,
+                        "stopped_reason": "sufficient_evidence",
+                        "final_query": query,
+                        "final_retrieval_mode": mode,
+                        "final_tool": tool,
+                        "final_k": 5,
+                        "policy": "deterministic_tool_policy_v1",
+                        "attempts": [
+                            {
+                                "attempt": 1,
+                                "strategy": "initial",
+                                "tool": tool,
+                                "query": query,
+                                "retrieval_mode": mode,
+                                "k": 5,
+                                "result_count": 1,
+                                "sufficient": True,
+                                "reason_code": "strong_single_chunk",
+                            }
+                        ],
+                    }
+                },
+                "results": [
+                    {
+                        "video_id": video_id,
+                        "chunk_index": 0,
+                        "language": language,
+                        "rank": 1,
+                        "text": query,
+                    }
+                ],
+            },
+            "sufficient": True,
+        }
+
+    service.retrieve_agentic = retrieve_agentic
+
+    outcome = service.retrieve_video_first(
+        "starter timing",
+        video_top_k=2,
+        agentic=True,
+    )
+    trace = outcome["retrieval"]["details"]["agentic_retrieval"]
+
+    assert trace["final_tool"] == "multilingual_fusion"
+    assert [row["language"] for row in trace["language_outcomes"]] == [
+        "en",
+        "ja",
+    ]
+    assert [row["language"] for row in trace["attempts"][:-1]] == ["en", "ja"]
+    assert trace["attempts"][-1]["tool"] == "multilingual_fusion"
+    assert trace["attempts"][-1]["languages"] == ["en", "ja"]
+
+
 def test_video_first_non_agentic_expands_when_routed_evidence_is_weak(
     monkeypatch,
 ):

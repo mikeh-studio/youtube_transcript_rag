@@ -11,6 +11,7 @@ insufficient-evidence handling still applies.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Callable, List, Optional
 
@@ -263,12 +264,27 @@ def run_agentic_tool_search(
         if not video_id:
             context_rows.append(row)
             continue
-        timestamp = float(row.get("start", 0.0))
+        try:
+            row_start = float(row.get("start", 0.0))
+            row_end = float(row.get("end", row_start))
+        except (TypeError, ValueError):
+            context_rows.append(row)
+            continue
+        if not math.isfinite(row_start) or not math.isfinite(row_end):
+            context_rows.append(row)
+            continue
+        if row_end < row_start:
+            row_start, row_end = row_end, row_start
+        timestamp = row_start + ((row_end - row_start) / 2.0)
+        scoped_window = max(
+            float(context_window),
+            (row_end - row_start) / 2.0,
+        )
         try:
             context = read_context_fn(
                 video_id=video_id,
                 timestamp=timestamp,
-                window=context_window,
+                window=scoped_window,
             )
         except (KeyError, TypeError, ValueError):
             context_rows.append(row)
@@ -280,6 +296,12 @@ def run_agentic_tool_search(
         expanded.update(
             {
                 "text": context["text"],
+                "retrieval_start": row_start,
+                "retrieval_end": row_end,
+                "retrieval_url": row.get("url"),
+                "start": context["start"],
+                "end": context["end"],
+                "url": context.get("url") or row.get("url"),
                 "context_start": context["start"],
                 "context_end": context["end"],
                 "context_segments": context["segments"],
@@ -292,7 +314,9 @@ def run_agentic_tool_search(
             {
                 "video_id": video_id,
                 "timestamp": timestamp,
-                "window": float(context_window),
+                "window": scoped_window,
+                "requested_start": context.get("requested_start"),
+                "requested_end": context.get("requested_end"),
                 "start": context["start"],
                 "end": context["end"],
                 "segment_count": context["segment_count"],
@@ -301,12 +325,28 @@ def run_agentic_tool_search(
 
     final_assessment = best["assessment"]
     final_rows = best["rows"]
+    context_accepted = False
     if context_calls:
-        final_rows = context_rows
-        final_assessment = assess_fn(
-            rows=final_rows,
+        context_assessment = assess_fn(
+            rows=context_rows,
             retrieval_mode=str(best["retrieval"].get("retrieval_mode") or "dense"),
         )
+        confidence_order = {"low": 0, "medium": 1, "high": 2}
+        best_sufficient = bool(best["assessment"].get("sufficient"))
+        context_sufficient = bool(context_assessment.get("sufficient"))
+        context_is_weaker = best_sufficient and (
+            not context_sufficient
+            or confidence_order.get(
+                str(context_assessment.get("confidence_cap") or "low"), 0
+            )
+            < confidence_order.get(
+                str(best["assessment"].get("confidence_cap") or "low"), 0
+            )
+        )
+        context_accepted = not context_is_weaker
+        if context_accepted:
+            final_rows = context_rows
+            final_assessment = context_assessment
         attempts.append(
             {
                 "attempt": len(attempts) + 1,
@@ -316,11 +356,12 @@ def run_agentic_tool_search(
                 "retrieval_mode": best["retrieval"].get("retrieval_mode"),
                 "k": k,
                 "result_count": len(final_rows),
-                "sufficient": bool(final_assessment.get("sufficient")),
-                "reason_code": str(final_assessment.get("reason_code") or ""),
+                "sufficient": context_sufficient,
+                "reason_code": str(context_assessment.get("reason_code") or ""),
                 "confidence_cap": str(
-                    final_assessment.get("confidence_cap") or "low"
+                    context_assessment.get("confidence_cap") or "low"
                 ),
+                "accepted": context_accepted,
                 "calls": context_calls,
             }
         )
@@ -341,7 +382,7 @@ def run_agentic_tool_search(
         "final_query": best["query"],
         "final_mode": retrieval.get("retrieval_mode"),
         "final_k": k,
-        "final_tool": TOOL_READ_CONTEXT if context_calls else best["tool"],
+        "final_tool": TOOL_READ_CONTEXT if context_accepted else best["tool"],
         "sufficient": bool(final_assessment.get("sufficient")),
         "agentic_applied": len(attempts) > 1,
         "stopped_reason": stopped_reason,
