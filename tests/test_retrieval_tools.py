@@ -55,7 +55,9 @@ def test_read_context_uses_raw_segments_and_clamps_bounds():
 
     assert context["source_basis"] == "full_transcript.segments"
     assert context["start"] == 0.0
-    assert context["end"] == 10.0
+    assert context["end"] == 14.0
+    assert context["requested_start"] == 0.0
+    assert context["requested_end"] == 10.0
     assert [row["text"] for row in context["segments"]] == [
         "最初の行",
         "中央の行",
@@ -69,8 +71,10 @@ def test_read_context_selects_overlapping_nearby_segments():
 
     context = tools.read_context("vid1", timestamp=8, window=1)
 
-    assert context["start"] == 7.0
+    assert context["start"] == 5.0
     assert context["end"] == 9.0
+    assert context["requested_start"] == 7.0
+    assert context["requested_end"] == 9.0
     assert context["segment_count"] == 1
     assert context["segments"][0]["text"] == "中央の行"
 

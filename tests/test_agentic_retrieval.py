@@ -125,6 +125,8 @@ def test_agentic_tool_search_reads_raw_context_around_strong_anchor():
     assert outcome["final_tool"] == "read_context"
     assert outcome["rows"][0]["chunk_index"] == 2
     assert outcome["rows"][0]["text"].startswith("before")
+    assert outcome["rows"][0]["start"] == 0.0
+    assert outcome["rows"][0]["end"] == 20.0
     assert outcome["rows"][0]["source_basis"] == "full_transcript.segments"
     assert outcome["attempts"][-1]["strategy"] == STRATEGY_READ_CONTEXT
 
@@ -170,7 +172,7 @@ def test_agentic_context_expansion_preserves_legacy_and_lower_ranked_results():
         row["start"] = index * 10
 
     def read_context(*, video_id, timestamp, window):
-        if timestamp == 0:
+        if timestamp == 5:
             return {
                 "start": 0,
                 "end": 20,
@@ -198,6 +200,97 @@ def test_agentic_context_expansion_preserves_legacy_and_lower_ranked_results():
     assert outcome["rows"][0]["text"] == "expanded row 0"
     assert [row["chunk_index"] for row in outcome["rows"]] == [0, 1, 2, 3, 4]
     assert len(outcome["attempts"][-1]["calls"]) == 1
+
+
+def test_agentic_context_covers_full_chunk_and_updates_source_bounds():
+    row = _row(7, "setup matched fact")
+    row.update(
+        {
+            "start": 100.0,
+            "end": 154.0,
+            "url": "https://www.youtube.com/watch?v=vid1&t=100s",
+        }
+    )
+    calls = []
+
+    def read_context(*, video_id, timestamp, window):
+        calls.append((video_id, timestamp, window))
+        return {
+            "start": 94.0,
+            "end": 160.0,
+            "requested_start": 97.0,
+            "requested_end": 157.0,
+            "url": "https://www.youtube.com/watch?v=vid1&t=94s",
+            "text": "before\nsetup matched fact\nafter",
+            "segments": [],
+            "segment_count": 3,
+            "source_basis": "full_transcript.segments",
+        }
+
+    outcome = run_agentic_tool_search(
+        question="What is the matched fact?",
+        semantic_search_fn=lambda **kwargs: {
+            "retrieval_mode": "dense",
+            "details": {},
+            "results": [row],
+        },
+        keyword_search_fn=lambda **kwargs: {"results": []},
+        read_context_fn=read_context,
+        assess_fn=lambda *, rows, retrieval_mode: _assessment(
+            True, "strong_single_chunk", "medium"
+        ),
+    )
+
+    assert calls == [("vid1", 127.0, 30.0)]
+    assert outcome["rows"][0]["retrieval_start"] == 100.0
+    assert outcome["rows"][0]["retrieval_end"] == 154.0
+    assert outcome["rows"][0]["start"] == 94.0
+    assert outcome["rows"][0]["end"] == 160.0
+    assert outcome["rows"][0]["url"].endswith("&t=94s")
+    assert outcome["final_tool"] == "read_context"
+    citation = local_api.build_citation_catalog(outcome["rows"])[0]
+    assert citation["start_seconds"] == 94.0
+    assert citation["end_seconds"] == 160.0
+    assert citation["url"].endswith("&t=94s")
+
+
+def test_agentic_context_does_not_replace_stronger_sufficient_result():
+    original = _row(8, "matched fact at the end of the chunk")
+    original.update({"start": 0.0, "end": 54.0})
+
+    def assess(*, rows, retrieval_mode):
+        del retrieval_mode
+        matched = any("matched fact" in row["text"] for row in rows)
+        return _assessment(
+            matched,
+            "strong_single_chunk" if matched else "single_weak_chunk",
+            "medium" if matched else "low",
+        )
+
+    outcome = run_agentic_tool_search(
+        question="Where is the matched fact?",
+        semantic_search_fn=lambda **kwargs: {
+            "retrieval_mode": "dense",
+            "details": {},
+            "results": [original],
+        },
+        keyword_search_fn=lambda **kwargs: {"results": []},
+        read_context_fn=lambda **kwargs: {
+            "start": 0.0,
+            "end": 30.0,
+            "text": "setup only",
+            "segments": [],
+            "segment_count": 1,
+            "source_basis": "full_transcript.segments",
+        },
+        assess_fn=assess,
+    )
+
+    assert outcome["sufficient"] is True
+    assert outcome["stopped_reason"] == STOPPED_SUFFICIENT
+    assert outcome["final_tool"] == TOOL_SEMANTIC_SEARCH
+    assert outcome["rows"] == [original]
+    assert outcome["attempts"][-1]["accepted"] is False
 
 
 def test_sufficient_first_attempt_stops_immediately():

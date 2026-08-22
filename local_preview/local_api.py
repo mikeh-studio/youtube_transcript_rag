@@ -3571,6 +3571,70 @@ class LocalRAGService:
                 if len(agentic_outcomes) == 1:
                     final_outcome = agentic_outcomes[0]
                 else:
+                    flattened_attempts = []
+                    language_outcomes = []
+                    for language_stage, outcome in zip(
+                        language_stages, agentic_outcomes
+                    ):
+                        trace = (
+                            (outcome.get("retrieval") or {})
+                            .get("details", {})
+                            .get("agentic_retrieval", {})
+                        )
+                        annotated_attempts = []
+                        for attempt in trace.get("attempts") or []:
+                            annotated = dict(attempt)
+                            annotated["tool_attempt"] = annotated.get("attempt")
+                            annotated["attempt"] = len(flattened_attempts) + 1
+                            annotated["language"] = language_stage["language"]
+                            annotated["query_language"] = language_stage[
+                                "query_language"
+                            ]
+                            annotated_attempts.append(annotated)
+                            flattened_attempts.append(annotated)
+                        language_outcomes.append(
+                            {
+                                "language": language_stage["language"],
+                                "query_language": language_stage["query_language"],
+                                "video_ids": language_stage["video_ids"],
+                                "trace": {
+                                    **trace,
+                                    "attempts": annotated_attempts,
+                                },
+                            }
+                        )
+
+                    languages = [stage["language"] for stage in language_stages]
+                    flattened_attempts.append(
+                        {
+                            "attempt": len(flattened_attempts) + 1,
+                            "strategy": "multilingual_fusion",
+                            "tool": "multilingual_fusion",
+                            "query": question,
+                            "retrieval_mode": retrieval.get("retrieval_mode"),
+                            "k": k,
+                            "result_count": len(retrieval.get("results") or []),
+                            "sufficient": sufficient,
+                            "reason_code": "multilingual_fusion",
+                            "confidence_cap": "medium" if sufficient else "low",
+                            "languages": languages,
+                        }
+                    )
+                    retrieval.setdefault("details", {})["agentic_retrieval"] = {
+                        "enabled": True,
+                        "applied": True,
+                        "sufficient": sufficient,
+                        "stopped_reason": "multilingual_fusion",
+                        "final_query": question,
+                        "final_retrieval_mode": retrieval.get("retrieval_mode"),
+                        "final_tool": "multilingual_fusion",
+                        "final_k": k,
+                        "policy": "deterministic_tool_policy_v1",
+                        "requested_retrieval_mode": retrieval_mode,
+                        "rewrite_method": "deterministic_heuristic",
+                        "attempts": flattened_attempts,
+                        "language_outcomes": language_outcomes,
+                    }
                     final_outcome = {
                         "retrieval": retrieval,
                         "sufficient": sufficient,
